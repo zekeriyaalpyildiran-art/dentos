@@ -6,7 +6,7 @@ import {
   boolean,
   integer,
   jsonb,
-  enum as pgEnum,
+  pgEnum,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -19,7 +19,6 @@ const userRoleEnum = pgEnum("user_role", [
   "assistant",
   "reception",
 ]);
-const patientGenderEnum = pgEnum("patient_gender", ["male", "female", "other"]);
 
 // Clinics table
 export const clinics = pgTable("clinics", {
