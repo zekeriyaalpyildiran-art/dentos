@@ -10,11 +10,11 @@ Her görev: Claude Code'a tek seferde verilir. Kabul kriterleri sağlanmadan son
 
 - [x] **S0.2** Supabase + Drizzle + RLS. Drizzle schema (clinics, users, doctors, chairs), migration SQL, RLS politikaları, seed veri (2 clinic test).
    - ✅ Schema tanımlandı (core.ts)
-   - ✅ Migration hazırlandı (0001_init.sql)
-   - ✅ RLS politikaları yazıldı (core.sql)
-   - ✅ Seed veri (2 clinic, users, doctors, chairs)
+   - ✅ Migration SQL çalıştırıldı Supabase'de (0001_init.sql)
+   - ✅ RLS politikaları uygulandı Supabase'de (core.sql)
+   - ✅ Seed veri insert edildi (2 clinic, 2 user, 2 doctor, 4 chairs)
    - ✅ Custom JWT hook dokümentasyonu
-   - ⏳ Manual: Supabase panelinde migrations + RLS çalıştır, JWT hook ayarla
+   - ✅ DATABASE_URL setup (.env.local'da)
    - 📖 Setup adımları: `/docs/S0-2-SETUP.md`
 
 - [x] **S0.3** Auth: personel giriş (email+şifre), rol bazlı layout guard, panel iskeleti.
