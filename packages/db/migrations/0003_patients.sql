@@ -1,11 +1,5 @@
 -- S1.1 Patients schema + KVKK audit trail
-
--- Create patient gender enum
-CREATE TYPE patient_gender AS ENUM (
-  'male',
-  'female',
-  'other'
-);
+-- Note: patient_gender enum already exists from S0.2 (0001_init.sql)
 
 -- Create patients table
 CREATE TABLE patients (
