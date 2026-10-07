@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-dev",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["-F", "web", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "postgres",
+      "runtimeExecutable": "docker-compose",
+      "runtimeArgs": ["up", "-d", "postgres"],
+      "port": 5432
+    }
+  ]
+}
