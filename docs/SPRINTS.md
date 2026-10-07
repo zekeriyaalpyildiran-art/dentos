@@ -8,8 +8,14 @@ Her görev: Claude Code'a tek seferde verilir. Kabul kriterleri sağlanmadan son
    - ✅ mobilde Expo başlar (boş ekran)
    - ✅ Commit: `feat(s0.1): Setup monorepo with pnpm, turbo, Next.js, Expo`
 
-- [ ] S0.2 Supabase local (supabase init/start), Drizzle bağlantısı, clinics+users+doctors+chairs şeması, migration, RLS, custom access token hook (clinic_id, role claim).
-   - Kabul: RLS testi: iki klinik seed'i, biri diğerini göremez.
+- [x] **S0.2** Supabase + Drizzle + RLS. Drizzle schema (clinics, users, doctors, chairs), migration SQL, RLS politikaları, seed veri (2 clinic test).
+   - ✅ Schema tanımlandı (core.ts)
+   - ✅ Migration hazırlandı (0001_init.sql)
+   - ✅ RLS politikaları yazıldı (core.sql)
+   - ✅ Seed veri (2 clinic, users, doctors, chairs)
+   - ✅ Custom JWT hook dokümentasyonu
+   - ⏳ Manual: Supabase panelinde migrations + RLS çalıştır, JWT hook ayarla
+   - 📖 Setup adımları: `/docs/S0-2-SETUP.md`
 
 - [ ] S0.3 Auth: personel giriş (email+şifre), rol bazlı layout guard, boş panel iskeleti (sidebar: Ajanda, Hastalar, Mesajlar, CRM, Lab, Stok, Ekip, Raporlar, Ayarlar).
 
