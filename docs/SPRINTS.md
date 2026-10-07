@@ -17,7 +17,15 @@ Her görev: Claude Code'a tek seferde verilir. Kabul kriterleri sağlanmadan son
    - ⏳ Manual: Supabase panelinde migrations + RLS çalıştır, JWT hook ayarla
    - 📖 Setup adımları: `/docs/S0-2-SETUP.md`
 
-- [ ] S0.3 Auth: personel giriş (email+şifre), rol bazlı layout guard, boş panel iskeleti (sidebar: Ajanda, Hastalar, Mesajlar, CRM, Lab, Stok, Ekip, Raporlar, Ayarlar).
+- [x] **S0.3** Auth: personel giriş (email+şifre), rol bazlı layout guard, panel iskeleti.
+   - ✅ Supabase Auth client + session sync
+   - ✅ Login sayfası (email + password)
+   - ✅ ProtectedRoute guard (redirect to login/dashboard)
+   - ✅ Zustand auth store (user + loading)
+   - ✅ Sidebar navigation (9 modules)
+   - ✅ Dashboard with user info + module cards
+   - ✅ Placeholder pages for all modules
+   - ⏳ Next: Database schema + auth records (S0.2 setup completion)
 
 - [ ] S0.4 Seed: demo klinik, 5 hekim, 5 koltuk, 40 kalemlik işlem kataloğu (muayene, dolgu, kanal, çekim, implant, kuron, beyazlatma, ortodonti…), 50 sahte hasta.
 
