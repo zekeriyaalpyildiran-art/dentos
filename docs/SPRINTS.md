@@ -25,7 +25,8 @@ Her görev: Claude Code'a tek seferde verilir. Kabul kriterleri sağlanmadan son
    - ✅ Sidebar navigation (9 modules)
    - ✅ Dashboard with user info + module cards
    - ✅ Placeholder pages for all modules
-   - ⏳ Next: Database schema + auth records (S0.2 setup completion)
+   - ✅ TypeScript strict mode compliance (all packages pass typecheck)
+   - ⏳ Next: JWT custom claims Supabase hook setup (auth_user_id, clinic_id, role claims)
 
 - [ ] S0.4 Seed: demo klinik, 5 hekim, 5 koltuk, 40 kalemlik işlem kataloğu (muayene, dolgu, kanal, çekim, implant, kuron, beyazlatma, ortodonti…), 50 sahte hasta.
 
