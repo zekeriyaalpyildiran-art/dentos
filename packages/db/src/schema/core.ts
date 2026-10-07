@@ -126,3 +126,54 @@ export const proceduresCatalog = pgTable("procedures_catalog", {
     .default(sql`now()`)
     .notNull(),
 });
+
+// Patients table
+const patientGenderEnum = pgEnum("patient_gender", [
+  "male",
+  "female",
+  "other",
+]);
+
+export const patients = pgTable("patients", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clinic_id: uuid("clinic_id")
+    .notNull()
+    .references(() => clinics.id),
+  auth_user_id: uuid("auth_user_id"), // Supabase auth.users.id (patient login, optional)
+  full_name: text("full_name").notNull(),
+  phone: text("phone").notNull(),
+  email: text("email"),
+  gender: patientGenderEnum("gender"),
+  birth_date: text("birth_date"), // ISO date
+  address: text("address"),
+  tc_hash: text("tc_hash"), // Turkish ID hash (privacy: never store full TC number)
+  kvkk_consent: boolean("kvkk_consent").default(false), // GDPR-equivalent consent
+  consent_date: timestamp("consent_date", { withTimezone: true }),
+  notes: text("notes"),
+  is_active: boolean("is_active").default(true),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+});
+
+// Patient access log (KVKK audit trail)
+export const patientAccessLogs = pgTable("patient_access_logs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clinic_id: uuid("clinic_id")
+    .notNull()
+    .references(() => clinics.id),
+  patient_id: uuid("patient_id")
+    .notNull()
+    .references(() => patients.id),
+  accessed_by_user_id: uuid("accessed_by_user_id")
+    .notNull()
+    .references(() => users.id),
+  action: text("action").notNull(), // "view", "edit", "delete", etc.
+  changes: text("changes"), // JSON delta for audit
+  created_at: timestamp("created_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+});
