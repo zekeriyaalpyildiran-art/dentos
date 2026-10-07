@@ -3,286 +3,295 @@
 import { useState } from 'react';
 import Link from 'next/link';
 
-export default function SetupPage() {
-  const [activeStep, setActiveStep] = useState<number>(1);
-  const [completed, setCompleted] = useState<boolean[]>([false, false, false, false]);
+interface SetupStep {
+  step: string;
+  status: 'success' | 'error' | 'warning';
+  message: string;
+  timestamp: string;
+}
 
-  const steps = [
-    {
-      number: 1,
-      title: 'Supabase SQL Editor ile Database Oluşturma',
-      description: 'Tüm tabloları Supabase console\'dan oluştur',
-      instructions: [
-        'https://supabase.com/dashboard/project/knzrcgqpzjbajfboqlhq adresine git',
-        'Sol menüden "SQL Editor" seçeneğini aç',
-        'Sol üstte "New Query" butonuna tıkla',
-        'Aşağıdaki migration dosyalarını sırayla kopyala-yapıştır ve çalıştır:',
-        '  1. packages/db/migrations/0001_init.sql',
-        '  2. packages/db/migrations/0002_procedures_catalog.sql',
-        '  3. packages/db/migrations/0003_patients.sql',
-        '  4. packages/db/migrations/0004_appointments.sql',
-        '  5. packages/db/migrations/0005_notifications.sql',
-        '  6. packages/db/migrations/0006_device_tokens.sql',
-        '  7. packages/db/migrations/0007_treatment_plans.sql',
-        '  8. packages/db/migrations/0008_crm_leads.sql',
-        '  9. packages/db/migrations/0009_lab_orders.sql',
-        '  10. packages/db/migrations/0010_compliance.sql',
-        'Her migration için "RUN" butonuna tıkla ve başarılı olmasını bekle',
-      ],
-      estimatedTime: '5-10 dakika',
-    },
-    {
-      number: 2,
-      title: 'Test Verilerini Yükleme',
-      description: 'Örnek hasta, doktor ve randevu verilerini ekle',
-      instructions: [
-        'Terminal\'de şu komutu çalıştır:',
-        'curl -X POST http://localhost:3000/api/seed',
-        'Başarı mesajı alınması bekle',
-        'Veya tarayıcıda bu URL\'yi ziyaret et:',
-        'http://localhost:3000/api/seed',
-      ],
-      estimatedTime: '1 dakika',
-    },
-    {
-      number: 3,
-      title: 'Authentication Test',
-      description: 'Giriş sayfasını test et',
-      instructions: [
-        'http://localhost:3000/login adresine git',
-        'Test kullanıcısı bilgileri:',
-        '  Email: admin@klinikmerkezi.com.tr',
-        '  (SMS OTP ile doğrulama yapılır)',
-        'Supabase Auth → Users kısmından OTP kodu görülebilir',
-      ],
-      estimatedTime: '2 dakika',
-    },
-    {
-      number: 4,
-      title: 'Dashboard\'u Test Etme',
-      description: 'Tüm özellikleri göz at',
-      instructions: [
-        'Giriş yaptıktan sonra /dashboard adresine yönlendirileceksin',
-        'Sol menüden bölümler arasında gezin:',
-        '  - 📅 Randevular',
-        '  - 👥 Hastalar',
-        '  - 💰 Tedavi Planları',
-        '  - 🎯 CRM Kanban',
-        '  - 📦 Envanter',
-        '  - 🧪 Lab Siparişleri',
-        '  - 📊 Uyum Raporları',
-        'Tüm sayfalar veritabanı bağlantısı olmadan demo verilerle çalışır',
-      ],
-      estimatedTime: '5 dakika',
-    },
-  ];
-
-  const toggleComplete = (index: number) => {
-    const newCompleted = [...completed];
-    newCompleted[index] = !newCompleted[index];
-    setCompleted(newCompleted);
+interface SetupResult {
+  success: boolean;
+  message: string;
+  steps: SetupStep[];
+  summary?: {
+    totalSteps: number;
+    successCount: number;
+    warningCount: number;
   };
+  error?: string;
+}
 
-  const completedCount = completed.filter(Boolean).length;
+export default function SetupPage() {
+  const [loading, setLoading] = useState(false);
+  const [completed, setCompleted] = useState(false);
+  const [result, setResult] = useState<SetupResult | null>(null);
+  const [setupStarted, setSetupStarted] = useState(false);
+
+  const handleAutoSetup = async () => {
+    setLoading(true);
+    setSetupStarted(true);
+    setResult(null);
+
+    try {
+      const response = await fetch('/api/setup/auto-init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const data = await response.json();
+      setResult(data);
+      setCompleted(data.success);
+    } catch (error) {
+      setResult({
+        success: false,
+        message: 'Kurulum başarısız',
+        error: error instanceof Error ? error.message : 'Bilinmeyen hata',
+        steps: [
+          {
+            step: 'error',
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Bilinmeyen hata',
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 p-8">
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="text-center mb-12">
-          <div className="text-4xl mb-4">🦷</div>
+          <div className="text-6xl mb-4 animate-bounce">🦷</div>
           <h1 className="text-4xl font-bold mb-2 text-gray-900">DentOS Kurulum</h1>
           <p className="text-lg text-gray-600">8 Sprint - Türkçe Diş Kliniği Yönetim Sistemi</p>
         </div>
 
-        {/* Progress */}
-        <div className="mb-12">
-          <div className="bg-white rounded-lg shadow p-6 mb-6">
-            <h2 className="text-lg font-semibold mb-4 text-gray-900">Kurulum İlerlemesi</h2>
-            <div className="flex items-center justify-between">
-              {[1, 2, 3, 4].map((step) => (
-                <div key={step} className="flex flex-col items-center flex-1">
-                  <div
-                    className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg mb-2 ${
-                      completed[step - 1]
-                        ? 'bg-green-500 text-white'
-                        : activeStep === step
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-200 text-gray-700'
-                    }`}
-                  >
-                    {completed[step - 1] ? '✓' : step}
+        {/* Main Setup Box */}
+        {!setupStarted ? (
+          <div className="bg-white rounded-lg shadow-lg p-12 text-center mb-8">
+            <div className="mb-8">
+              <div className="text-5xl mb-4">⚡</div>
+              <h2 className="text-3xl font-bold mb-4 text-gray-900">
+                Otomatik Kurulum
+              </h2>
+              <p className="text-lg text-gray-600 mb-6">
+                Tek tıkla tüm database, tabloları ve test verilerini otomatik olarak oluştur
+              </p>
+              <div className="space-y-2 text-left max-w-md mx-auto mb-8">
+                <div className="flex items-center gap-3 text-gray-700">
+                  <span className="text-green-500 text-xl">✓</span>
+                  <span>Database migrasyonlarını otomatik uygula</span>
+                </div>
+                <div className="flex items-center gap-3 text-gray-700">
+                  <span className="text-green-500 text-xl">✓</span>
+                  <span>Test klinik verisi oluştur</span>
+                </div>
+                <div className="flex items-center gap-3 text-gray-700">
+                  <span className="text-green-500 text-xl">✓</span>
+                  <span>3 doktor ve 3 hasta ekle</span>
+                </div>
+                <div className="flex items-center gap-3 text-gray-700">
+                  <span className="text-green-500 text-xl">✓</span>
+                  <span>İşlem prosedürleri ve randevuları yükle</span>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={handleAutoSetup}
+              disabled={loading}
+              className={`px-8 py-4 rounded-lg font-semibold text-lg text-white transition-all ${
+                loading
+                  ? 'bg-gray-400 cursor-not-allowed'
+                  : 'bg-blue-600 hover:bg-blue-700 active:scale-95'
+              }`}
+            >
+              {loading ? (
+                <span className="flex items-center gap-2 justify-center">
+                  <span className="animate-spin">⏳</span>
+                  Kurulum yapılıyor...
+                </span>
+              ) : (
+                '🚀 Otomatik Kurulum Başlat'
+              )}
+            </button>
+
+            <p className="text-sm text-gray-500 mt-6">
+              Kurulum 1-2 dakika sürebilir
+            </p>
+          </div>
+        ) : null}
+
+        {/* Progress Steps */}
+        {setupStarted && result && (
+          <div className="bg-white rounded-lg shadow-lg p-8 mb-8">
+            <h3 className="text-2xl font-bold mb-6 text-gray-900">
+              {loading ? '⏳ Kurulum Yapılıyor...' : completed ? '✅ Kurulum Tamamlandı!' : '❌ Kurulum Başarısız'}
+            </h3>
+
+            <div className="space-y-3 max-h-96 overflow-y-auto mb-6">
+              {result.steps?.map((step, index) => (
+                <div
+                  key={index}
+                  className={`flex items-start gap-3 p-3 rounded-lg ${
+                    step.status === 'success'
+                      ? 'bg-green-50'
+                      : step.status === 'error'
+                      ? 'bg-red-50'
+                      : 'bg-yellow-50'
+                  }`}
+                >
+                  <span className="text-xl flex-shrink-0 mt-0.5">
+                    {step.status === 'success'
+                      ? '✅'
+                      : step.status === 'error'
+                      ? '❌'
+                      : '⚠️'}
+                  </span>
+                  <div className="flex-1">
+                    <p className="font-medium text-gray-900">{step.step}</p>
+                    <p className="text-sm text-gray-600">{step.message}</p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      {new Date(step.timestamp).toLocaleTimeString('tr-TR')}
+                    </p>
                   </div>
-                  <span className="text-xs text-center text-gray-700">Adım {step}</span>
                 </div>
               ))}
             </div>
-            <div className="mt-6 text-center">
-              <p className="text-sm text-gray-600">
-                {completedCount} / 4 adım tamamlandı ({Math.round((completedCount / 4) * 100)}%)
-              </p>
-              <div className="w-full bg-gray-200 rounded-full h-2 mt-2">
-                <div
-                  className="bg-green-500 h-2 rounded-full transition-all"
-                  style={{ width: `${(completedCount / 4) * 100}%` }}
-                ></div>
-              </div>
-            </div>
-          </div>
-        </div>
 
-        {/* Steps */}
-        <div className="space-y-6 mb-12">
-          {steps.map((step, index) => (
-            <div
-              key={step.number}
-              className={`bg-white rounded-lg shadow transition-all ${
-                activeStep === step.number ? 'ring-2 ring-blue-600' : ''
-              }`}
-            >
-              <div
-                onClick={() => setActiveStep(step.number)}
-                className="p-6 cursor-pointer hover:bg-gray-50"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="inline-flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-600 rounded-full font-semibold text-sm">
-                        {step.number}
-                      </span>
-                      <h3 className="text-xl font-semibold text-gray-900">{step.title}</h3>
+            {result.summary && (
+              <div className="bg-blue-50 rounded-lg p-4 mb-6">
+                <h4 className="font-semibold text-gray-900 mb-3">📊 Özet</h4>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-green-600">
+                      {result.summary.successCount}
                     </div>
-                    <p className="text-gray-600 ml-11 mb-2">{step.description}</p>
-                    <p className="text-sm text-gray-500 ml-11">⏱️ Tahmini süre: {step.estimatedTime}</p>
+                    <div className="text-sm text-gray-600">Başarılı</div>
                   </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleComplete(index);
-                    }}
-                    className={`ml-4 px-4 py-2 rounded-lg font-medium transition-all ${
-                      completed[index]
-                        ? 'bg-green-100 text-green-700 hover:bg-green-200'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                  >
-                    {completed[index] ? '✓ Tamamlandı' : 'Tamamla'}
-                  </button>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-yellow-600">
+                      {result.summary.warningCount}
+                    </div>
+                    <div className="text-sm text-gray-600">Uyarı</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-blue-600">
+                      {result.summary.successCount + result.summary.warningCount}
+                    </div>
+                    <div className="text-sm text-gray-600">Toplam</div>
+                  </div>
                 </div>
+              </div>
+            )}
+          </div>
+        )}
 
-                {/* Instructions - Show when active or completed */}
-                {(activeStep === step.number || completed[index]) && (
-                  <div className="mt-6 ml-11 pt-6 border-t border-gray-200">
-                    <div className="space-y-2">
-                      {step.instructions.map((instruction, i) => (
-                        <div
-                          key={i}
-                          className="flex gap-3 text-sm text-gray-700"
-                        >
-                          {instruction.startsWith('http') ? (
-                            <>
-                              <span className="text-blue-600 flex-shrink-0">🔗</span>
-                              <a
-                                href={instruction}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-600 hover:underline break-all"
-                              >
-                                {instruction}
-                              </a>
-                            </>
-                          ) : instruction.startsWith('curl') || instruction.startsWith('packages/db') || instruction.startsWith('http') ? (
-                            <>
-                              <span className="text-gray-400 flex-shrink-0 font-mono">$</span>
-                              <code className="bg-gray-100 px-2 py-1 rounded font-mono text-xs break-all">
-                                {instruction}
-                              </code>
-                            </>
-                          ) : instruction.startsWith('  ') ? (
-                            <>
-                              <span className="w-0"></span>
-                              <span className="ml-6">{instruction.trim()}</span>
-                            </>
-                          ) : (
-                            <>
-                              <span className="text-blue-600">•</span>
-                              <span>{instruction}</span>
-                            </>
-                          )}
-                        </div>
-                      ))}
+        {/* Success Message & Next Steps */}
+        {completed && (
+          <div className="space-y-6">
+            <div className="bg-green-50 border-2 border-green-200 rounded-lg p-6">
+              <h3 className="text-2xl font-bold text-green-700 mb-3">
+                🎉 Tebrikler! DentOS hazır
+              </h3>
+              <p className="text-green-700 mb-4">
+                Tüm kurulum adımları başarıyla tamamlandı. Şimdi sistemi keşfetmeye başlayabilirsiniz.
+              </p>
+            </div>
+
+            <div className="bg-white rounded-lg shadow-lg p-6">
+              <h3 className="text-xl font-bold mb-4 text-gray-900">⏭️ Sırada Ne Var?</h3>
+              <div className="space-y-3">
+                <a
+                  href="/login"
+                  className="flex items-center gap-3 p-4 bg-blue-50 hover:bg-blue-100 rounded-lg transition-all"
+                >
+                  <span className="text-2xl">🔐</span>
+                  <div>
+                    <div className="font-semibold text-gray-900">Giriş Yap</div>
+                    <div className="text-sm text-gray-600">
+                      admin@klinikmerkezi.com.tr hesabı ile giriş yap
                     </div>
                   </div>
-                )}
+                </a>
+
+                <a
+                  href="/dashboard"
+                  className="flex items-center gap-3 p-4 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-all"
+                >
+                  <span className="text-2xl">📊</span>
+                  <div>
+                    <div className="font-semibold text-gray-900">Dashboard</div>
+                    <div className="text-sm text-gray-600">
+                      Tüm özellikleri görmek için dashboard'u aç
+                    </div>
+                  </div>
+                </a>
+
+                <Link
+                  href="/"
+                  className="flex items-center gap-3 p-4 bg-purple-50 hover:bg-purple-100 rounded-lg transition-all"
+                >
+                  <span className="text-2xl">🏠</span>
+                  <div>
+                    <div className="font-semibold text-gray-900">Ana Sayfa</div>
+                    <div className="text-sm text-gray-600">
+                      Projeyi keşfet ve özellikleri öğren
+                    </div>
+                  </div>
+                </Link>
               </div>
             </div>
-          ))}
-        </div>
 
-        {/* Quick Links */}
-        <div className="bg-white rounded-lg shadow p-6 mb-8">
-          <h3 className="text-lg font-semibold mb-4 text-gray-900">Hızlı Linkler</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <a
-              href="https://supabase.com/dashboard/project/knzrcgqpzjbajfboqlhq"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-3 p-4 bg-blue-50 hover:bg-blue-100 rounded-lg transition-all"
-            >
-              <span className="text-2xl">🔑</span>
-              <div>
-                <div className="font-semibold text-gray-900">Supabase Dashboard</div>
-                <div className="text-sm text-gray-600">SQL Editor ve tabloları yönet</div>
-              </div>
-            </a>
-            <a
-              href="http://localhost:3000/api/seed"
-              className="flex items-center gap-3 p-4 bg-green-50 hover:bg-green-100 rounded-lg transition-all"
-            >
-              <span className="text-2xl">🌱</span>
-              <div>
-                <div className="font-semibold text-gray-900">Seed Data API</div>
-                <div className="text-sm text-gray-600">Test verilerini yükle</div>
-              </div>
-            </a>
-            <Link
-              href="/test-connection"
-              className="flex items-center gap-3 p-4 bg-purple-50 hover:bg-purple-100 rounded-lg transition-all"
-            >
-              <span className="text-2xl">🔌</span>
-              <div>
-                <div className="font-semibold text-gray-900">Connection Test</div>
-                <div className="text-sm text-gray-600">Supabase bağlantısını test et</div>
-              </div>
-            </Link>
-            <Link
-              href="/login"
-              className="flex items-center gap-3 p-4 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-all"
-            >
-              <span className="text-2xl">🔐</span>
-              <div>
-                <div className="font-semibold text-gray-900">Giriş Sayfası</div>
-                <div className="text-sm text-gray-600">Giriş yap ve deneme yap</div>
-              </div>
-            </Link>
-          </div>
-        </div>
-
-        {/* Info Box */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-          <div className="flex gap-4">
-            <span className="text-2xl flex-shrink-0">ℹ️</span>
-            <div>
-              <h4 className="font-semibold text-gray-900 mb-2">Bilgi</h4>
-              <p className="text-sm text-gray-700 mb-2">
-                Supabase veritabanı server'ına doğrudan bağlantı sorunu nedeniyle migrasyonları Supabase console\'dan manuel çalıştırmanız gereklidir.
-              </p>
-              <p className="text-sm text-gray-700">
-                Alternatif olarak Docker PostgreSQL kullanarak yerel geliştirme yapabilirsiniz. Detaylar için <code className="bg-white px-1 rounded">DATABASE_SETUP.md</code> dosyasına bakın.
-              </p>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+              <h4 className="font-semibold text-gray-900 mb-2">📝 Harita</h4>
+              <ul className="space-y-2 text-sm text-gray-700">
+                <li>
+                  <strong>📅 Randevular:</strong> Hasta randevu takibi ve yönetimi
+                </li>
+                <li>
+                  <strong>👥 Hastalar:</strong> Hasta profilleri ve tıbbi geçmiş
+                </li>
+                <li>
+                  <strong>💰 Tedavi Planları:</strong> Taksitli ödeme planları
+                </li>
+                <li>
+                  <strong>🎯 CRM Kanban:</strong> Potansiyel müşterileri takip et
+                </li>
+                <li>
+                  <strong>📦 Envanter:</strong> Tıbbi malzemeleri yönet
+                </li>
+                <li>
+                  <strong>🧪 Lab Siparişleri:</strong> Protez ve laboratuvar işleri
+                </li>
+              </ul>
             </div>
           </div>
-        </div>
+        )}
+
+        {/* Error Message */}
+        {result && !completed && (
+          <div className="bg-red-50 border-2 border-red-200 rounded-lg p-6 mb-6">
+            <h3 className="text-2xl font-bold text-red-700 mb-3">
+              ❌ Kurulum Başarısız
+            </h3>
+            <p className="text-red-700 mb-4">{result.error || result.message}</p>
+            <button
+              onClick={() => {
+                setSetupStarted(false);
+                setResult(null);
+              }}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all"
+            >
+              🔄 Yeniden Dene
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
