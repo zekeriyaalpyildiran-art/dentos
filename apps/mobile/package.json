@@ -1,0 +1,39 @@
+{
+  "name": "@dentos/mobile",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-native": "0.76.0",
+    "expo": "^52.0.0",
+    "expo-router": "^3.4.0",
+    "expo-splash-screen": "~0.28.0",
+    "expo-status-bar": "~1.12.1",
+    "expo-constants": "~16.0.2",
+    "@dentos/shared": "workspace:*",
+    "@dentos/db": "workspace:*",
+    "@dentos/i18n": "workspace:*",
+    "@dentos/ai": "workspace:*",
+    "@supabase/supabase-js": "^2.38.0",
+    "zustand": "^4.4.0",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-native": "^0.73.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.3",
+    "eslint": "^8.54.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.2",
+    "@typescript-eslint/parser": "^6.13.2",
+    "vitest": "^1.0.4"
+  }
+}

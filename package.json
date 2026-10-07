@@ -1,0 +1,33 @@
+{
+  "name": "dentos",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Multi-tenant dental clinic operating system",
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\""
+  },
+  "packageManager": "pnpm@9.4.0",
+  "pnpm": {
+    "overrides": {
+      "react": "^19.0.0",
+      "react-dom": "^19.0.0"
+    },
+    "peerDependencyRules": {
+      "ignoreMissing": ["@types/*"]
+    }
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "prettier": "^3.2.5",
+    "typescript": "^5.3.3"
+  }
+}
