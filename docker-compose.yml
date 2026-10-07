@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: dentos-postgres
+    environment:
+      POSTGRES_DB: dentos
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./packages/db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dentos-network
+
+  # Redis Cache (Optional)
+  redis:
+    image: redis:7-alpine
+    container_name: dentos-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - dentos-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  dentos-network:
+    driver: bridge
+
+# Usage:
+# docker-compose up -d              # Start all services
+# docker-compose down                # Stop all services
+# docker-compose logs postgres      # View PostgreSQL logs
+# docker-compose exec postgres psql -U postgres -d dentos  # Connect to DB
