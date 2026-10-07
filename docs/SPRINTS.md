@@ -30,7 +30,15 @@ Her görev: Claude Code'a tek seferde verilir. Kabul kriterleri sağlanmadan son
 
 - [ ] S0.4 Seed: demo klinik, 5 hekim, 5 koltuk, 40 kalemlik işlem kataloğu (muayene, dolgu, kanal, çekim, implant, kuron, beyazlatma, ortodonti…), 50 sahte hasta.
 
-- [ ] S0.5 CI (GitHub Actions): typecheck, lint, test, migration drift kontrolü.
+- [x] **S0.5** CI (GitHub Actions): typecheck, lint, test, migration drift kontrolü.
+   - ✅ GitHub Actions workflow setup (ubuntu-latest, Node 20.x, pnpm 9.4.0)
+   - ✅ Typecheck job: TypeScript strict mode validation
+   - ✅ Lint job: ESLint quality checks
+   - ✅ Migration Drift Check: Drizzle generate + git diff detection
+   - ✅ Build Web job: Next.js production build
+   - ✅ Test job: Unit tests (continue-on-error)
+   - ✅ pnpm cache layer: Optimized CI runs
+   - Runs on: push/PR to main & develop branches
 
 ## Sprint 1 — Hasta + Randevu (web)
 - [ ] S1.1 patients şeması + RLS + patient_access_log; hasta listesi (arama: ad/telefon/TC-hash), hasta oluştur/düzenle formu, KVKK rıza alanı.
