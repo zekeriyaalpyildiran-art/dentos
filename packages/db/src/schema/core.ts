@@ -95,3 +95,34 @@ export const chairs = pgTable("chairs", {
     .default(sql`now()`)
     .notNull(),
 });
+
+// Procedure catalog (treatment types)
+const procedureCategoryEnum = pgEnum("procedure_category", [
+  "examination",
+  "filling",
+  "root_canal",
+  "extraction",
+  "implant",
+  "crown",
+  "whitening",
+  "orthodontics",
+  "cleaning",
+  "other",
+]);
+
+export const proceduresCatalog = pgTable("procedures_catalog", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clinic_id: uuid("clinic_id")
+    .notNull()
+    .references(() => clinics.id),
+  name: text("name").notNull(), // "Dolgu", "Kanal Tedavisi", vb.
+  category: procedureCategoryEnum("category").notNull(),
+  description: text("description"),
+  is_active: boolean("is_active").default(true),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+});
