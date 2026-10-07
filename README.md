@@ -242,10 +242,23 @@ pnpm build
 
 ## 📖 Documentation
 
-- [Database Setup Guide](./DATABASE_SETUP.md)
+### Getting Started
+- [Getting Started (10-minute quickstart)](./GETTING_STARTED.md)
+- [Setup & Installation](./IMPLEMENTATION_CHECKLIST.md)
+
+### Reference
+- [Complete Features Catalog](./FEATURES.md)
+- [Quick Reference Card](./QUICK_REFERENCE.md)
+- [Database Setup Options](./DATABASE_SETUP.md)
+- [Production Deployment](./DEPLOYMENT.md)
+
+### Development
 - [API Documentation](./apps/api/README.md)
 - [Mobile App Guide](./apps/mobile/README.md)
-- [Architecture Overview](./docs/ARCHITECTURE.md)
+
+### Interactive Pages
+- **[/setup](http://localhost:3000/setup)** - Setup wizard (Demo/Docker/Supabase)
+- **[/features](http://localhost:3000/features)** - Interactive features showcase
 
 ## 🐛 Known Issues
 
