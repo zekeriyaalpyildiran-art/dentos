@@ -139,6 +139,9 @@ aws rds create-db-instance \
   --master-username postgres \
   --master-user-password <strong-password> \
   --allocated-storage 20 \
+  --storage-encrypted \
+  --backup-retention-period 30 \
+  --multi-az \
   --vpc-security-group-ids sg-xxxxx
 ```
 
@@ -155,20 +158,116 @@ aws ecr get-login-password | docker login --username AWS --password-stdin <accou
 docker push <account-id>.dkr.ecr.us-east-1.amazonaws.com/dentos-web:latest
 ```
 
-### 3. Create ECS Service
+### 3. Create ECS Service with Auto Scaling
 
 ```bash
-# Create ECS task definition
+# Create ECS cluster
+aws ecs create-cluster --cluster-name dentos-prod
+
+# Register task definition
 aws ecs register-task-definition \
   --family dentos-web \
+  --network-mode awsvpc \
+  --requires-compatibilities FARGATE \
+  --cpu 256 \
+  --memory 512 \
   --container-definitions file://task-definition.json
 
 # Create service
 aws ecs create-service \
-  --cluster dentos-cluster \
+  --cluster dentos-prod \
   --service-name dentos-web \
   --task-definition dentos-web:1 \
-  --desired-count 2
+  --desired-count 2 \
+  --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx]}"
+
+# Configure auto scaling (CPU-based)
+aws application-autoscaling register-scalable-target \
+  --service-namespace ecs \
+  --resource-id service/dentos-prod/dentos-web \
+  --scalable-dimension ecs:service:DesiredCount \
+  --min-capacity 2 \
+  --max-capacity 10
+
+aws application-autoscaling put-scaling-policy \
+  --policy-name cpu-scaling \
+  --service-namespace ecs \
+  --resource-id service/dentos-prod/dentos-web \
+  --scalable-dimension ecs:service:DesiredCount \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration '{
+    "TargetValue": 70.0,
+    "PredefinedMetricSpecification": {
+      "PredefinedMetricType": "ECSServiceAverageCPUUtilization"
+    }
+  }'
+```
+
+## 📦 Kubernetes Deployment (Advanced)
+
+### Helm Chart Setup
+
+**values.yaml:**
+```yaml
+replicaCount: 3
+
+image:
+  repository: ghcr.io/zekeriyaalpyildiran-art/dentos
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 3000
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: dentos.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: dentos-tls
+      hosts:
+        - dentos.example.com
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+```
+
+**Deploy:**
+```bash
+# Create namespace
+kubectl create namespace dentos
+
+# Create secrets
+kubectl create secret generic dentos-secrets \
+  --from-literal=database-url=postgresql://... \
+  -n dentos
+
+# Install Helm chart
+helm install dentos ./helm/dentos \
+  --namespace dentos \
+  --values values.yaml
+
+# Monitor deployment
+kubectl get pods -n dentos
+kubectl logs -n dentos -l app=dentos --tail=100
 ```
 
 ## 📱 Mobile App Deployment
@@ -329,6 +428,157 @@ jobs:
 - [ ] DDoS protection enabled (CloudFlare/AWS WAF)
 - [ ] Security scanning in CI/CD pipeline
 
+## 🔄 Advanced CI/CD Pipeline
+
+### GitHub Actions - Comprehensive Deployment
+
+File: `.github/workflows/deploy.yml`
+
+```yaml
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: pnpm/action-setup@v2
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'pnpm'
+      
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm type-check
+      - run: pnpm test
+      
+  build:
+    needs: quality
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build Docker image
+        run: docker build -t ghcr.io/${{ github.repository }}:${{ github.sha }} .
+      
+      - name: Push to registry
+        run: |
+          echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
+          docker tag ghcr.io/${{ github.repository }}:${{ github.sha }} ghcr.io/${{ github.repository }}:latest
+          docker push ghcr.io/${{ github.repository }}:latest
+  
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Vercel
+        run: vercel --prod --token ${{ secrets.VERCEL_TOKEN }}
+      
+      - name: Notify Slack
+        run: |
+          curl -X POST https://hooks.slack.com/services/YOUR/HOOK/URL \
+            -d '{"text":"✅ DentOS deployed successfully"}'
+```
+
+## 🔄 Backup & Disaster Recovery
+
+### Automated Backup Strategy
+
+**Daily backup script:**
+```bash
+#!/bin/bash
+# backup-dentos.sh
+
+BACKUP_DIR="/backups"
+DATE=$(date +%Y-%m-%d-%H%M%S)
+DB_BACKUP="dentos-backup-${DATE}.sql"
+
+# Database backup
+pg_dump $DATABASE_URL > "${BACKUP_DIR}/${DB_BACKUP}"
+
+# Compress and encrypt
+gpg --symmetric --cipher-algo AES256 "${BACKUP_DIR}/${DB_BACKUP}"
+
+# Upload to S3
+aws s3 cp "${BACKUP_DIR}/${DB_BACKUP}.gpg" s3://dentos-backups/
+
+# Keep only last 7 backups locally
+find $BACKUP_DIR -name "dentos-backup-*.sql*" -mtime +7 -delete
+
+# Upload to Glacier for archival (weekly)
+if [ $(date +%u) -eq 0 ]; then
+  aws glacier upload-archive \
+    --vault-name dentos-backups \
+    --body "${BACKUP_DIR}/${DB_BACKUP}.gpg"
+fi
+```
+
+**Schedule with cron:**
+```bash
+0 2 * * * /scripts/backup-dentos.sh
+```
+
+### Restore from Backup
+
+```bash
+# List available backups
+aws s3 ls s3://dentos-backups/
+
+# Download and decrypt
+aws s3 cp s3://dentos-backups/dentos-backup-2026-10-07.sql.gpg .
+gpg dentos-backup-2026-10-07.sql.gpg
+
+# Restore to database
+psql $DATABASE_URL < dentos-backup-2026-10-07.sql
+```
+
+### Recovery Time Objectives (RTO)
+
+| Component | RTO | Recovery Method |
+|-----------|-----|-----------------|
+| Database | 1 hour | Restore from S3 backup |
+| Web app | 15 minutes | Redeploy from container |
+| All data | 24 hours | Restore from Glacier |
+
+## 🚀 Performance Optimization
+
+### CDN Setup (Cloudflare)
+
+```bash
+# 1. Add domain to Cloudflare
+# 2. Enable:
+#    - Full SSL/TLS encryption
+#    - Brotli compression
+#    - Automatic HTTPS redirect
+#    - HTTP/2 and HTTP/3
+#    - Image optimization
+
+# 3. Set caching rules
+#    /api/* → No cache
+#    /static/* → Cache 1 year
+#    / → Cache 1 hour
+```
+
+### Database Query Optimization
+
+```sql
+-- Index frequently queried columns
+CREATE INDEX idx_patients_clinic_id ON patients(clinic_id);
+CREATE INDEX idx_appointments_clinic_id_date ON appointments(clinic_id, appointment_date);
+CREATE INDEX idx_treatment_plans_patient_id ON treatment_plans(patient_id);
+
+-- Analyze query performance
+EXPLAIN ANALYZE SELECT * FROM appointments WHERE clinic_id = '...';
+```
+
 ## 🆘 Troubleshooting
 
 ### Database Connection Fails
@@ -341,32 +591,96 @@ psql $DATABASE_URL
 
 # Check network connectivity
 nslookup db.knzrcgqpzjbajfboqlhq.supabase.co
+
+# Check security groups (AWS)
+aws ec2 describe-security-groups --group-ids sg-xxxxx
 ```
 
-### Migrations Not Applied
+### Deployment Stuck
 ```bash
-# Check migration status
-docker-compose exec postgres psql -U postgres -d dentos
-SELECT * FROM _drizzle_migrations;
+# Check GitHub Actions logs
+gh run list --repo zekeriyaalpyildiran-art/dentos
+gh run view <run-id>
 
-# Manually apply migration
-psql $DATABASE_URL < packages/db/migrations/0001_init.sql
+# Check Vercel deployment
+vercel logs --tail
+
+# Cancel and retry
+gh run cancel <run-id>
+git commit --allow-empty -m "Retry deployment"
+git push origin main
 ```
 
-### Out of Memory
+### High Memory Usage
 ```bash
-# Increase Docker memory
-docker-compose down
-docker-compose up -d --memory=4g postgres
+# Check container memory
+docker stats dentos
+
+# Increase memory limit
+docker run -m 2g -e JAVA_OPTS="-Xmx1800m" dentos:latest
+
+# Or in Kubernetes
+kubectl set resources deployment dentos --limits=memory=2Gi
 ```
 
-## 📞 Support
+### Database Query Slow
+```bash
+# Enable query logging
+SET log_statement = 'all';
+SET log_duration = on;
 
-- Issues: https://github.com/zekeriyaalpyildiran-art/dentos/issues
-- Documentation: See README.md and DATABASE_SETUP.md
-- Status: Check Supabase dashboard and GitHub Actions
+# Check slow queries
+SELECT * FROM pg_stat_statements 
+ORDER BY mean_exec_time DESC 
+LIMIT 10;
+
+# Create missing index
+REINDEX TABLE patients;
+ANALYZE patients;
+```
+
+### API Rate Limiting Issues
+```bash
+# Check rate limit headers
+curl -v https://dentos.example.com/api/patients | grep X-RateLimit
+
+# Increase limits in production
+# Rate limit settings in apps/web/src/middleware.ts
+```
+
+## 📊 Monitoring Dashboard
+
+### Key Metrics to Monitor
+
+```
+Application:
+- Request latency (p50, p95, p99)
+- Error rate (5xx, 4xx)
+- Throughput (requests/sec)
+- User sessions
+
+Database:
+- Query response time
+- Connection count
+- Disk usage
+- Replication lag
+
+Infrastructure:
+- CPU utilization
+- Memory usage
+- Disk I/O
+- Network bandwidth
+```
+
+## 📞 Support & Resources
+
+- **Issues:** https://github.com/zekeriyaalpyildiran-art/dentos/issues
+- **Documentation:** See README.md, FEATURES.md, API.md
+- **Security:** See SECURITY.md for security guidelines
+- **Status:** Check GitHub Actions and Vercel dashboard
 
 ---
 
-**Last Updated:** October 7, 2026
-**Version:** 1.0.0
+**Last Updated:** October 7, 2026  
+**Version:** 2.0.0  
+**Maintained By:** DevOps & Infrastructure Team
