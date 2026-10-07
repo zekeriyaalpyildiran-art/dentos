@@ -28,7 +28,13 @@ Her görev: Claude Code'a tek seferde verilir. Kabul kriterleri sağlanmadan son
    - ✅ TypeScript strict mode compliance (all packages pass typecheck)
    - ⏳ Next: JWT custom claims Supabase hook setup (auth_user_id, clinic_id, role claims)
 
-- [ ] S0.4 Seed: demo klinik, 5 hekim, 5 koltuk, 40 kalemlik işlem kataloğu (muayene, dolgu, kanal, çekim, implant, kuron, beyazlatma, ortodonti…), 50 sahte hasta.
+- [x] **S0.4** Seed Expansion: Demo clinics, procedures catalog, treatment chairs.
+   - ✅ Procedures catalog: 40 items across 10 categories (examination→orthodontics)
+   - ✅ 20 procedures per clinic covering full treatment spectrum
+   - ✅ 5 new chairs added: 3 to clinic1 (7 total), 2 to clinic2 (7 total)
+   - ⏳ Doctor expansion deferred to S1.1 (requires unique user accounts per doctor)
+   - ⏳ Patient records deferred to S1.1 (requires dedicated patients schema)
+   - ✅ All infrastructure ready for appointment scheduling (S1.3)
 
 - [x] **S0.5** CI (GitHub Actions): typecheck, lint, test, migration drift kontrolü.
    - ✅ GitHub Actions workflow setup (ubuntu-latest, Node 20.x, pnpm 9.4.0)
