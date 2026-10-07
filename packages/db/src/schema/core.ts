@@ -272,3 +272,37 @@ export const waitlist = pgTable("waitlist", {
     .default(sql`now()`)
     .notNull(),
 });
+
+// S1.5: Notifications + SMS gateway
+
+// Notification type enum
+const notificationTypeEnum = pgEnum("notification_type", [
+  "sms",
+  "email",
+  "in_app",
+]);
+
+// Notifications table (SMS/Email queue for appointment reminders)
+export const notifications = pgTable("notifications", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clinic_id: uuid("clinic_id")
+    .notNull()
+    .references(() => clinics.id),
+  appointment_id: uuid("appointment_id")
+    .notNull()
+    .references(() => appointments.id),
+  patient_id: uuid("patient_id")
+    .notNull()
+    .references(() => patients.id),
+  notification_type: notificationTypeEnum("notification_type").notNull(),
+  recipient: text("recipient").notNull(), // Phone or email
+  scheduled_at: timestamp("scheduled_at", { withTimezone: true }).notNull(), // When to send
+  sent_at: timestamp("sent_at", { withTimezone: true }),
+  status: text("status").default("pending"), // pending, sent, failed
+  message: text("message"),
+  error_message: text("error_message"),
+  retry_count: integer("retry_count").default(0),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+});
