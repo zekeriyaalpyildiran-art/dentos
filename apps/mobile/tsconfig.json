@@ -5,8 +5,12 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
   },
-  "include": ["app", "**.ts", "**.tsx"],
+  "include": ["src", "**.ts", "**.tsx"],
   "exclude": ["node_modules"]
 }

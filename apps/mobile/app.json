@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "DentOS",
-    "slug": "dentos",
-    "version": "0.0.1",
+    "name": "DentOS Hastalar",
+    "slug": "dentos-mobile-patient",
+    "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -13,19 +13,33 @@
     },
     "assetBundlePatterns": ["**/*"],
     "ios": {
-      "supportsTabletMode": true
+      "supportsTabletMode": true,
+      "bundleIdentifier": "com.klinikprime.dentos.patient"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      }
+      },
+      "package": "com.klinikprime.dentos.patient"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-router"
-    ]
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#0066cc"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "dentos-patient-app"
+      }
+    }
   }
 }
