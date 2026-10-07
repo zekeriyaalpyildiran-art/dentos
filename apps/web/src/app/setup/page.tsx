@@ -3,63 +3,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 
-interface SetupStep {
-  step: string;
-  status: 'success' | 'error' | 'warning';
-  message: string;
-  timestamp: string;
-}
-
-interface SetupResult {
-  success: boolean;
-  message: string;
-  steps: SetupStep[];
-  summary?: {
-    totalSteps: number;
-    successCount: number;
-    warningCount: number;
-  };
-  error?: string;
-}
-
 export default function SetupPage() {
-  const [loading, setLoading] = useState(false);
-  const [completed, setCompleted] = useState(false);
-  const [result, setResult] = useState<SetupResult | null>(null);
-  const [setupStarted, setSetupStarted] = useState(false);
-
-  const handleAutoSetup = async () => {
-    setLoading(true);
-    setSetupStarted(true);
-    setResult(null);
-
-    try {
-      const response = await fetch('/api/setup/auto-init', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      const data = await response.json();
-      setResult(data);
-      setCompleted(data.success);
-    } catch (error) {
-      setResult({
-        success: false,
-        message: 'Kurulum başarısız',
-        error: error instanceof Error ? error.message : 'Bilinmeyen hata',
-        steps: [
-          {
-            step: 'error',
-            status: 'error',
-            message: error instanceof Error ? error.message : 'Bilinmeyen hata',
-            timestamp: new Date().toISOString(),
-          },
-        ],
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [activeTab, setActiveTab] = useState<'quick' | 'docker' | 'supabase'>('quick');
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-50 p-8">
@@ -71,227 +16,335 @@ export default function SetupPage() {
           <p className="text-lg text-gray-600">8 Sprint - Türkçe Diş Kliniği Yönetim Sistemi</p>
         </div>
 
-        {/* Main Setup Box */}
-        {!setupStarted ? (
-          <div className="bg-white rounded-lg shadow-lg p-12 text-center mb-8">
-            <div className="mb-8">
-              <div className="text-5xl mb-4">⚡</div>
-              <h2 className="text-3xl font-bold mb-4 text-gray-900">
-                Otomatik Kurulum
-              </h2>
-              <p className="text-lg text-gray-600 mb-6">
-                Tek tıkla tüm database, tabloları ve test verilerini otomatik olarak oluştur
-              </p>
-              <div className="space-y-2 text-left max-w-md mx-auto mb-8">
-                <div className="flex items-center gap-3 text-gray-700">
-                  <span className="text-green-500 text-xl">✓</span>
-                  <span>Database migrasyonlarını otomatik uygula</span>
-                </div>
-                <div className="flex items-center gap-3 text-gray-700">
-                  <span className="text-green-500 text-xl">✓</span>
-                  <span>Test klinik verisi oluştur</span>
-                </div>
-                <div className="flex items-center gap-3 text-gray-700">
-                  <span className="text-green-500 text-xl">✓</span>
-                  <span>3 doktor ve 3 hasta ekle</span>
-                </div>
-                <div className="flex items-center gap-3 text-gray-700">
-                  <span className="text-green-500 text-xl">✓</span>
-                  <span>İşlem prosedürleri ve randevuları yükle</span>
-                </div>
-              </div>
-            </div>
-
+        {/* Tab Selection */}
+        <div className="bg-white rounded-lg shadow-lg mb-8 overflow-hidden">
+          <div className="flex border-b">
             <button
-              onClick={handleAutoSetup}
-              disabled={loading}
-              className={`px-8 py-4 rounded-lg font-semibold text-lg text-white transition-all ${
-                loading
-                  ? 'bg-gray-400 cursor-not-allowed'
-                  : 'bg-blue-600 hover:bg-blue-700 active:scale-95'
+              onClick={() => setActiveTab('quick')}
+              className={`flex-1 py-4 px-6 font-semibold transition-all ${
+                activeTab === 'quick'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
               }`}
             >
-              {loading ? (
-                <span className="flex items-center gap-2 justify-center">
-                  <span className="animate-spin">⏳</span>
-                  Kurulum yapılıyor...
-                </span>
-              ) : (
-                '🚀 Otomatik Kurulum Başlat'
-              )}
+              ⚡ Hızlı Start (Demo)
             </button>
-
-            <p className="text-sm text-gray-500 mt-6">
-              Kurulum 1-2 dakika sürebilir
-            </p>
+            <button
+              onClick={() => setActiveTab('docker')}
+              className={`flex-1 py-4 px-6 font-semibold transition-all ${
+                activeTab === 'docker'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              🐳 Docker Setup
+            </button>
+            <button
+              onClick={() => setActiveTab('supabase')}
+              className={`flex-1 py-4 px-6 font-semibold transition-all ${
+                activeTab === 'supabase'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              ☁️ Supabase Setup
+            </button>
           </div>
-        ) : null}
 
-        {/* Progress Steps */}
-        {setupStarted && result && (
-          <div className="bg-white rounded-lg shadow-lg p-8 mb-8">
-            <h3 className="text-2xl font-bold mb-6 text-gray-900">
-              {loading ? '⏳ Kurulum Yapılıyor...' : completed ? '✅ Kurulum Tamamlandı!' : '❌ Kurulum Başarısız'}
-            </h3>
+          {/* Quick Start Tab */}
+          {activeTab === 'quick' && (
+            <div className="p-8">
+              <h2 className="text-2xl font-bold mb-4 text-gray-900">⚡ Hızlı Start - Demo Mode</h2>
+              <p className="text-gray-600 mb-6">
+                DentOS'u hemen deneyim çalıştırabilirsiniz. Demo modu test verileri ile önceden yüklüdür.
+              </p>
 
-            <div className="space-y-3 max-h-96 overflow-y-auto mb-6">
-              {result.steps?.map((step, index) => (
-                <div
-                  key={index}
-                  className={`flex items-start gap-3 p-3 rounded-lg ${
-                    step.status === 'success'
-                      ? 'bg-green-50'
-                      : step.status === 'error'
-                      ? 'bg-red-50'
-                      : 'bg-yellow-50'
-                  }`}
-                >
-                  <span className="text-xl flex-shrink-0 mt-0.5">
-                    {step.status === 'success'
-                      ? '✅'
-                      : step.status === 'error'
-                      ? '❌'
-                      : '⚠️'}
-                  </span>
-                  <div className="flex-1">
-                    <p className="font-medium text-gray-900">{step.step}</p>
-                    <p className="text-sm text-gray-600">{step.message}</p>
-                    <p className="text-xs text-gray-400 mt-1">
-                      {new Date(step.timestamp).toLocaleTimeString('tr-TR')}
-                    </p>
-                  </div>
+              <div className="space-y-4 mb-8">
+                <div className="bg-green-50 border-l-4 border-green-500 p-4">
+                  <h3 className="font-semibold text-gray-900 mb-2">✅ Hangi özellikler çalışır?</h3>
+                  <ul className="space-y-1 text-gray-700 text-sm">
+                    <li>✓ Dashboard ve tüm menüler</li>
+                    <li>✓ Randevu takibi (3 test randevu)</li>
+                    <li>✓ Hasta yönetimi (3 test hasta)</li>
+                    <li>✓ Doktor ve işlem prosedürleri</li>
+                    <li>✓ CRM Kanban tahtası</li>
+                    <li>✓ Envanter ve Lab siparişleri</li>
+                  </ul>
                 </div>
-              ))}
-            </div>
 
-            {result.summary && (
-              <div className="bg-blue-50 rounded-lg p-4 mb-6">
-                <h4 className="font-semibold text-gray-900 mb-3">📊 Özet</h4>
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="text-center">
-                    <div className="text-2xl font-bold text-green-600">
-                      {result.summary.successCount}
-                    </div>
-                    <div className="text-sm text-gray-600">Başarılı</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-2xl font-bold text-yellow-600">
-                      {result.summary.warningCount}
-                    </div>
-                    <div className="text-sm text-gray-600">Uyarı</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-2xl font-bold text-blue-600">
-                      {result.summary.successCount + result.summary.warningCount}
-                    </div>
-                    <div className="text-sm text-gray-600">Toplam</div>
-                  </div>
+                <div className="bg-yellow-50 border-l-4 border-yellow-500 p-4">
+                  <h3 className="font-semibold text-gray-900 mb-2">⚠️ Hangi özellikler çalışmaz?</h3>
+                  <ul className="space-y-1 text-gray-700 text-sm">
+                    <li>✗ Yeni hasta/doktor ekleme (database olmadan)</li>
+                    <li>✗ Gerçek SMS gönderimi (Netgsm)</li>
+                    <li>✗ Gerçek ödeme işlemi (Iyzico)</li>
+                  </ul>
                 </div>
               </div>
-            )}
-          </div>
-        )}
 
-        {/* Success Message & Next Steps */}
-        {completed && (
-          <div className="space-y-6">
-            <div className="bg-green-50 border-2 border-green-200 rounded-lg p-6">
-              <h3 className="text-2xl font-bold text-green-700 mb-3">
-                🎉 Tebrikler! DentOS hazır
-              </h3>
-              <p className="text-green-700 mb-4">
-                Tüm kurulum adımları başarıyla tamamlandı. Şimdi sistemi keşfetmeye başlayabilirsiniz.
-              </p>
-            </div>
-
-            <div className="bg-white rounded-lg shadow-lg p-6">
-              <h3 className="text-xl font-bold mb-4 text-gray-900">⏭️ Sırada Ne Var?</h3>
-              <div className="space-y-3">
-                <a
-                  href="/login"
-                  className="flex items-center gap-3 p-4 bg-blue-50 hover:bg-blue-100 rounded-lg transition-all"
-                >
-                  <span className="text-2xl">🔐</span>
-                  <div>
-                    <div className="font-semibold text-gray-900">Giriş Yap</div>
-                    <div className="text-sm text-gray-600">
-                      admin@klinikmerkezi.com.tr hesabı ile giriş yap
-                    </div>
-                  </div>
-                </a>
-
-                <a
+              <div className="space-y-3 mb-8">
+                <Link
                   href="/dashboard"
-                  className="flex items-center gap-3 p-4 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-all"
+                  className="block w-full p-4 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-all text-center"
                 >
-                  <span className="text-2xl">📊</span>
-                  <div>
-                    <div className="font-semibold text-gray-900">Dashboard</div>
-                    <div className="text-sm text-gray-600">
-                      Tüm özellikleri görmek için dashboard'u aç
-                    </div>
-                  </div>
-                </a>
+                  🚀 Dashboard'u Aç (Demo Verileriyle)
+                </Link>
 
                 <Link
-                  href="/"
-                  className="flex items-center gap-3 p-4 bg-purple-50 hover:bg-purple-100 rounded-lg transition-all"
+                  href="/login"
+                  className="block w-full p-4 bg-gray-600 text-white rounded-lg font-semibold hover:bg-gray-700 transition-all text-center"
                 >
-                  <span className="text-2xl">🏠</span>
-                  <div>
-                    <div className="font-semibold text-gray-900">Ana Sayfa</div>
-                    <div className="text-sm text-gray-600">
-                      Projeyi keşfet ve özellikleri öğren
-                    </div>
-                  </div>
+                  🔐 Login Sayfasını Aç
                 </Link>
               </div>
-            </div>
 
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-              <h4 className="font-semibold text-gray-900 mb-2">📝 Harita</h4>
-              <ul className="space-y-2 text-sm text-gray-700">
-                <li>
-                  <strong>📅 Randevular:</strong> Hasta randevu takibi ve yönetimi
-                </li>
-                <li>
-                  <strong>👥 Hastalar:</strong> Hasta profilleri ve tıbbi geçmiş
-                </li>
-                <li>
-                  <strong>💰 Tedavi Planları:</strong> Taksitli ödeme planları
-                </li>
-                <li>
-                  <strong>🎯 CRM Kanban:</strong> Potansiyel müşterileri takip et
-                </li>
-                <li>
-                  <strong>📦 Envanter:</strong> Tıbbi malzemeleri yönet
-                </li>
-                <li>
-                  <strong>🧪 Lab Siparişleri:</strong> Protez ve laboratuvar işleri
-                </li>
-              </ul>
+              <p className="text-sm text-gray-500 text-center">
+                Gerçek veritabanı için Docker veya Supabase kurulumunu seçin ↑
+              </p>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Error Message */}
-        {result && !completed && (
-          <div className="bg-red-50 border-2 border-red-200 rounded-lg p-6 mb-6">
-            <h3 className="text-2xl font-bold text-red-700 mb-3">
-              ❌ Kurulum Başarısız
-            </h3>
-            <p className="text-red-700 mb-4">{result.error || result.message}</p>
-            <button
-              onClick={() => {
-                setSetupStarted(false);
-                setResult(null);
-              }}
-              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all"
+          {/* Docker Tab */}
+          {activeTab === 'docker' && (
+            <div className="p-8">
+              <h2 className="text-2xl font-bold mb-4 text-gray-900">🐳 Docker ile Kurulum</h2>
+              <p className="text-gray-600 mb-6">
+                Lokal PostgreSQL ve Redis ile tam özellikli kurulum (En Kolay Seçenek)
+              </p>
+
+              <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6">
+                <h3 className="font-semibold text-gray-900 mb-2">✅ Avantajları:</h3>
+                <ul className="space-y-1 text-gray-700 text-sm">
+                  <li>✓ Hiç internete bağlı değil (Offline çalışır)</li>
+                  <li>✓ Hızlı ve güvenli</li>
+                  <li>✓ Geliştirme için ideal</li>
+                  <li>✓ Docker'ı kaldırırsan veritabanı sıfırlanır</li>
+                </ul>
+              </div>
+
+              <div className="bg-white border border-gray-300 rounded-lg p-6 mb-6 font-mono text-sm space-y-3">
+                <div>
+                  <p className="text-gray-500 mb-2">1. Docker'ı başlat:</p>
+                  <div className="bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">
+                    <code>docker-compose up -d</code>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-gray-500 mb-2">2. Migrasyonları çalıştır (otomatik olur):</p>
+                  <div className="bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">
+                    <code>sleep 10  # Docker başlamasını bekle</code>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-gray-500 mb-2">3. Web uygulamasını başlat:</p>
+                  <div className="bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">
+                    <code>pnpm -F web dev</code>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-gray-500 mb-2">4. Test verilerini yükle:</p>
+                  <div className="bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">
+                    <code>curl -X POST http://localhost:3000/api/seed</code>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-gray-500 mb-2">5. Tarayıcıda açhttp://localhost:3000</p>
+                  <div className="bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">
+                    <code>http://localhost:3000</code>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-sm text-gray-600 bg-gray-50 p-4 rounded-lg">
+                <strong>Not:</strong> Docker masalüstü uygulamasının yüklü ve çalışıyor olması gerekir.
+                <a
+                  href="https://www.docker.com/products/docker-desktop"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline ml-1"
+                >
+                  Docker Desktop indir →
+                </a>
+              </p>
+            </div>
+          )}
+
+          {/* Supabase Tab */}
+          {activeTab === 'supabase' && (
+            <div className="p-8">
+              <h2 className="text-2xl font-bold mb-4 text-gray-900">☁️ Supabase Cloud Setup</h2>
+              <p className="text-gray-600 mb-6">
+                Prodüksiyona hazır bulut çözümü (Tim ile çalışmak için ideal)
+              </p>
+
+              <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6">
+                <h3 className="font-semibold text-gray-900 mb-2">✅ Avantajları:</h3>
+                <ul className="space-y-1 text-gray-700 text-sm">
+                  <li>✓ Bulut tabanlı (Her yerden erişilebilir)</li>
+                  <li>✓ Ekip ile işbirliği kolay</li>
+                  <li>✓ Otomatik yedekleme</li>
+                  <li>✓ Production'a kolay geçiş</li>
+                </ul>
+              </div>
+
+              <div className="space-y-4 mb-8">
+                <div className="bg-white border border-gray-300 rounded-lg p-6">
+                  <h3 className="font-semibold text-gray-900 mb-3">Adım 1: Supabase Projesi Oluştur</h3>
+                  <ol className="list-decimal list-inside space-y-2 text-gray-700 text-sm mb-4">
+                    <li>
+                      <a
+                        href="https://supabase.com/dashboard"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        supabase.com/dashboard
+                      </a>
+                      {'  '}adresine git
+                    </li>
+                    <li>Yeni bir proje oluştur</li>
+                    <li>Proje URL'si ve Anon Key'i kopyala</li>
+                  </ol>
+
+                  <div className="bg-gray-50 p-4 rounded border border-gray-300">
+                    <p className="text-xs text-gray-600 mb-2">
+                      <strong>apps/web/.env.local dosyasında şunları ekle:</strong>
+                    </p>
+                    <div className="bg-gray-900 text-gray-100 p-3 rounded font-mono text-xs overflow-x-auto">
+                      <code>
+                        NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+                        <br />
+                        NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGci...
+                      </code>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-gray-300 rounded-lg p-6">
+                  <h3 className="font-semibold text-gray-900 mb-3">Adım 2: Veritabanı Tablolarını Oluştur</h3>
+                  <ol className="list-decimal list-inside space-y-2 text-gray-700 text-sm mb-4">
+                    <li>Supabase Dashboardda "SQL Editor" açhttp://</li>
+                    <li>
+                      <code className="bg-gray-100 px-2 py-1 rounded text-xs">
+                        packages/db/migrations/
+                      </code>
+                      {'  '}klasöründeki SQL dosyalarını açhttp://
+                    </li>
+                    <li>Dosyaları sırayla Supabase'e yapıştır ve çalıştırhttp://</li>
+                    <li>
+                      Başlangıç sırası:
+                      <ul className="list-disc list-inside ml-4 mt-2 text-xs">
+                        <li>0001_init.sql</li>
+                        <li>0002_procedures_catalog.sql</li>
+                        <li>0003_patients.sql</li>
+                        <li>... (0010'a kadar devam ethttp://)</li>
+                      </ul>
+                    </li>
+                  </ol>
+
+                  <p className="text-xs text-gray-600 bg-yellow-50 p-3 rounded">
+                    ⏱️ <strong>İpucu:</strong> Her migration 30 saniye kadar sürebilir
+                  </p>
+                </div>
+
+                <div className="bg-white border border-gray-300 rounded-lg p-6">
+                  <h3 className="font-semibold text-gray-900 mb-3">Adım 3: Test Verilerini Yükle</h3>
+                  <p className="text-gray-700 text-sm mb-3">Migrations bitince şu komutu çalıştırhttp://:</p>
+                  <div className="bg-gray-900 text-gray-100 p-3 rounded font-mono text-sm overflow-x-auto">
+                    <code>curl -X POST http://localhost:3000/api/seed</code>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-sm text-gray-600 bg-gray-50 p-4 rounded-lg">
+                <strong>Not:</strong> İlk kez olduğu için biraz zaman alabilir. Tüm stepsları bitirip
+                tarayıcı başladıktan sonra Supabase tabloları ve veriler otomatik oluşturulacak.
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Quick Links */}
+        <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
+          <h3 className="text-lg font-semibold mb-4 text-gray-900">🔗 Hızlı Linkler</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <a
+              href="/dashboard"
+              className="flex items-center gap-3 p-4 bg-blue-50 hover:bg-blue-100 rounded-lg transition-all"
             >
-              🔄 Yeniden Dene
-            </button>
+              <span className="text-2xl">📊</span>
+              <div>
+                <div className="font-semibold text-gray-900">Dashboard</div>
+                <div className="text-sm text-gray-600">Demo verilerle başla</div>
+              </div>
+            </a>
+
+            <a
+              href="/login"
+              className="flex items-center gap-3 p-4 bg-green-50 hover:bg-green-100 rounded-lg transition-all"
+            >
+              <span className="text-2xl">🔐</span>
+              <div>
+                <div className="font-semibold text-gray-900">Login</div>
+                <div className="text-sm text-gray-600">Giriş sayfasını aç</div>
+              </div>
+            </a>
+
+            <a
+              href="https://github.com/zekeriyaalpyildiran-art/dentos"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 p-4 bg-purple-50 hover:bg-purple-100 rounded-lg transition-all"
+            >
+              <span className="text-2xl">🐙</span>
+              <div>
+                <div className="font-semibold text-gray-900">GitHub</div>
+                <div className="text-sm text-gray-600">Kaynak kodunu görüntüle</div>
+              </div>
+            </a>
+
+            <a
+              href="https://supabase.com/dashboard"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 p-4 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-all"
+            >
+              <span className="text-2xl">☁️</span>
+              <div>
+                <div className="font-semibold text-gray-900">Supabase</div>
+                <div className="text-sm text-gray-600">Cloud console</div>
+              </div>
+            </a>
           </div>
-        )}
+        </div>
+
+        {/* Documentation */}
+        <div className="bg-gradient-to-r from-green-50 to-blue-50 rounded-lg shadow-lg p-6">
+          <h3 className="text-lg font-semibold mb-4 text-gray-900">📚 Dokümantasyon</h3>
+          <div className="space-y-2 text-sm">
+            <p className="text-gray-700">
+              Detaylı kurulum ve deployment rehberleri için git reposundaki dosyaları oku:
+            </p>
+            <ul className="space-y-1 text-gray-700">
+              <li>
+                <code className="bg-white px-2 py-1 rounded">GETTING_STARTED.md</code> - 10 dakikalık quick start
+              </li>
+              <li>
+                <code className="bg-white px-2 py-1 rounded">DATABASE_SETUP.md</code> - Veritabanı seçenekleri
+              </li>
+              <li>
+                <code className="bg-white px-2 py-1 rounded">DEPLOYMENT.md</code> - Production deployment
+              </li>
+              <li>
+                <code className="bg-white px-2 py-1 rounded">README.md</code> - Proje özeti ve mimarisı
+              </li>
+            </ul>
+          </div>
+        </div>
       </div>
     </div>
   );
