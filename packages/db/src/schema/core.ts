@@ -177,3 +177,98 @@ export const patientAccessLogs = pgTable("patient_access_logs", {
     .default(sql`now()`)
     .notNull(),
 });
+
+// S1.2: Appointments + reminders + waitlist
+
+// Appointment status enum
+const appointmentStatusEnum = pgEnum("appointment_status", [
+  "scheduled",
+  "completed",
+  "cancelled",
+  "no_show",
+]);
+
+// Reminder status enum
+const reminderStatusEnum = pgEnum("reminder_status", [
+  "pending",
+  "sent",
+  "failed",
+]);
+
+// Waitlist status enum
+const waitlistStatusEnum = pgEnum("waitlist_status", [
+  "waiting",
+  "assigned",
+  "cancelled",
+]);
+
+// Appointments table
+export const appointments = pgTable("appointments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clinic_id: uuid("clinic_id")
+    .notNull()
+    .references(() => clinics.id),
+  patient_id: uuid("patient_id")
+    .notNull()
+    .references(() => patients.id),
+  doctor_id: uuid("doctor_id")
+    .notNull()
+    .references(() => doctors.id),
+  chair_id: uuid("chair_id")
+    .notNull()
+    .references(() => chairs.id),
+  procedure_id: uuid("procedure_id").references(() => proceduresCatalog.id), // Optional: procedure can be added later
+  start_time: timestamp("start_time", { withTimezone: true }).notNull(),
+  end_time: timestamp("end_time", { withTimezone: true }).notNull(),
+  status: appointmentStatusEnum("status").default("scheduled"),
+  notes: text("notes"),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+});
+
+// Reminders table (SMS/Email notifications before appointment)
+export const reminders = pgTable("reminders", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clinic_id: uuid("clinic_id")
+    .notNull()
+    .references(() => clinics.id),
+  appointment_id: uuid("appointment_id")
+    .notNull()
+    .references(() => appointments.id),
+  reminder_type: text("reminder_type").notNull(), // "sms", "email", "in_app"
+  scheduled_at: timestamp("scheduled_at", { withTimezone: true }).notNull(), // When to send (e.g., T-24h, T-2h)
+  sent_at: timestamp("sent_at", { withTimezone: true }),
+  status: reminderStatusEnum("status").default("pending"),
+  error_message: text("error_message"),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+});
+
+// Waitlist table (patients waiting for cancellation/no-show slots)
+export const waitlist = pgTable("waitlist", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clinic_id: uuid("clinic_id")
+    .notNull()
+    .references(() => clinics.id),
+  patient_id: uuid("patient_id")
+    .notNull()
+    .references(() => patients.id),
+  doctor_id: uuid("doctor_id"), // Optional: specific doctor preference
+  procedure_id: uuid("procedure_id").references(() => proceduresCatalog.id),
+  preferred_date_start: timestamp("preferred_date_start", { withTimezone: true }),
+  preferred_date_end: timestamp("preferred_date_end", { withTimezone: true }),
+  status: waitlistStatusEnum("status").default("waiting"),
+  position: integer("position"), // Queue position
+  notes: text("notes"),
+  created_at: timestamp("created_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true })
+    .default(sql`now()`)
+    .notNull(),
+});
