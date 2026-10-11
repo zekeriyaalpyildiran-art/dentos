@@ -1,4 +1,4 @@
-import { createClient } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 
@@ -21,7 +21,11 @@ type TableResult = {
 };
 
 async function seedDatabase() {
-  const supabase = createClient();
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { autoRefreshToken: false, persistSession: false } }
+  );
   const results: TableResult[] = [];
 
   // Records each table's outcome so failures are reported instead of hidden.
