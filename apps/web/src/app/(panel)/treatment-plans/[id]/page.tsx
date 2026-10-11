@@ -87,12 +87,16 @@ export default function TreatmentPlanPage() {
 
       if (error) throw error;
       if (!data) return;
+      const embeds = data as unknown as {
+        patients: { full_name: string } | null;
+        doctors: { users: { full_name: string } | null } | null;
+      };
 
       setPlan({
         id: data.id,
         patient_id: data.patient_id,
-        patient_name: data.patients?.full_name || "Unknown",
-        doctor_name: data.doctors?.users?.full_name || "Unknown",
+        patient_name: embeds.patients?.full_name || "Unknown",
+        doctor_name: embeds.doctors?.users?.full_name || "Unknown",
         title: data.title,
         description: data.description,
         total_cost: data.total_cost,
