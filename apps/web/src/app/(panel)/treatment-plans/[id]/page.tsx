@@ -33,6 +33,8 @@ interface Payment {
   paid_at: string;
 }
 
+type PaymentMethod = "cash" | "card" | "transfer";
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default function TreatmentPlanPage() {
@@ -46,7 +48,8 @@ export default function TreatmentPlanPage() {
   const [loading, setLoading] = useState(true);
   const [processingPayment, setProcessingPayment] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState("");
-  const [installments, setInstallments] = useState(1);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
+  const [successMessage, setSuccessMessage] = useState("");
 
   useEffect(() => {
     if (!user?.clinic_id || !params.id) return;
@@ -57,7 +60,10 @@ export default function TreatmentPlanPage() {
   const fetchPlan = async () => {
     try {
       // Skip non-uuid ids such as the "new" route, which Postgres would reject.
-      if (!UUID_RE.test(params.id)) return;
+      if (!UUID_RE.test(params.id)) {
+        setLoading(false);
+        return;
+      }
 
       const { data, error } = await supabase
         .from("treatment_plans")
@@ -120,6 +126,7 @@ export default function TreatmentPlanPage() {
   const handleProcessPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     setProcessingPayment(true);
+    setSuccessMessage("");
 
     try {
       const amount = parseFloat(paymentAmount);
@@ -128,15 +135,6 @@ export default function TreatmentPlanPage() {
         return;
       }
 
-      // TODO: Integrate with PaymentService
-      // const paymentService = createPaymentService(config);
-      // const result = await paymentService.processPayment({...});
-
-      console.log(
-        `[PAYMENT] Processing ₺${amount} for plan ${params.id} (${installments} installments)`
-      );
-
-      // Mock payment creation
       const { error } = await supabase.from("payments").insert([
         {
           clinic_id: user?.clinic_id,
@@ -144,16 +142,17 @@ export default function TreatmentPlanPage() {
           patient_id: plan?.patient_id,
           amount,
           status: "paid",
-          payment_method: "card",
+          payment_method: paymentMethod,
+          notes: "Manuel kayıt",
           paid_at: new Date().toISOString(),
         },
       ]);
 
       if (error) throw error;
 
-      alert("Ödeme başarıyla alındı");
+      setSuccessMessage("Ödeme başarıyla kaydedildi.");
       setPaymentAmount("");
-      fetchPayments();
+      await fetchPayments();
     } catch (error) {
       alert("Ödeme işlenirken hata oluştu");
       console.error("Payment error:", error);
@@ -272,6 +271,10 @@ export default function TreatmentPlanPage() {
               </div>
             </div>
 
+            {successMessage && (
+              <p className="mb-4 text-sm text-green-700">{successMessage}</p>
+            )}
+
             {remaining > 0 && (
               <form onSubmit={handleProcessPayment}>
                 <div className="mb-4">
@@ -293,18 +296,24 @@ export default function TreatmentPlanPage() {
 
                 <div className="mb-6">
                   <label className="block text-sm font-semibold mb-2">
-                    Taksit
+                    Ödeme Yöntemi
                   </label>
                   <select
-                    value={installments}
-                    onChange={(e) => setInstallments(parseInt(e.target.value))}
+                    value={paymentMethod}
+                    onChange={(e) =>
+                      setPaymentMethod(e.target.value as PaymentMethod)
+                    }
                     className="w-full px-4 py-2 border rounded"
                   >
-                    <option value="1">Tek Ödeme</option>
-                    <option value="3">3 Ay</option>
-                    <option value="6">6 Ay</option>
-                    <option value="12">12 Ay</option>
+                    <option value="cash">Nakit</option>
+                    <option value="card">Kart (POS)</option>
+                    <option value="transfer">Havale</option>
                   </select>
+                  {paymentMethod === "card" && (
+                    <p className="mt-2 text-xs text-gray-500">
+                      Kart ödemesi POS cihazında alındıktan sonra kaydedilir.
+                    </p>
+                  )}
                 </div>
 
                 <button
