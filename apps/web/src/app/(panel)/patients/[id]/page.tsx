@@ -43,7 +43,7 @@ export default function Page() {
     const fetchData = async () => {
       try {
         const [ptRes, aptRes] = await Promise.all([
-          supabase.from("patients").select("*").eq("id", patientId).eq("clinic_id", user.clinic_id).single(),
+          supabase.from("patients").select("*").eq("id", patientId).eq("clinic_id", user.clinic_id).maybeSingle(),
           supabase.from("appointments").select("*").eq("patient_id", patientId).eq("clinic_id", user.clinic_id),
         ]);
 
@@ -87,7 +87,7 @@ export default function Page() {
         </div>
         <div>
           <div className="text-sm text-gray-600">KVKK Rızası</div>
-          <div className={`font-semibold ${patient.kvkk_consent ? "text-green-600" : "text-red-600"}`}>
+          <div className={`font-semibold ${patient.kvkk_consent ? "text-green-700" : "text-red-600"}`}>
             {patient.kvkk_consent ? "✓ Var" : "✗ Yok"}
           </div>
         </div>

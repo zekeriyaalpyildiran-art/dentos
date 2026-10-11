@@ -47,7 +47,7 @@ export default function UsersPage() {
   const [formData, setFormData] = useState({
     email: '',
     full_name: '',
-    role: 'receptionist' as const,
+    role: 'receptionist' as User['role'],
     specialization: '',
   });
 
@@ -249,7 +249,7 @@ export default function UsersPage() {
             <div className="flex gap-4">
               <button
                 onClick={handleAddUser}
-                className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold transition-all"
+                className="px-6 py-2 bg-green-700 text-white rounded-lg hover:bg-green-800 font-semibold transition-all"
               >
                 {editingId ? '💾 Kaydet' : '➕ Ekle'}
               </button>

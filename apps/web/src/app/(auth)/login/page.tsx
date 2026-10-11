@@ -105,20 +105,22 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Test Credentials */}
-          <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 space-y-2">
-            <p className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-              💡 Demo Giriş Bilgileri
-            </p>
-            <div className="space-y-1 text-sm text-gray-700">
-              <p className="font-mono bg-white px-3 py-2 rounded border border-blue-200">
-                📧 ahmet@klinik-maltepe.com
+          {/* Test Credentials: rendered only outside production */}
+          {process.env.NODE_ENV !== "production" && (
+            <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 space-y-2">
+              <p className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                💡 Demo Giriş Bilgileri
               </p>
-              <p className="font-mono bg-white px-3 py-2 rounded border border-blue-200">
-                🔑 password
-              </p>
+              <div className="space-y-1 text-sm text-gray-700">
+                <p className="font-mono bg-white px-3 py-2 rounded border border-blue-200">
+                  📧 ahmet@klinik-maltepe.com
+                </p>
+                <p className="font-mono bg-white px-3 py-2 rounded border border-blue-200">
+                  🔑 password
+                </p>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Footer */}
           <div className="text-center pt-4 border-t border-gray-200">

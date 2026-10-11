@@ -15,7 +15,7 @@ export default function TestConnectionPage() {
         // Test 1: Check auth
         setStatus('Testing authentication...');
         const { data: { session } } = await supabase.auth.getSession();
-        setDetails(prev => ({ ...prev, auth: session ? 'Connected' : 'No session' }));
+        setDetails((prev: any) => ({ ...prev, auth: session ? 'Connected' : 'No session' }));
 
         // Test 2: Try simple query
         setStatus('Testing database connection...');
@@ -29,7 +29,7 @@ export default function TestConnectionPage() {
           setDetails({ error: error });
         } else {
           setStatus('✅ Database Connected!');
-          setDetails(prev => ({ ...prev, database: 'Connected', data }));
+          setDetails((prev: any) => ({ ...prev, database: 'Connected', data }));
         }
       } catch (err) {
         setStatus('❌ Connection Error: ' + String(err));

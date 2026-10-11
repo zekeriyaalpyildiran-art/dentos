@@ -77,11 +77,11 @@ export default function InventoryPage() {
 
   const getStockStatus = (quantity: number, minimum: number) => {
     if (quantity <= minimum) {
-      return { color: "text-red-600", label: "Düşük Stok", bgColor: "bg-red-50" };
+      return { color: "text-red-700", label: "Düşük Stok", bgColor: "bg-red-50" };
     } else if (quantity <= minimum * 1.5) {
-      return { color: "text-yellow-600", label: "Uyarı", bgColor: "bg-yellow-50" };
+      return { color: "text-yellow-800", label: "Uyarı", bgColor: "bg-yellow-50" };
     }
-    return { color: "text-green-600", label: "Uygun", bgColor: "bg-green-50" };
+    return { color: "text-green-700", label: "Uygun", bgColor: "bg-green-50" };
   };
 
   const getCategoryLabel = (category: string) => {
@@ -123,11 +123,11 @@ export default function InventoryPage() {
           <div className="text-3xl font-bold text-gray-800">{stats.total}</div>
         </div>
         <div className="bg-white p-6 rounded-lg shadow">
-          <div className="text-red-500 text-sm mb-2">Düşük Stok</div>
+          <div className="text-red-700 text-sm mb-2">Düşük Stok</div>
           <div className="text-3xl font-bold text-red-600">{stats.lowStock}</div>
         </div>
         <div className="bg-white p-6 rounded-lg shadow">
-          <div className="text-green-500 text-sm mb-2">Toplam Değer</div>
+          <div className="text-green-700 text-sm mb-2">Toplam Değer</div>
           <div className="text-3xl font-bold text-green-600">
             ₺{stats.totalValue.toLocaleString("tr-TR")}
           </div>

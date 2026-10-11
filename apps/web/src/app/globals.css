@@ -29,3 +29,9 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/* Tailwind preflight uses gray-400 placeholders, which fail contrast on white and gray-50 inputs. */
+input::placeholder,
+textarea::placeholder {
+  color: #6b7280;
+}

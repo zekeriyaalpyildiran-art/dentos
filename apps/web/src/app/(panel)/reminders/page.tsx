@@ -50,7 +50,7 @@ export default function RemindersPage() {
           appointments(
             start_time,
             patients(full_name),
-            doctors(full_name)
+            doctors(users(full_name))
           )
         `
         )
@@ -64,7 +64,7 @@ export default function RemindersPage() {
         id: r.id,
         appointment_id: r.appointment_id,
         patient_name: r.appointments?.patients?.full_name || "Unknown",
-        doctor_name: r.appointments?.doctors?.full_name || "Unknown",
+        doctor_name: r.appointments?.doctors?.users?.full_name || "Unknown",
         appointment_time: r.appointments?.start_time,
         reminder_type: r.reminder_type,
         scheduled_at: r.scheduled_at,
@@ -143,15 +143,15 @@ export default function RemindersPage() {
           <div className="text-3xl font-bold text-gray-800">{stats.total}</div>
         </div>
         <div className="bg-white p-6 rounded-lg shadow">
-          <div className="text-blue-500 text-sm mb-2">Bekleniyor</div>
+          <div className="text-blue-700 text-sm mb-2">Bekleniyor</div>
           <div className="text-3xl font-bold text-blue-600">{stats.pending}</div>
         </div>
         <div className="bg-white p-6 rounded-lg shadow">
-          <div className="text-green-500 text-sm mb-2">Gönderildi</div>
+          <div className="text-green-700 text-sm mb-2">Gönderildi</div>
           <div className="text-3xl font-bold text-green-600">{stats.sent}</div>
         </div>
         <div className="bg-white p-6 rounded-lg shadow">
-          <div className="text-red-500 text-sm mb-2">Başarısız</div>
+          <div className="text-red-700 text-sm mb-2">Başarısız</div>
           <div className="text-3xl font-bold text-red-600">{stats.failed}</div>
         </div>
       </div>

@@ -6,15 +6,15 @@ import { useAuthStore } from "@/lib/store";
 import { signOut } from "@/lib/auth";
 
 const MENU_ITEMS = [
-  { name: "📅 Ajanda", href: "/panel/schedule" },
-  { name: "👥 Hastalar", href: "/panel/patients" },
-  { name: "💬 Mesajlar", href: "/panel/messages" },
-  { name: "📊 CRM", href: "/panel/crm" },
-  { name: "🧪 Lab", href: "/panel/lab" },
-  { name: "📦 Stok", href: "/panel/stock" },
-  { name: "👔 Ekip", href: "/panel/team" },
-  { name: "📈 Raporlar", href: "/panel/reports" },
-  { name: "⚙️ Ayarlar", href: "/panel/settings" },
+  { name: "📅 Ajanda", href: "/schedule" },
+  { name: "👥 Hastalar", href: "/patients" },
+  { name: "💬 Mesajlar", href: "/messages" },
+  { name: "📊 CRM", href: "/crm" },
+  { name: "🧪 Lab", href: "/lab" },
+  { name: "📦 Stok", href: "/stock" },
+  { name: "👔 Ekip", href: "/team" },
+  { name: "📈 Raporlar", href: "/reports" },
+  { name: "⚙️ Ayarlar", href: "/settings" },
 ];
 
 export function Sidebar() {

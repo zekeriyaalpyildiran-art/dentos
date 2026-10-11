@@ -152,7 +152,7 @@ export default function SetupPage() {
                 </div>
 
                 <div>
-                  <p className="text-gray-500 mb-2">5. Tarayıcıda açhttp://localhost:3000</p>
+                  <p className="text-gray-500 mb-2">5. Tarayıcıda aç:</p>
                   <div className="bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">
                     <code>http://localhost:3000</code>
                   </div>
@@ -253,7 +253,7 @@ export default function SetupPage() {
 
                 <div className="bg-white border border-gray-300 rounded-lg p-6">
                   <h3 className="font-semibold text-gray-900 mb-3">Adım 3: Test Verilerini Yükle</h3>
-                  <p className="text-gray-700 text-sm mb-3">Migrations bitince şu komutu çalıştırhttp://:</p>
+                  <p className="text-gray-700 text-sm mb-3">Migrations bitince şu komutu çalıştır:</p>
                   <div className="bg-gray-900 text-gray-100 p-3 rounded font-mono text-sm overflow-x-auto">
                     <code>curl -X POST http://localhost:3000/api/seed</code>
                   </div>

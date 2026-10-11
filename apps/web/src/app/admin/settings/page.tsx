@@ -250,7 +250,7 @@ export default function SettingsPage() {
                 💾 Kaydet
               </button>
               {saved && (
-                <div className="flex items-center gap-2 text-green-600 font-semibold">
+                <div className="flex items-center gap-2 text-green-700 font-semibold">
                   ✓ Ayarlar kaydedildi
                 </div>
               )}

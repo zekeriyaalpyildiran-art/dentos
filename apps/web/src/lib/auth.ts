@@ -66,7 +66,7 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
       .from("users")
       .select("clinic_id, role")
       .eq("auth_user_id", data.user.id)
-      .single();
+      .maybeSingle();
 
     if (error || !userRecord) return null;
 

@@ -15,6 +15,7 @@ interface TreatmentItem {
 
 interface TreatmentPlan {
   id: string;
+  patient_id: string;
   patient_name: string;
   doctor_name: string;
   title: string;
@@ -31,6 +32,8 @@ interface Payment {
   status: string;
   paid_at: string;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default function TreatmentPlanPage() {
   const params = useParams<{ id: string }>();
@@ -53,31 +56,37 @@ export default function TreatmentPlanPage() {
 
   const fetchPlan = async () => {
     try {
+      // Skip non-uuid ids such as the "new" route, which Postgres would reject.
+      if (!UUID_RE.test(params.id)) return;
+
       const { data, error } = await supabase
         .from("treatment_plans")
         .select(
           `
           id,
+          patient_id,
           title,
           description,
           total_cost,
           status,
           created_at,
           patients(full_name),
-          doctors(full_name),
+          doctors(users(full_name)),
           treatment_items(*)
         `
         )
         .eq("id", params.id)
         .eq("clinic_id", user?.clinic_id)
-        .single();
+        .maybeSingle();
 
       if (error) throw error;
+      if (!data) return;
 
       setPlan({
         id: data.id,
+        patient_id: data.patient_id,
         patient_name: data.patients?.full_name || "Unknown",
-        doctor_name: data.doctors?.full_name || "Unknown",
+        doctor_name: data.doctors?.users?.full_name || "Unknown",
         title: data.title,
         description: data.description,
         total_cost: data.total_cost,
@@ -132,7 +141,7 @@ export default function TreatmentPlanPage() {
         {
           clinic_id: user?.clinic_id,
           treatment_plan_id: params.id,
-          patient_id: plan?.id,
+          patient_id: plan?.patient_id,
           amount,
           status: "paid",
           payment_method: "card",
@@ -251,7 +260,7 @@ export default function TreatmentPlanPage() {
               </div>
               <div className="flex justify-between mb-2">
                 <span className="text-gray-600">Ödenen:</span>
-                <span className="font-semibold text-green-600">
+                <span className="font-semibold text-green-700">
                   ₺{totalPaid.toLocaleString("tr-TR")}
                 </span>
               </div>
@@ -301,7 +310,7 @@ export default function TreatmentPlanPage() {
                 <button
                   type="submit"
                   disabled={processingPayment}
-                  className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+                  className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-500"
                 >
                   {processingPayment ? "İşleniyor..." : "Ödeme Yap"}
                 </button>

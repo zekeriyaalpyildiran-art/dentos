@@ -43,7 +43,7 @@ export default function TreatmentPlansPage() {
           status,
           created_at,
           patients(full_name),
-          doctors(full_name)
+          doctors(users(full_name))
         `
         )
         .eq("clinic_id", user?.clinic_id)
@@ -55,7 +55,7 @@ export default function TreatmentPlansPage() {
       const mapped = (data || []).map((p: any) => ({
         id: p.id,
         patient_name: p.patients?.full_name || "Unknown",
-        doctor_name: p.doctors?.full_name || "Unknown",
+        doctor_name: p.doctors?.users?.full_name || "Unknown",
         title: p.title,
         total_cost: p.total_cost,
         status: p.status,

@@ -25,12 +25,17 @@ interface DoctorInfo {
   id: string;
   user_id: string;
   specialty?: string;
+  users?: { full_name: string } | null;
 }
 
 interface ChairInfo {
   id: string;
   name: string;
 }
+
+// Local calendar day as YYYY-MM-DD, so bookings group by the clinic's day rather than UTC.
+const localDateKey = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 export default function Page() {
   const { user } = useAuthStore();
@@ -42,7 +47,7 @@ export default function Page() {
   const [chairs, setChairs] = useState<ChairInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<"list" | "calendar">("list");
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split("T")[0]);
+  const [selectedDate, setSelectedDate] = useState(localDateKey(new Date()));
 
   useEffect(() => {
     if (!user?.clinic_id) return;
@@ -52,13 +57,14 @@ export default function Page() {
         const [aptsRes, ptsRes, docsRes, chrsRes] = await Promise.all([
           supabase.from("appointments").select("*").eq("clinic_id", user.clinic_id),
           supabase.from("patients").select("id,full_name,phone").eq("clinic_id", user.clinic_id).eq("is_active", true),
-          supabase.from("doctors").select("id,user_id,specialty").eq("clinic_id", user.clinic_id),
+          supabase.from("doctors").select("id,user_id,specialty,users(full_name)").eq("clinic_id", user.clinic_id),
           supabase.from("chairs").select("id,name").eq("clinic_id", user.clinic_id).eq("is_active", true),
         ]);
 
         setAppointments(aptsRes.data || []);
         setPatients(ptsRes.data || []);
-        setDoctors(docsRes.data || []);
+        // users(full_name) is a single object at runtime (many-to-one), which supabase's inferred type does not reflect.
+        setDoctors((docsRes.data || []) as any[]);
         setChairs(chrsRes.data || []);
       } finally {
         setLoading(false);
@@ -70,10 +76,15 @@ export default function Page() {
 
   if (loading) return <div className="p-8">Yükleniyor...</div>;
 
-  const dayAppointments = appointments.filter((apt) => apt.start_time.startsWith(selectedDate));
+  const dayAppointments = appointments.filter(
+    (apt) => localDateKey(new Date(apt.start_time)) === selectedDate
+  );
 
   const getPatientName = (id: string) => patients.find((p) => p.id === id)?.full_name || "Unknown";
-  const getDoctorSpecialty = (id: string) => doctors.find((d) => d.id === id)?.specialty || "Doctor";
+  const getDoctorName = (id: string) => {
+    const doctor = doctors.find((d) => d.id === id);
+    return doctor?.users?.full_name || doctor?.specialty || "Doctor";
+  };
   const getChairName = (id: string) => chairs.find((c) => c.id === id)?.name || "Chair";
 
   return (
@@ -122,7 +133,7 @@ export default function Page() {
                 appointments.map((apt) => (
                   <tr key={apt.id} className="border-b hover:bg-gray-50">
                     <td className="px-4 py-2">{getPatientName(apt.patient_id)}</td>
-                    <td className="px-4 py-2">{getDoctorSpecialty(apt.doctor_id)}</td>
+                    <td className="px-4 py-2">{getDoctorName(apt.doctor_id)}</td>
                     <td className="px-4 py-2">{getChairName(apt.chair_id)}</td>
                     <td className="px-4 py-2">{new Date(apt.start_time).toLocaleString("tr-TR")}</td>
                     <td className="px-4 py-2">
@@ -172,7 +183,7 @@ export default function Page() {
                     {new Date(apt.end_time).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}
                   </div>
                   <div className="text-sm text-gray-600">
-                    {getDoctorSpecialty(apt.doctor_id)} / {getChairName(apt.chair_id)}
+                    {getDoctorName(apt.doctor_id)} / {getChairName(apt.chair_id)}
                   </div>
                 </div>
               ))

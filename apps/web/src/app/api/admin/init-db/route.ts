@@ -4,7 +4,7 @@ import { join } from 'path';
 
 export const maxDuration = 300; // 5 minute timeout
 
-export async function POST(request: Request) {
+export async function POST(_request: Request) {
   try {
     const supabase = createClient();
 

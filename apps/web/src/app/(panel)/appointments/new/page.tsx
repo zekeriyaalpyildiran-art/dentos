@@ -14,6 +14,7 @@ interface Doctor {
   id: string;
   user_id: string;
   specialty?: string;
+  users?: { full_name: string } | null;
 }
 
 interface Chair {
@@ -48,12 +49,13 @@ export default function Page() {
       try {
         const [ptsRes, docsRes, chrsRes] = await Promise.all([
           supabase.from("patients").select("id,full_name").eq("clinic_id", user.clinic_id).eq("is_active", true),
-          supabase.from("doctors").select("id,user_id,specialty").eq("clinic_id", user.clinic_id),
+          supabase.from("doctors").select("id,user_id,specialty,users(full_name)").eq("clinic_id", user.clinic_id),
           supabase.from("chairs").select("id,name").eq("clinic_id", user.clinic_id).eq("is_active", true),
         ]);
 
         setPatients(ptsRes.data || []);
-        setDoctors(docsRes.data || []);
+        // users(full_name) is a single object at runtime (many-to-one), which supabase's inferred type does not reflect.
+        setDoctors((docsRes.data || []) as any[]);
         setChairs(chrsRes.data || []);
       } finally {
         setLoading(false);
@@ -69,36 +71,46 @@ export default function Page() {
 
     setSubmitting(true);
     try {
-      const { error } = await supabase.from("appointments").insert([
-        {
-          clinic_id: user.clinic_id,
-          patient_id: formData.patient_id,
-          doctor_id: formData.doctor_id,
-          chair_id: formData.chair_id,
-          start_time: formData.start_time,
-          end_time: formData.end_time,
-          notes: formData.notes || null,
-          status: "scheduled",
-        },
-      ]);
+      // datetime-local values carry no UTC offset, so convert from local time before insert.
+      const startIso = new Date(formData.start_time).toISOString();
+      const endIso = new Date(formData.end_time).toISOString();
+
+      const { data: appointment, error } = await supabase
+        .from("appointments")
+        .insert([
+          {
+            clinic_id: user.clinic_id,
+            patient_id: formData.patient_id,
+            doctor_id: formData.doctor_id,
+            chair_id: formData.chair_id,
+            start_time: startIso,
+            end_time: endIso,
+            notes: formData.notes || null,
+            status: "scheduled",
+          },
+        ])
+        .select("id")
+        .single();
 
       if (error) throw error;
 
       // Create reminder 24h before appointment
-      const appointmentDate = new Date(formData.start_time);
+      const appointmentDate = new Date(startIso);
       const reminderDate = new Date(appointmentDate.getTime() - 24 * 60 * 60 * 1000);
 
       const patient = patients.find((p) => p.id === formData.patient_id);
       if (patient) {
-        await supabase.from("reminders").insert([
+        const { error: reminderError } = await supabase.from("reminders").insert([
           {
             clinic_id: user.clinic_id,
-            appointment_id: null, // Will be set after appointment created
+            appointment_id: appointment.id,
             reminder_type: "sms",
             scheduled_at: reminderDate.toISOString(),
             status: "pending",
           },
         ]);
+        // The appointment is already saved, so log a reminder failure instead of reporting a booking error that would invite a duplicate.
+        if (reminderError) console.error("Error creating reminder:", reminderError);
       }
 
       router.push("/appointments");
@@ -145,7 +157,7 @@ export default function Page() {
             <option value="">Seç...</option>
             {doctors.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.specialty || "Doctor"}
+                {d.users?.full_name || d.specialty || "Doctor"}
               </option>
             ))}
           </select>
@@ -206,7 +218,7 @@ export default function Page() {
           <button
             type="submit"
             disabled={submitting}
-            className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+            className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-500"
           >
             {submitting ? "Kaydediliyor..." : "Randevu Oluştur"}
           </button>
