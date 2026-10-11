@@ -112,11 +112,21 @@ async function seedDatabase() {
     console.log('Seeding chairs...');
     const { error: chairsError } = await supabase
       .from('chairs')
-      .upsert([
-        { id: CHAIR_1_ID, clinic_id: CLINIC_ID, name: 'Koltuk 1', sort_order: 1 },
-        { id: CHAIR_2_ID, clinic_id: CLINIC_ID, name: 'Koltuk 2', sort_order: 2 },
-      ]);
+      .upsert(
+        [
+          { id: CHAIR_1_ID, clinic_id: CLINIC_ID, name: 'Koltuk 1', sort_order: 1 },
+          { id: CHAIR_2_ID, clinic_id: CLINIC_ID, name: 'Koltuk 2', sort_order: 2 },
+        ],
+        { onConflict: 'clinic_id,name', ignoreDuplicates: true }
+      );
     record('chairs', chairsError, 2);
+
+    const { data: chair2 } = await supabase
+      .from('chairs')
+      .select('id')
+      .eq('clinic_id', CLINIC_ID)
+      .eq('name', 'Koltuk 2')
+      .maybeSingle();
 
     // 5. Insert patients
     console.log('Seeding patients...');
@@ -210,7 +220,7 @@ async function seedDatabase() {
           clinic_id: CLINIC_ID,
           patient_id: '55555555-5555-5555-5555-555555555555',
           doctor_id: DOCTOR_ECE_ID,
-          chair_id: CHAIR_2_ID,
+          chair_id: chair2?.id,
           start_time: `${day}T09:30:00+03:00`,
           end_time: `${day}T10:00:00+03:00`,
           status: 'scheduled',
