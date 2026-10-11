@@ -12,18 +12,6 @@
   --primary-foreground: 0 0% 100%;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: 0 0% 3.6%;
-    --foreground: 0 0% 98.2%;
-    --border: 0 0% 14.3%;
-    --input: 0 0% 14.3%;
-    --ring: 0 0% 83.1%;
-    --primary: 0 0% 98.2%;
-    --primary-foreground: 0 0% 9%;
-  }
-}
-
 * {
   @apply border-border;
 }
