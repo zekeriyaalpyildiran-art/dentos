@@ -6,12 +6,14 @@ import { useAuthStore } from "@/lib/store";
 import { signOut } from "@/lib/auth";
 
 const MENU_ITEMS = [
-  { name: "📅 Ajanda", href: "/schedule" },
+  { name: "📅 Ajanda", href: "/appointments" },
   { name: "👥 Hastalar", href: "/patients" },
+  { name: "🦷 Tedavi Planları", href: "/treatment-plans" },
+  { name: "🔔 Hatırlatmalar", href: "/reminders" },
   { name: "💬 Mesajlar", href: "/messages" },
-  { name: "📊 CRM", href: "/crm" },
+  { name: "📊 CRM", href: "/crm/leads" },
   { name: "🧪 Lab", href: "/lab" },
-  { name: "📦 Stok", href: "/stock" },
+  { name: "📦 Stok", href: "/inventory" },
   { name: "👔 Ekip", href: "/team" },
   { name: "📈 Raporlar", href: "/reports" },
   { name: "⚙️ Ayarlar", href: "/settings" },
