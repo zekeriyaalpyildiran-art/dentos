@@ -66,10 +66,11 @@ export default function InventoryPage() {
     }
 
     if (search) {
+      const q = search.toLocaleLowerCase("tr-TR");
       match =
         match &&
-        (item.item_name.toLowerCase().includes(search.toLowerCase()) ||
-          item.item_code.includes(search));
+        (item.item_name.toLocaleLowerCase("tr-TR").includes(q) ||
+          item.item_code.toLocaleLowerCase("tr-TR").includes(q));
     }
 
     return match;

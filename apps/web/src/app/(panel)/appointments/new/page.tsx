@@ -84,6 +84,35 @@ export default function Page() {
       const startIso = new Date(formData.start_time).toISOString();
       const endIso = new Date(formData.end_time).toISOString();
 
+      if (new Date(endIso).getTime() <= new Date(startIso).getTime()) {
+        alert("Bitiş saati başlangıç saatinden sonra olmalı.");
+        return;
+      }
+
+      const { data: overlaps, error: overlapError } = await supabase
+        .from("appointments")
+        .select("id, doctor_id, chair_id")
+        .eq("clinic_id", user.clinic_id)
+        .eq("status", "scheduled")
+        .lt("start_time", endIso)
+        .gt("end_time", startIso);
+
+      if (overlapError) {
+        console.error("Error checking appointment overlaps:", overlapError);
+        alert("Randevu çakışması kontrol edilirken hata oluştu.");
+        return;
+      }
+
+      if ((overlaps || []).some((a) => a.doctor_id === formData.doctor_id)) {
+        alert("Seçilen hekimin bu saatte başka bir randevusu var.");
+        return;
+      }
+
+      if ((overlaps || []).some((a) => a.chair_id === formData.chair_id)) {
+        alert("Seçilen koltuk bu saatte dolu.");
+        return;
+      }
+
       const { data: appointment, error } = await supabase
         .from("appointments")
         .insert([

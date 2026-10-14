@@ -133,9 +133,9 @@ export default function CRMKanbanPage() {
     };
     const labels: Record<string, string> = {
       direct: "Doğrudan",
-      referral: "Tavsiye",
+      referral: "Referans",
       online: "Online",
-      social_media: "Sosyal",
+      social_media: "Sosyal Medya",
       other: "Diğer",
     };
     return (
@@ -157,23 +157,23 @@ export default function CRMKanbanPage() {
           onClick={() => router.push("/crm/new-lead")}
           className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
         >
-          Yeni Lead
+          Yeni Aday
         </button>
       </div>
 
       {/* Kanban Board */}
-      <div className="grid grid-cols-6 gap-4 auto-cols-max">
+      <div className="flex gap-4 overflow-x-auto pb-4">
         {columns.map((column) => (
           <div
             key={column.status}
-            className={`${column.color} rounded-lg p-4 min-w-80 min-h-96`}
+            className={`${column.color} rounded-lg p-4 w-80 shrink-0 min-h-96`}
             onDragOver={handleDragOver}
             onDrop={() => handleDrop(column.status)}
           >
             <div className="mb-4">
               <h2 className="text-lg font-bold text-gray-800">{column.label}</h2>
               <div className="text-sm text-gray-600">
-                {column.leads.length} lead{column.leads.length !== 1 ? "s" : ""}
+                {column.leads.length} aday
               </div>
             </div>
 

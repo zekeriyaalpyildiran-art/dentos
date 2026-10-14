@@ -1,9 +1,16 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { useParams } from "next/navigation";
+
+const GENDER_LABELS: Record<string, string> = {
+  male: "Erkek",
+  female: "Kadın",
+  other: "Diğer",
+};
 
 interface Patient {
   id: string;
@@ -68,7 +75,12 @@ export default function Page() {
           <h1 className="text-3xl font-bold">{patient.full_name}</h1>
           <p className="text-gray-600">{patient.phone}</p>
         </div>
-        <button className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Düzenle</button>
+        <Link
+          href={`/patients/${patient.id}/edit`}
+          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+        >
+          Düzenle
+        </Link>
       </div>
 
       {/* Patient Info Card */}
@@ -79,7 +91,7 @@ export default function Page() {
         </div>
         <div>
           <div className="text-sm text-gray-600">Cinsiyet</div>
-          <div className="font-semibold">{patient.gender || "-"}</div>
+          <div className="font-semibold">{(patient.gender && GENDER_LABELS[patient.gender]) || "-"}</div>
         </div>
         <div>
           <div className="text-sm text-gray-600">Doğum Tarihi</div>

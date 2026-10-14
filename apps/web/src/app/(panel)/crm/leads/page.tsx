@@ -57,9 +57,10 @@ export default function LeadsListPage() {
     }
 
     if (search) {
+      const q = search.toLocaleLowerCase("tr-TR");
       match =
         match &&
-        (lead.full_name.toLowerCase().includes(search.toLowerCase()) ||
+        (lead.full_name.toLocaleLowerCase("tr-TR").includes(q) ||
           lead.phone.includes(search));
     }
 
@@ -90,6 +91,18 @@ export default function LeadsListPage() {
     return labels[status] || status;
   };
 
+  const getSourceLabel = (source: string | null) => {
+    const labels: Record<string, string> = {
+      direct: "Doğrudan",
+      referral: "Referans",
+      online: "Online",
+      social_media: "Sosyal Medya",
+      other: "Diğer",
+    };
+    if (!source) return "-";
+    return labels[source] || source;
+  };
+
   if (loading) {
     return <div className="p-8">Yükleniyor...</div>;
   }
@@ -97,12 +110,12 @@ export default function LeadsListPage() {
   return (
     <div className="p-8">
       <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold">Leads</h1>
+        <h1 className="text-3xl font-bold">Müşteri Adayları</h1>
         <button
           onClick={() => router.push("/crm/new-lead")}
           className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
         >
-          Yeni Lead
+          Yeni Aday
         </button>
       </div>
 
@@ -147,7 +160,7 @@ export default function LeadsListPage() {
                 Telefon
               </th>
               <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
-                Email
+                E-posta
               </th>
               <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
                 Durum
@@ -167,7 +180,7 @@ export default function LeadsListPage() {
             {filtered.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-6 py-8 text-center text-gray-500">
-                  Lead bulunamadı
+                  Aday bulunamadı
                 </td>
               </tr>
             ) : (
@@ -188,7 +201,7 @@ export default function LeadsListPage() {
                     </span>
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-600">
-                    {lead.source}
+                    {getSourceLabel(lead.source)}
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-600">
                     {new Date(lead.created_at).toLocaleDateString("tr-TR")}

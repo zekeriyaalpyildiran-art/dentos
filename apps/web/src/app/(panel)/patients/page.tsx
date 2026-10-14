@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 
@@ -42,8 +43,33 @@ export default function Page() {
     fetchPatients();
   }, [user?.clinic_id]);
 
+  const canDeactivate = user?.role === "owner" || user?.role === "admin";
+
+  const handleDeactivate = async (id: string) => {
+    if (!user?.clinic_id) return;
+    if (!confirm("Hasta pasif yapılsın mı? Kayıtları korunur.")) return;
+
+    try {
+      const { data, error } = await supabase
+        .from("patients")
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("clinic_id", user.clinic_id)
+        .select("id");
+
+      if (error || !data || data.length === 0) {
+        alert("Hasta pasif yapılamadı.");
+        return;
+      }
+      setPatients((prev) => prev.filter((p) => p.id !== id));
+    } catch {
+      alert("Bağlantı hatası oluştu, tekrar deneyin.");
+    }
+  };
+
+  const searchTerm = search.toLocaleLowerCase("tr-TR");
   const filtered = patients.filter((p) =>
-    p.full_name.toLowerCase().includes(search.toLowerCase()) ||
+    p.full_name.toLocaleLowerCase("tr-TR").includes(searchTerm) ||
     p.phone.includes(search)
   );
 
@@ -53,9 +79,9 @@ export default function Page() {
     <div className="p-8">
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold">Hastalar</h1>
-        <button className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+        <Link href="/patients/new" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
           + Yeni Hasta
-        </button>
+        </Link>
       </div>
 
       <input
@@ -86,7 +112,11 @@ export default function Page() {
             ) : (
               filtered.map((p) => (
                 <tr key={p.id} className="border-b hover:bg-gray-50">
-                  <td className="px-4 py-2">{p.full_name}</td>
+                  <td className="px-4 py-2">
+                    <Link href={`/patients/${p.id}`} className="text-blue-600 hover:underline">
+                      {p.full_name}
+                    </Link>
+                  </td>
                   <td className="px-4 py-2">{p.phone}</td>
                   <td className="px-4 py-2">{p.email || "-"}</td>
                   <td className="px-4 py-2">
@@ -95,8 +125,17 @@ export default function Page() {
                     </span>
                   </td>
                   <td className="px-4 py-2">
-                    <button className="text-blue-600 hover:underline mr-2">Düzenle</button>
-                    <button className="text-red-600 hover:underline">Sil</button>
+                    <Link href={`/patients/${p.id}/edit`} className="text-blue-600 hover:underline mr-2">
+                      Düzenle
+                    </Link>
+                    {canDeactivate && (
+                      <button
+                        onClick={() => handleDeactivate(p.id)}
+                        className="text-red-600 hover:underline"
+                      >
+                        Pasif Yap
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))

@@ -61,14 +61,14 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
 
     if (!data.user) return null;
 
-    // Fetch user details from database (clinic_id, role)
+    // Fetch user details from database (clinic_id, role, is_active)
     const { data: userRecord, error } = await supabase
       .from("users")
-      .select("clinic_id, role")
+      .select("clinic_id, role, is_active")
       .eq("auth_user_id", data.user.id)
       .maybeSingle();
 
-    if (error || !userRecord) return null;
+    if (error || !userRecord || userRecord.is_active === false) return null;
 
     return {
       id: data.user.id,

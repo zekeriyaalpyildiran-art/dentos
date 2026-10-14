@@ -1,6 +1,24 @@
 "use client";
 
+import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
+
+const ROLE_LABELS: Record<string, string> = {
+  owner: "Sahip",
+  admin: "Yönetici",
+  doctor: "Hekim",
+  assistant: "Asistan",
+  reception: "Resepsiyon",
+};
+
+const MODULES = [
+  { title: "📅 Ajanda", description: "Klinik randevularını yönetin", href: "/appointments" },
+  { title: "👥 Hastalar", description: "Hasta dosyalarını inceleyin", href: "/patients" },
+  { title: "💬 Mesajlar", description: "Hastalarla iletişim kurun", href: "/messages" },
+  { title: "📊 CRM", description: "Danışmanları izleyin", href: "/crm/leads" },
+  { title: "🧪 Lab", description: "Lab siparişlerini yönetin", href: "/lab" },
+  { title: "📈 Raporlar", description: "Klinik istatistiklerini görün", href: "/reports" },
+];
 
 export default function DashboardPage() {
   const user = useAuthStore((state) => state.user);
@@ -14,10 +32,10 @@ export default function DashboardPage() {
           <h2 className="text-lg font-semibold mb-4">Kullanıcı Bilgisi</h2>
           <div className="space-y-2">
             <p>
-              <span className="font-medium">Email:</span> {user.email}
+              <span className="font-medium">E-posta:</span> {user.email}
             </p>
             <p>
-              <span className="font-medium">Rol:</span> {user.role}
+              <span className="font-medium">Rol:</span> {ROLE_LABELS[user.role] || user.role}
             </p>
             <p>
               <span className="font-medium">Klinik ID:</span> {user.clinic_id}
@@ -27,35 +45,16 @@ export default function DashboardPage() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <div className="bg-white rounded-lg shadow-md p-6 border border-border">
-          <h3 className="text-xl font-semibold mb-4">📅 Ajanda</h3>
-          <p className="text-foreground/60">Klinik randevularını yönetin</p>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-md p-6 border border-border">
-          <h3 className="text-xl font-semibold mb-4">👥 Hastalar</h3>
-          <p className="text-foreground/60">Hasta dosyalarını inceleyin</p>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-md p-6 border border-border">
-          <h3 className="text-xl font-semibold mb-4">💬 Mesajlar</h3>
-          <p className="text-foreground/60">Hastalarla iletişim kurun</p>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-md p-6 border border-border">
-          <h3 className="text-xl font-semibold mb-4">📊 CRM</h3>
-          <p className="text-foreground/60">Danışmanları izleyin</p>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-md p-6 border border-border">
-          <h3 className="text-xl font-semibold mb-4">🧪 Lab</h3>
-          <p className="text-foreground/60">Lab siparişlerini yönetin</p>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-md p-6 border border-border">
-          <h3 className="text-xl font-semibold mb-4">📈 Raporlar</h3>
-          <p className="text-foreground/60">Klinik istatistiklerini görün</p>
-        </div>
+        {MODULES.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            className="block bg-white rounded-lg shadow-sm p-6 border border-border hover:shadow-md transition-shadow"
+          >
+            <h3 className="text-xl font-semibold mb-4">{item.title}</h3>
+            <p className="text-foreground/60">{item.description}</p>
+          </Link>
+        ))}
       </div>
     </div>
   );

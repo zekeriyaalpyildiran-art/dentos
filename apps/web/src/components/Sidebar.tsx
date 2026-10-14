@@ -19,6 +19,14 @@ const MENU_ITEMS = [
   { name: "⚙️ Ayarlar", href: "/settings" },
 ];
 
+const ROLE_LABELS: Record<string, string> = {
+  owner: "Sahip",
+  admin: "Yönetici",
+  doctor: "Hekim",
+  assistant: "Asistan",
+  reception: "Resepsiyon",
+};
+
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
@@ -41,7 +49,7 @@ export function Sidebar() {
         {user && (
           <div className="mt-4 text-sm">
             <p className="font-medium">{user.email}</p>
-            <p className="text-foreground/60 capitalize">{user.role}</p>
+            <p className="text-foreground/60">{ROLE_LABELS[user.role] || user.role}</p>
           </div>
         )}
       </div>

@@ -2,27 +2,95 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { signIn } from "@/lib/auth";
+import { signIn, signOut, getCurrentUser } from "@/lib/auth";
+import { createClient } from "@/lib/supabase";
+
+function loginErrorMessage(err: unknown) {
+  const message = err instanceof Error ? err.message : "";
+  if (message === "Invalid login credentials") return "E-posta veya şifre hatalı.";
+  if (message === "Email not confirmed") return "E-posta adresiniz henüz doğrulanmamış.";
+  return "Giriş yapılamadı. Lütfen tekrar deneyin.";
+}
+
+function resetErrorMessage(err: unknown) {
+  const e = err as { name?: string; message?: string; status?: number } | null;
+  const message = (e?.message || "").toLocaleLowerCase("tr-TR");
+  if (e?.status === 429 || message.includes("rate limit") || message.includes("security purposes")) {
+    return "Çok fazla deneme yapıldı. Lütfen birkaç dakika sonra tekrar deneyin.";
+  }
+  if (
+    e?.name === "AuthRetryableFetchError" ||
+    err instanceof TypeError ||
+    message.includes("failed to fetch") ||
+    message.includes("network")
+  ) {
+    return "Bağlantı hatası. İnternet bağlantınızı kontrol edip tekrar deneyin.";
+  }
+  // Other errors are treated as success so the response never reveals whether the email exists.
+  return null;
+}
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setInfo(null);
 
     try {
       await signIn(email, password);
-      router.push("/dashboard");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Giriş başarısız");
+      setError(loginErrorMessage(err));
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const user = await getCurrentUser();
+      if (!user) {
+        await signOut().catch(() => {});
+        setError("Bu hesap bir kliniğe bağlı değil veya pasif durumda. Yöneticinizle iletişime geçin.");
+        return;
+      }
+      router.push("/dashboard");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    setError(null);
+    setInfo(null);
+
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      setError("Önce e-posta adresinizi yazın.");
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      const { error: resetError } = await createClient().auth.resetPasswordForEmail(trimmedEmail, {
+        redirectTo: window.location.origin + "/reset-password",
+      });
+      const message = resetError ? resetErrorMessage(resetError) : null;
+      if (message) {
+        setError(message);
+      } else {
+        setInfo("Şifre sıfırlama bağlantısı e-posta adresinize gönderildi.");
+      }
+    } catch (err) {
+      setError(resetErrorMessage(err) || "Bağlantı hatası. İnternet bağlantınızı kontrol edip tekrar deneyin.");
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -53,7 +121,7 @@ export default function LoginPage() {
             {/* Email Input */}
             <div className="space-y-2">
               <label className="block text-sm font-semibold text-gray-900">
-                📧 Email Adresiniz
+                📧 E-posta Adresiniz
               </label>
               <input
                 type="email"
@@ -78,6 +146,16 @@ export default function LoginPage() {
                 placeholder="••••••••"
                 required
               />
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  disabled={loading || resetLoading}
+                  className="text-sm text-blue-600 font-semibold hover:underline disabled:text-gray-500 disabled:cursor-not-allowed disabled:no-underline"
+                >
+                  {resetLoading ? "Gönderiliyor..." : "Şifremi unuttum"}
+                </button>
+              </div>
             </div>
 
             {/* Error Message */}
@@ -85,6 +163,13 @@ export default function LoginPage() {
               <div className="bg-red-50 border-2 border-red-200 text-red-700 p-4 rounded-lg text-sm font-medium flex items-start gap-3">
                 <span>⚠️</span>
                 <div>{error}</div>
+              </div>
+            )}
+
+            {info && (
+              <div className="bg-green-50 border-2 border-green-200 text-green-700 p-4 rounded-lg text-sm font-medium flex items-start gap-3">
+                <span>✅</span>
+                <div>{info}</div>
               </div>
             )}
 
