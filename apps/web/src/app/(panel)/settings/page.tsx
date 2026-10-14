@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { ProcedureCatalog } from "@/components/ProcedureCatalog";
@@ -226,6 +227,21 @@ export default function Page() {
           )}
           <ChairManager clinicId={user.clinic_id} canEdit={canEdit} />
           <ProcedureCatalog clinicId={user.clinic_id} canEdit={canEdit} />
+          {user.role === "owner" && (
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h2 className="text-xl font-semibold text-gray-900 mb-2">Veri yedeği</h2>
+              <p className="text-gray-600 mb-4">
+                Kliniğin tüm kayıtlarını tek bir JSON dosyası olarak indirin. Finans tabloları yalnızca finans
+                yetkiniz varsa dahil edilir.
+              </p>
+              <Link
+                href="/settings/export"
+                className="inline-block px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              >
+                Yedek sayfasını aç
+              </Link>
+            </div>
+          )}
         </div>
       )}
     </div>

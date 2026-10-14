@@ -4,6 +4,10 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { signOut } from "@/lib/auth";
+import { canSeeFinance } from "@/lib/permissions";
+
+/** Shown only to finance / finance_readonly holders (owner decision 1: role alone gives nothing). */
+const FINANCE_ITEM = { name: "💰 Finans", href: "/finance" };
 
 const MENU_ITEMS = [
   { name: "📅 Ajanda", href: "/appointments" },
@@ -32,6 +36,11 @@ export function Sidebar() {
   const router = useRouter();
   const user = useAuthStore((state) => state.user);
 
+  // 'Finans' goes right after 'Raporlar'.
+  const items = canSeeFinance(user)
+    ? MENU_ITEMS.flatMap((item) => (item.href === "/reports" ? [item, FINANCE_ITEM] : [item]))
+    : MENU_ITEMS;
+
   const handleLogout = async () => {
     try {
       await signOut();
@@ -57,8 +66,10 @@ export function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-6">
         <ul className="space-y-2 px-4">
-          {MENU_ITEMS.map((item) => {
-            const isActive = pathname === item.href;
+          {items.map((item) => {
+            const isActive =
+              pathname === item.href ||
+              (item.href === FINANCE_ITEM.href && !!pathname?.startsWith(item.href + "/"));
             return (
               <li key={item.href}>
                 <Link
