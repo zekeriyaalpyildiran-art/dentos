@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 
@@ -102,7 +103,15 @@ export default function LabPage() {
 
   return (
     <div className="p-8">
-      <h1 className="text-3xl font-bold text-gray-900 mb-8">Lab Siparişleri</h1>
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-3xl font-bold text-gray-900">Lab Siparişleri</h1>
+        <Link
+          href="/lab/new"
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+        >
+          + Yeni Sipariş
+        </Link>
+      </div>
 
       {errorMessage && (
         <div className="mb-6 p-4 rounded bg-red-50 text-red-700">{errorMessage}</div>
