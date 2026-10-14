@@ -17,6 +17,13 @@ export default function TestConnectionPage() {
         const { data: { session } } = await supabase.auth.getSession();
         setDetails((prev: any) => ({ ...prev, auth: session ? 'Connected' : 'No session' }));
 
+        // Logged-out requests are refused by the database (RLS helpers are not executable by anon),
+        // so a query here would only report a permission error.
+        if (!session) {
+          setStatus('Oturum yok – veritabanı testi için giriş yapın.');
+          return;
+        }
+
         // Test 2: Try simple query
         setStatus('Testing database connection...');
         const { data, error } = await supabase

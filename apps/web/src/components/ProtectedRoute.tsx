@@ -3,16 +3,24 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
+import { hasPermission, type Permission } from "@/lib/permissions";
 
 interface Props {
   children: React.ReactNode;
   allowedRoles?: string[];
+  /** The signed-in user must hold this staff permission; otherwise they are sent to the dashboard. */
+  requiredPermission?: Permission;
 }
 
-export function ProtectedRoute({ children, allowedRoles }: Props) {
+export function ProtectedRoute({ children, allowedRoles, requiredPermission }: Props) {
   const router = useRouter();
   const user = useAuthStore((state) => state.user);
   const loading = useAuthStore((state) => state.loading);
+
+  const allowed =
+    !!user &&
+    (!allowedRoles || allowedRoles.includes(user.role)) &&
+    (!requiredPermission || hasPermission(user, requiredPermission));
 
   useEffect(() => {
     if (loading) return;
@@ -22,10 +30,10 @@ export function ProtectedRoute({ children, allowedRoles }: Props) {
       return;
     }
 
-    if (allowedRoles && !allowedRoles.includes(user.role)) {
+    if (!allowed) {
       router.push("/dashboard");
     }
-  }, [user, loading, router, allowedRoles]);
+  }, [user, loading, router, allowed]);
 
   if (loading) {
     return (
@@ -38,11 +46,7 @@ export function ProtectedRoute({ children, allowedRoles }: Props) {
     );
   }
 
-  if (!user) {
-    return null;
-  }
-
-  if (allowedRoles && !allowedRoles.includes(user.role)) {
+  if (!allowed) {
     return null;
   }
 

@@ -3,11 +3,13 @@
 import { useState, useEffect } from "react";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { canSeeFinance } from "@/lib/permissions";
 
 interface Stats {
   activePatients: number;
   monthAppointments: number;
-  monthRevenue: number;
+  /** null when the user may not see finance figures; payments are then not queried at all. */
+  monthRevenue: number | null;
   openPlans: number;
   lowStock: number;
 }
@@ -34,6 +36,7 @@ function StatCard({
 
 export default function Page() {
   const user = useAuthStore((state) => state.user);
+  const showFinance = canSeeFinance(user);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -54,7 +57,7 @@ export default function Page() {
         const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString();
         const supabase = createClient();
 
-        const [patients, appointments, payments, plans, stock] = await Promise.all([
+        const [patients, appointments, plans, stock, payments] = await Promise.all([
           supabase
             .from("patients")
             .select("id", { count: "exact", head: true })
@@ -67,13 +70,6 @@ export default function Page() {
             .gte("start_time", monthStart)
             .lt("start_time", monthEnd),
           supabase
-            .from("payments")
-            .select("amount")
-            .eq("clinic_id", clinicId)
-            .eq("status", "paid")
-            .gte("paid_at", monthStart)
-            .lt("paid_at", monthEnd),
-          supabase
             .from("treatment_plans")
             .select("id", { count: "exact", head: true })
             .eq("clinic_id", clinicId)
@@ -82,9 +78,18 @@ export default function Page() {
             .from("stock_items")
             .select("quantity_on_hand, quantity_minimum")
             .eq("clinic_id", clinicId),
+          showFinance
+            ? supabase
+                .from("payments")
+                .select("amount")
+                .eq("clinic_id", clinicId)
+                .eq("status", "paid")
+                .gte("paid_at", monthStart)
+                .lt("paid_at", monthEnd)
+            : null,
         ]);
 
-        if ([patients, appointments, payments, plans, stock].some((r) => r.error)) {
+        if ([patients, appointments, plans, stock].some((r) => r.error) || payments?.error) {
           setError(true);
           return;
         }
@@ -92,7 +97,9 @@ export default function Page() {
         setStats({
           activePatients: patients.count ?? 0,
           monthAppointments: appointments.count ?? 0,
-          monthRevenue: (payments.data ?? []).reduce((sum, p) => sum + Number(p.amount), 0),
+          monthRevenue: payments
+            ? (payments.data ?? []).reduce((sum, p) => sum + Number(p.amount), 0)
+            : null,
           openPlans: plans.count ?? 0,
           lowStock: (stock.data ?? []).filter(
             (s) => s.quantity_on_hand <= s.quantity_minimum
@@ -106,7 +113,7 @@ export default function Page() {
     };
 
     load();
-  }, [user?.clinic_id]);
+  }, [user?.clinic_id, showFinance]);
 
   if (loading) return <div className="p-8">Yükleniyor...</div>;
 
@@ -122,11 +129,13 @@ export default function Page() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           <StatCard label="Aktif Hasta" value={stats.activePatients} />
           <StatCard label="Bu Ay Randevu" value={stats.monthAppointments} />
-          <StatCard
-            label="Bu Ay Tahsilat"
-            value={formatTRY(stats.monthRevenue)}
-            valueClass="text-green-600"
-          />
+          {showFinance && stats.monthRevenue !== null && (
+            <StatCard
+              label="Bu Ay Tahsilat"
+              value={formatTRY(stats.monthRevenue)}
+              valueClass="text-green-600"
+            />
+          )}
           <StatCard label="Açık Tedavi Planı" value={stats.openPlans} />
           <StatCard
             label="Düşük Stoklu Ürün"

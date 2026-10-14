@@ -6,6 +6,8 @@ interface AuthState {
   loading: boolean;
   setUser: (user: AuthUser | null) => void;
   setLoading: (loading: boolean) => void;
+  /** Replaces the signed-in user's permissions, e.g. after changing your own grants. */
+  setPermissions: (permissions: string[]) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -13,4 +15,6 @@ export const useAuthStore = create<AuthState>((set) => ({
   loading: true,
   setUser: (user) => set({ user }),
   setLoading: (loading) => set({ loading }),
+  setPermissions: (permissions) =>
+    set((state) => (state.user ? { user: { ...state.user, permissions } } : {})),
 }));

@@ -1,10 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { ProcedureCatalog } from "@/components/ProcedureCatalog";
 import { ChairManager } from "@/components/ChairManager";
+import { PermissionManager } from "@/components/PermissionManager";
+import { ROLE_LABELS } from "@/lib/auth";
+import { PERMISSION_LABELS, hasPermission, isPermission } from "@/lib/permissions";
 
 interface Clinic {
   name: string;
@@ -17,14 +20,6 @@ interface Message {
   type: "success" | "error";
   text: string;
 }
-
-const ROLE_LABELS: Record<string, string> = {
-  owner: "Sahip",
-  admin: "Yönetici",
-  doctor: "Hekim",
-  assistant: "Asistan",
-  reception: "Resepsiyon",
-};
 
 const PLAN_LABELS: Record<string, string> = {
   trial: "Deneme",
@@ -47,8 +42,11 @@ function Row({ label, value }: { label: string; value: string }) {
 
 export default function Page() {
   const { user } = useAuthStore();
-  const supabase = createClient();
+  const supabase = useMemo(() => createClient(), []);
   const canEdit = user?.role === "owner" || user?.role === "admin";
+  const myPermissionLabels = (user?.permissions ?? [])
+    .map((p) => (isPermission(p) ? PERMISSION_LABELS[p] : p))
+    .join(", ");
 
   const [clinic, setClinic] = useState<Clinic | null>(null);
   const [form, setForm] = useState({ name: "", phone: "", address: "" });
@@ -84,7 +82,7 @@ export default function Page() {
     } finally {
       setLoading(false);
     }
-  }, [user?.clinic_id]);
+  }, [supabase, user?.clinic_id]);
 
   useEffect(() => {
     fetchClinic();
@@ -101,16 +99,22 @@ export default function Page() {
     setSaving(true);
     setMessage(null);
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("clinics")
         .update({
           name: form.name,
           phone: form.phone || null,
           address: form.address || null,
         })
-        .eq("id", user.clinic_id);
+        .eq("id", user.clinic_id)
+        .select("id");
 
       if (error) throw error;
+      // RLS skips rows the user may not update, so an empty result means the change was refused.
+      if (!data || data.length === 0) {
+        setMessage({ type: "error", text: "Klinik bilgilerini değiştirme yetkiniz yok." });
+        return;
+      }
       setMessage({ type: "success", text: "Klinik bilgileri güncellendi." });
       await fetchClinic();
     } catch (err) {
@@ -207,12 +211,19 @@ export default function Page() {
           <dl>
             <Row label="E-posta" value={user?.email || "-"} />
             <Row label="Rol" value={labelOf(ROLE_LABELS, user?.role)} />
+            <Row label="Yetkiler" value={myPermissionLabels || "-"} />
           </dl>
         </div>
       </div>
 
       {user?.clinic_id && (
         <div className="mt-6 space-y-6">
+          {canEdit && (
+            <PermissionManager
+              clinicId={user.clinic_id}
+              canManageFinance={hasPermission(user, "finance")}
+            />
+          )}
           <ChairManager clinicId={user.clinic_id} canEdit={canEdit} />
           <ProcedureCatalog clinicId={user.clinic_id} canEdit={canEdit} />
         </div>
