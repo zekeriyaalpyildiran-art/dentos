@@ -56,7 +56,7 @@ export default function SetupPage() {
             <div className="p-8">
               <h2 className="text-2xl font-bold mb-4 text-gray-900">⚡ Hızlı Start - Demo Mode</h2>
               <p className="text-gray-600 mb-6">
-                DentOS'u hemen deneyim çalıştırabilirsiniz. Demo modu test verileri ile önceden yüklüdür.
+                DentOS&apos;u hemen deneyim çalıştırabilirsiniz. Demo modu test verileri ile önceden yüklüdür.
               </p>
 
               <div className="space-y-4 mb-8">
@@ -87,7 +87,7 @@ export default function SetupPage() {
                   href="/dashboard"
                   className="block w-full p-4 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition-all text-center"
                 >
-                  🚀 Dashboard'u Aç (Demo Verileriyle)
+                  🚀 Dashboard&apos;u Aç (Demo Verileriyle)
                 </Link>
 
                 <Link
@@ -118,13 +118,13 @@ export default function SetupPage() {
                   <li>✓ Hiç internete bağlı değil (Offline çalışır)</li>
                   <li>✓ Hızlı ve güvenli</li>
                   <li>✓ Geliştirme için ideal</li>
-                  <li>✓ Docker'ı kaldırırsan veritabanı sıfırlanır</li>
+                  <li>✓ Docker&apos;ı kaldırırsan veritabanı sıfırlanır</li>
                 </ul>
               </div>
 
               <div className="bg-white border border-gray-300 rounded-lg p-6 mb-6 font-mono text-sm space-y-3">
                 <div>
-                  <p className="text-gray-500 mb-2">1. Docker'ı başlat:</p>
+                  <p className="text-gray-500 mb-2">1. Docker&apos;ı başlat:</p>
                   <div className="bg-gray-900 text-gray-100 p-3 rounded overflow-x-auto">
                     <code>docker-compose up -d</code>
                   </div>
@@ -187,7 +187,7 @@ export default function SetupPage() {
                   <li>✓ Bulut tabanlı (Her yerden erişilebilir)</li>
                   <li>✓ Ekip ile işbirliği kolay</li>
                   <li>✓ Otomatik yedekleme</li>
-                  <li>✓ Production'a kolay geçiş</li>
+                  <li>✓ Production&apos;a kolay geçiş</li>
                 </ul>
               </div>
 
@@ -207,7 +207,7 @@ export default function SetupPage() {
                       {'  '}adresine git
                     </li>
                     <li>Yeni bir proje oluştur</li>
-                    <li>Proje URL'si ve Anon Key'i kopyala</li>
+                    <li>Proje URL&apos;si ve Anon Key&apos;i kopyala</li>
                   </ol>
 
                   <div className="bg-gray-50 p-4 rounded border border-gray-300">
@@ -227,21 +227,21 @@ export default function SetupPage() {
                 <div className="bg-white border border-gray-300 rounded-lg p-6">
                   <h3 className="font-semibold text-gray-900 mb-3">Adım 2: Veritabanı Tablolarını Oluştur</h3>
                   <ol className="list-decimal list-inside space-y-2 text-gray-700 text-sm mb-4">
-                    <li>Supabase Dashboardda "SQL Editor" açhttp://</li>
+                    <li>Supabase Dashboard&apos;da &quot;SQL Editor&quot; aç</li>
                     <li>
                       <code className="bg-gray-100 px-2 py-1 rounded text-xs">
                         packages/db/migrations/
                       </code>
-                      {'  '}klasöründeki SQL dosyalarını açhttp://
+                      {'  '}klasöründeki SQL dosyalarını aç
                     </li>
-                    <li>Dosyaları sırayla Supabase'e yapıştır ve çalıştırhttp://</li>
+                    <li>Dosyaları sırayla Supabase&apos;e yapıştır ve çalıştır</li>
                     <li>
                       Başlangıç sırası:
                       <ul className="list-disc list-inside ml-4 mt-2 text-xs">
                         <li>0001_init.sql</li>
                         <li>0002_procedures_catalog.sql</li>
                         <li>0003_patients.sql</li>
-                        <li>... (0010'a kadar devam ethttp://)</li>
+                        <li>... (0010&apos;a kadar devam et)</li>
                       </ul>
                     </li>
                   </ol>
@@ -261,7 +261,7 @@ export default function SetupPage() {
               </div>
 
               <p className="text-sm text-gray-600 bg-gray-50 p-4 rounded-lg">
-                <strong>Not:</strong> İlk kez olduğu için biraz zaman alabilir. Tüm stepsları bitirip
+                <strong>Not:</strong> İlk kez olduğu için biraz zaman alabilir. Tüm adımları bitirip
                 tarayıcı başladıktan sonra Supabase tabloları ve veriler otomatik oluşturulacak.
               </p>
             </div>

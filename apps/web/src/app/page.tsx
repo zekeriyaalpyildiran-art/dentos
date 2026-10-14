@@ -38,14 +38,14 @@ export default function Home() {
             DentOS - Diş Kliniği Yönetim Sistemi
           </h1>
           <p className="text-2xl text-gray-600 mb-8">
-            Türkçe, tamamen üretim hazır, 8 Sprint'te geliştirilmiş
+            Türkçe, tamamen üretim hazır, 8 Sprint&apos;te geliştirilmiş
           </p>
           <div className="flex gap-4 justify-center">
             <Link
               href="/dashboard"
               className="px-8 py-4 bg-blue-600 text-white rounded-lg text-lg font-semibold hover:bg-blue-700 transition-all transform hover:scale-105"
             >
-              Dashboard'u Aç
+              Dashboard&apos;u Aç
             </Link>
             <Link
               href="/features"
