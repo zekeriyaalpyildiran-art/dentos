@@ -4,9 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { FinanceShell, useCanWriteFinance } from "@/components/finance/FinanceShell";
 import { Card, ErrorBox, Loading, MoneyRow, buttonPrimary, buttonSecondary } from "@/components/finance/ui";
+import { CategoryReportCard, ResultFigure } from "@/components/finance/ReportBlocks";
 import {
-  BUCKET_LABELS,
-  DIRECTION_LABELS,
   finDashboard,
   formatDay,
   formatMonth,
@@ -15,8 +14,19 @@ import {
   toFinanceError,
   type DashboardJson,
   type FinanceError,
-  type ReportBucket,
 } from "@/lib/finance";
+import {
+  EXPENSE_LINES,
+  FEES_LINE,
+  GENERAL_EXPENSE_LABEL,
+  NON_OPERATING_LINES,
+  OPERATIONAL_TOTAL_LABEL,
+  OTHER_PAYMENTS_LABEL,
+  PHYSICIAN_LABEL,
+  RESULT_FIGURES,
+  RESULT_FOOTNOTE,
+  exclusionWarning,
+} from "@/lib/finance-report-lines";
 
 export default function FinanceDashboardPage() {
   return (
@@ -25,17 +35,6 @@ export default function FinanceDashboardPage() {
     </FinanceShell>
   );
 }
-
-/** Expense report lines (legacy FP:71 'Aylık gider dağılımı'), keyed by bucket, never by name. */
-const EXPENSE_LINES: { bucket: ReportBucket; label: string }[] = [
-  { bucket: "lab", label: "Laboratuvar" },
-  { bucket: "personnel", label: "Personel" },
-  { bucket: "rent", label: "Kira" },
-  { bucket: "supplies", label: "Sarf / tedarikçi" },
-  { bucket: "tax", label: "Vergi / SGK" },
-  { bucket: "other_expense", label: "Diğer faaliyet gideri" },
-  { bucket: "fees", label: "Faiz / banka / POS masrafı" },
-];
 
 function Dashboard() {
   const canWrite = useCanWriteFinance();
@@ -198,12 +197,7 @@ function Dashboard() {
       )}
 
       {data.exclusions.entry_count > 0 && (
-        <div className="p-4 rounded bg-orange-50 text-orange-800 text-sm">
-          Toplam {data.exclusions.entry_count} kayıt toplamların dışında tutuluyor.{" "}
-          {data.exclusions.entry_count_in_month > 0
-            ? `${monthTitle} bunlardan ${data.exclusions.entry_count_in_month} kayda ait ${formatTL(data.exclusions.paid_cents_in_month)} tutarındaki ödemeler aylık rakamlara katılmadı.`
-            : `${monthTitle} bu kayıtlara ait ödeme yok.`}
-        </div>
+        <div className="p-4 rounded bg-orange-50 text-orange-800 text-sm">{exclusionWarning(data, monthTitle)}</div>
       )}
 
       <div className="grid gap-6 lg:grid-cols-2 items-start">
@@ -240,36 +234,21 @@ function Dashboard() {
 
         <Card title={`Aylık sonuçlar · ${formatMonth(data.month)}`}>
           <div className="grid gap-3 mb-4">
-            <ResultFigure
-              label="Tahsilat esaslı faaliyet sonucu"
-              cents={ms.profit_cents}
-              explain="Hasta tahsilatları eksi faaliyet giderleri. Seçilen ayda ödenen geçmiş dönem hekim borçları gidere dahildir."
-            />
-            <ResultFigure
-              label="Cari dönem operasyonel sonucu"
-              cents={ms.current_period_result_cents}
-              explain="Faaliyet sonucuna bu ay ödenen geçmiş dönem hekim hakedişi borçları geri eklenir; ay yalnızca kendi hekim maliyetini taşır."
-            />
-            <ResultFigure
-              label="Tüm ödemeler sonrası kalan"
-              cents={ms.after_all_payments_cents}
-              explain="Faaliyet tahsilatları (hasta + diğer faaliyet geliri) eksi tüm gerçekleşen ödemeler (kredi anapara, ortak dağıtımı ve demirbaş dahil). Sermaye / borç girişleri sayılmaz."
-            />
+            {RESULT_FIGURES.map((f) => (
+              <ResultFigure key={f.key} label={f.label} cents={ms[f.key]} explain={f.explain} />
+            ))}
           </div>
           <MoneyRow label="Faaliyet tahsilatları" cents={ms.profit_income_cents} />
           <MoneyRow label="Faaliyet giderleri" cents={ms.profit_expense_cents} />
           <MoneyRow
-            label="Hekim hakedişi"
+            label={PHYSICIAN_LABEL}
             cents={expenses.by_bucket.doctor ?? 0}
             hint={`Cari dönem ${formatTL(expenses.current_doctor_cents)} · Geçmiş dönem ${formatTL(expenses.past_doctor_cents)}`}
           />
           <MoneyRow label="Kredi / borç anapara ödemeleri" cents={ms.loan_payments_cents} />
-          <MoneyRow label="Diğer çıkışlar (ortak dağıtımı, demirbaş)" cents={ms.other_payments_cents} />
+          <MoneyRow label={OTHER_PAYMENTS_LABEL} cents={ms.other_payments_cents} />
           <MoneyRow label="Toplam gerçekleşen ödeme" cents={ms.outflow_cents} strong />
-          <p className="text-xs text-gray-500 mt-3">
-            Üç rakam da nakit esaslıdır, tahakkuk esaslı kâr değildir. Blokeli hasta tahsilatları dahildir ve
-            hemen kullanılabilir nakit değildir. Ödenmemiş tutarlar sayılmaz.
-          </p>
+          <p className="text-xs text-gray-500 mt-3">{RESULT_FOOTNOTE}</p>
           {settings.physician_fee_note && (
             <p className="text-xs text-gray-600 mt-2">Hekim hakedişi notu: {settings.physician_fee_note}</p>
           )}
@@ -279,73 +258,23 @@ function Dashboard() {
       <Card title={`Aylık gider dağılımı · ${formatMonth(data.month)}`}>
         <div className="grid gap-x-8 md:grid-cols-2">
           <MoneyRow
-            label="Hekim hakedişi"
+            label={PHYSICIAN_LABEL}
             cents={expenses.by_bucket.doctor ?? 0}
             hint={`Cari dönem ${formatTL(expenses.current_doctor_cents)} · Geçmiş dönem ${formatTL(expenses.past_doctor_cents)}`}
           />
           {EXPENSE_LINES.map((l) => (
             <MoneyRow key={l.bucket} label={l.label} cents={expenses.by_bucket[l.bucket] ?? 0} />
           ))}
-          <MoneyRow label="Genel faaliyet giderleri (Vergi / SGK + Diğer)" cents={expenses.general_cents} />
-          <MoneyRow label="Faaliyet giderleri toplamı" cents={expenses.operational_cents} strong />
-          <MoneyRow label="Kredi anapara" cents={expenses.by_bucket.principal ?? 0} />
-          <MoneyRow label="Demirbaş" cents={expenses.by_bucket.asset ?? 0} />
-          <MoneyRow label="Diğer çıkışlar (ortak dağıtımı)" cents={expenses.by_bucket.distribution ?? 0} />
+          <MoneyRow label={GENERAL_EXPENSE_LABEL} cents={expenses.general_cents} />
+          <MoneyRow label={FEES_LINE.label} cents={expenses.by_bucket[FEES_LINE.bucket] ?? 0} />
+          <MoneyRow label={OPERATIONAL_TOTAL_LABEL} cents={expenses.operational_cents} strong />
+          {NON_OPERATING_LINES.map((l) => (
+            <MoneyRow key={l.bucket} label={l.label} cents={expenses.by_bucket[l.bucket] ?? 0} />
+          ))}
         </div>
       </Card>
 
-      <Card title={`Kategori raporu · ${formatMonth(data.month)}`}>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-100 border-b">
-              <tr className="text-left text-gray-800">
-                <th className="px-3 py-2 font-semibold">Kategori</th>
-                <th className="px-3 py-2 font-semibold">Yön</th>
-                <th className="px-3 py-2 font-semibold text-right">Kayıt</th>
-                <th className="px-3 py-2 font-semibold text-right">Ay içi giriş</th>
-                <th className="px-3 py-2 font-semibold text-right">Ay içi çıkış</th>
-                <th className="px-3 py-2 font-semibold text-right">Açık alacak</th>
-                <th className="px-3 py-2 font-semibold text-right">Açık borç</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.category_report.map((r) => (
-                <tr key={r.category_id} className="border-b">
-                  <td className="px-3 py-2">
-                    <Link href={`/finance/entries?category_id=${r.category_id}`} className="hover:underline">
-                      {r.name}
-                    </Link>
-                    {!r.is_active && <span className="text-xs text-gray-500"> (pasif)</span>}
-                    <div className="text-xs text-gray-500">{BUCKET_LABELS[r.report_bucket]}</div>
-                  </td>
-                  <td className="px-3 py-2 text-gray-600">{DIRECTION_LABELS[r.direction]}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{r.count}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{formatTL(r.incoming_cents)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{formatTL(r.outgoing_cents)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{formatTL(r.open_incoming_cents)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{formatTL(r.open_outgoing_cents)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="text-xs text-gray-500 mt-2">
-          Giriş ve çıkış sütunları yalnızca seçilen ayın ödemeleridir; kayıt sayısı ve açık tutarlar ay
-          seçiminden bağımsızdır.
-        </p>
-      </Card>
-    </div>
-  );
-}
-
-function ResultFigure({ label, cents, explain }: { label: string; cents: number; explain: string }) {
-  return (
-    <div className="rounded-lg border p-4">
-      <div className="text-sm text-gray-600">{label}</div>
-      <div className={`text-2xl font-bold tabular-nums ${cents < 0 ? "text-red-600" : "text-gray-900"}`}>
-        {formatTL(cents)}
-      </div>
-      <div className="text-xs text-gray-500 mt-1">{explain}</div>
+      <CategoryReportCard month={data.month} rows={data.category_report} />
     </div>
   );
 }

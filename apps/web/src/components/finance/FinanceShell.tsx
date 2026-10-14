@@ -16,6 +16,7 @@ const TABS: { href: string; label: string; writeOnly?: boolean }[] = [
   { href: "/finance/plan", label: "Yaklaşan plan" },
   { href: "/finance/counterparties", label: "Cariler" },
   { href: "/finance/balances", label: "Bakiyeler" },
+  { href: "/finance/reports", label: "Raporlar" },
   { href: "/finance/entitlement", label: "Hekim hakedişi", writeOnly: true },
   { href: "/finance/audit", label: "Finans geçmişi" },
   { href: "/finance/settings", label: "Finans ayarları" },
