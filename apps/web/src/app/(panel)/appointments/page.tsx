@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 
@@ -9,11 +10,24 @@ interface Appointment {
   patient_id: string;
   doctor_id: string;
   chair_id: string;
+  procedure_id?: string | null;
   start_time: string;
   end_time: string;
   status: string;
   notes?: string;
 }
+
+interface ProcedureInfo {
+  id: string;
+  name: string;
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  scheduled: "Planlı",
+  completed: "Tamamlandı",
+  cancelled: "İptal",
+  no_show: "Gelmedi",
+};
 
 interface PatientInfo {
   id: string;
@@ -45,7 +59,9 @@ export default function Page() {
   const [patients, setPatients] = useState<PatientInfo[]>([]);
   const [doctors, setDoctors] = useState<DoctorInfo[]>([]);
   const [chairs, setChairs] = useState<ChairInfo[]>([]);
+  const [procedures, setProcedures] = useState<ProcedureInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "calendar">("list");
   const [selectedDate, setSelectedDate] = useState(localDateKey(new Date()));
 
@@ -54,11 +70,13 @@ export default function Page() {
 
     const fetchData = async () => {
       try {
-        const [aptsRes, ptsRes, docsRes, chrsRes] = await Promise.all([
-          supabase.from("appointments").select("*").eq("clinic_id", user.clinic_id),
-          supabase.from("patients").select("id,full_name,phone").eq("clinic_id", user.clinic_id).eq("is_active", true),
+        // Lookups include inactive chairs and procedures so older appointments still show their names.
+        const [aptsRes, ptsRes, docsRes, chrsRes, procRes] = await Promise.all([
+          supabase.from("appointments").select("*").eq("clinic_id", user.clinic_id).order("start_time"),
+          supabase.from("patients").select("id,full_name,phone").eq("clinic_id", user.clinic_id),
           supabase.from("doctors").select("id,user_id,specialty,users(full_name)").eq("clinic_id", user.clinic_id),
-          supabase.from("chairs").select("id,name").eq("clinic_id", user.clinic_id).eq("is_active", true),
+          supabase.from("chairs").select("id,name").eq("clinic_id", user.clinic_id),
+          supabase.from("procedures_catalog").select("id,name").eq("clinic_id", user.clinic_id),
         ]);
 
         setAppointments(aptsRes.data || []);
@@ -66,6 +84,7 @@ export default function Page() {
         // users(full_name) is a single object at runtime (many-to-one), which supabase's inferred type does not reflect.
         setDoctors((docsRes.data || []) as any[]);
         setChairs(chrsRes.data || []);
+        setProcedures(procRes.data || []);
       } finally {
         setLoading(false);
       }
@@ -80,18 +99,44 @@ export default function Page() {
     (apt) => localDateKey(new Date(apt.start_time)) === selectedDate
   );
 
-  const getPatientName = (id: string) => patients.find((p) => p.id === id)?.full_name || "Unknown";
+  const getPatientName = (id: string) => patients.find((p) => p.id === id)?.full_name || "-";
   const getDoctorName = (id: string) => {
     const doctor = doctors.find((d) => d.id === id);
-    return doctor?.users?.full_name || doctor?.specialty || "Doctor";
+    return doctor?.users?.full_name || doctor?.specialty || "-";
   };
-  const getChairName = (id: string) => chairs.find((c) => c.id === id)?.name || "Chair";
+  const getChairName = (id: string) => chairs.find((c) => c.id === id)?.name || "-";
+  const getProcedureName = (id?: string | null) =>
+    (id && procedures.find((p) => p.id === id)?.name) || "-";
+
+  const cancelAppointment = async (id: string) => {
+    if (!user?.clinic_id || !confirm("Bu randevuyu iptal etmek istiyor musunuz?")) return;
+
+    setCancellingId(id);
+    const { data, error } = await supabase
+      .from("appointments")
+      .update({ status: "cancelled" })
+      .eq("id", id)
+      .eq("clinic_id", user.clinic_id)
+      .select("id");
+
+    if (error || !data || data.length === 0) {
+      alert("Randevu iptal edilemedi.");
+    } else {
+      setAppointments((prev) => prev.map((a) => (a.id === id ? { ...a, status: "cancelled" } : a)));
+    }
+    setCancellingId(null);
+  };
 
   return (
     <div className="p-8">
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold">Randevular</h1>
-        <button className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">+ Yeni Randevu</button>
+        <Link
+          href="/appointments/new"
+          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+        >
+          + Yeni Randevu
+        </Link>
       </div>
 
       <div className="flex gap-4 mb-8">
@@ -117,15 +162,16 @@ export default function Page() {
                 <th className="px-4 py-2 text-left">Hasta</th>
                 <th className="px-4 py-2 text-left">Hekim</th>
                 <th className="px-4 py-2 text-left">Koltuk</th>
+                <th className="px-4 py-2 text-left">Tedavi</th>
                 <th className="px-4 py-2 text-left">Tarih/Saat</th>
                 <th className="px-4 py-2 text-left">Durum</th>
-                <th className="px-4 py-2 text-left">İşlemler</th>
+                <th className="px-4 py-2 text-left"></th>
               </tr>
             </thead>
             <tbody>
               {appointments.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
                     Randevu bulunamadı
                   </td>
                 </tr>
@@ -135,6 +181,7 @@ export default function Page() {
                     <td className="px-4 py-2">{getPatientName(apt.patient_id)}</td>
                     <td className="px-4 py-2">{getDoctorName(apt.doctor_id)}</td>
                     <td className="px-4 py-2">{getChairName(apt.chair_id)}</td>
+                    <td className="px-4 py-2">{getProcedureName(apt.procedure_id)}</td>
                     <td className="px-4 py-2">{new Date(apt.start_time).toLocaleString("tr-TR")}</td>
                     <td className="px-4 py-2">
                       <span
@@ -146,12 +193,19 @@ export default function Page() {
                               : "bg-blue-100 text-blue-800"
                         }`}
                       >
-                        {apt.status === "scheduled" ? "Planlı" : apt.status === "completed" ? "Tamamlandı" : "İptal"}
+                        {STATUS_LABELS[apt.status] ?? apt.status}
                       </span>
                     </td>
                     <td className="px-4 py-2">
-                      <button className="text-blue-600 hover:underline mr-2">Düzenle</button>
-                      <button className="text-red-600 hover:underline">İptal</button>
+                      {apt.status === "scheduled" && (
+                        <button
+                          onClick={() => cancelAppointment(apt.id)}
+                          disabled={cancellingId === apt.id}
+                          className="text-red-600 hover:underline disabled:opacity-50"
+                        >
+                          İptal Et
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -185,6 +239,9 @@ export default function Page() {
                   <div className="text-sm text-gray-600">
                     {getDoctorName(apt.doctor_id)} / {getChairName(apt.chair_id)}
                   </div>
+                  {apt.procedure_id && (
+                    <div className="text-sm text-gray-600">{getProcedureName(apt.procedure_id)}</div>
+                  )}
                 </div>
               ))
             )}

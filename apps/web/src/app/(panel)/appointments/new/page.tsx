@@ -22,6 +22,11 @@ interface Chair {
   name: string;
 }
 
+interface Procedure {
+  id: string;
+  name: string;
+}
+
 export default function Page() {
   const router = useRouter();
   const { user } = useAuthStore();
@@ -30,6 +35,7 @@ export default function Page() {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [chairs, setChairs] = useState<Chair[]>([]);
+  const [procedures, setProcedures] = useState<Procedure[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
@@ -37,6 +43,7 @@ export default function Page() {
     patient_id: "",
     doctor_id: "",
     chair_id: "",
+    procedure_id: "",
     start_time: "",
     end_time: "",
     notes: "",
@@ -47,16 +54,18 @@ export default function Page() {
 
     const fetchData = async () => {
       try {
-        const [ptsRes, docsRes, chrsRes] = await Promise.all([
+        const [ptsRes, docsRes, chrsRes, procRes] = await Promise.all([
           supabase.from("patients").select("id,full_name").eq("clinic_id", user.clinic_id).eq("is_active", true),
           supabase.from("doctors").select("id,user_id,specialty,users(full_name)").eq("clinic_id", user.clinic_id),
-          supabase.from("chairs").select("id,name").eq("clinic_id", user.clinic_id).eq("is_active", true),
+          supabase.from("chairs").select("id,name").eq("clinic_id", user.clinic_id).eq("is_active", true).order("sort_order"),
+          supabase.from("procedures_catalog").select("id,name").eq("clinic_id", user.clinic_id).eq("is_active", true).order("name"),
         ]);
 
         setPatients(ptsRes.data || []);
         // users(full_name) is a single object at runtime (many-to-one), which supabase's inferred type does not reflect.
         setDoctors((docsRes.data || []) as any[]);
         setChairs(chrsRes.data || []);
+        setProcedures(procRes.data || []);
       } finally {
         setLoading(false);
       }
@@ -83,6 +92,7 @@ export default function Page() {
             patient_id: formData.patient_id,
             doctor_id: formData.doctor_id,
             chair_id: formData.chair_id,
+            procedure_id: formData.procedure_id || null,
             start_time: startIso,
             end_time: endIso,
             notes: formData.notes || null,
@@ -175,6 +185,22 @@ export default function Page() {
             {chairs.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="mb-6">
+          <label className="block text-sm font-semibold mb-2">İşlem (isteğe bağlı)</label>
+          <select
+            value={formData.procedure_id}
+            onChange={(e) => setFormData({ ...formData, procedure_id: e.target.value })}
+            className="w-full px-4 py-2 border rounded"
+          >
+            <option value="">Seçilmedi</option>
+            {procedures.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
               </option>
             ))}
           </select>

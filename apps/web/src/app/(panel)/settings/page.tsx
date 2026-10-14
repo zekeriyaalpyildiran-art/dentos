@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { ProcedureCatalog } from "@/components/ProcedureCatalog";
+import { ChairManager } from "@/components/ChairManager";
 
 interface Clinic {
   name: string;
@@ -211,7 +212,8 @@ export default function Page() {
       </div>
 
       {user?.clinic_id && (
-        <div className="mt-6">
+        <div className="mt-6 space-y-6">
+          <ChairManager clinicId={user.clinic_id} canEdit={canEdit} />
           <ProcedureCatalog clinicId={user.clinic_id} canEdit={canEdit} />
         </div>
       )}
