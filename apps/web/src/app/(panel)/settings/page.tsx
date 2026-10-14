@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { ProcedureCatalog } from "@/components/ProcedureCatalog";
 
 interface Clinic {
   name: string;
@@ -208,6 +209,12 @@ export default function Page() {
           </dl>
         </div>
       </div>
+
+      {user?.clinic_id && (
+        <div className="mt-6">
+          <ProcedureCatalog clinicId={user.clinic_id} canEdit={canEdit} />
+        </div>
+      )}
     </div>
   );
 }
