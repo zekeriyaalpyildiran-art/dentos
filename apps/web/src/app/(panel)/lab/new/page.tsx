@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
@@ -62,6 +62,8 @@ export default function Page() {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  // State updates are async, so a fast double click could pass the `submitting` check twice.
+  const submittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   const [patientId, setPatientId] = useState("");
@@ -80,6 +82,9 @@ export default function Page() {
           supabase.from("patients").select("id,full_name").eq("clinic_id", user.clinic_id).eq("is_active", true),
           supabase.from("doctors").select("id,users(full_name)").eq("clinic_id", user.clinic_id),
         ]);
+
+        if (ptsRes.error) throw ptsRes.error;
+        if (docsRes.error) throw docsRes.error;
 
         setPatients(ptsRes.data || []);
         setDoctors((docsRes.data || []) as unknown as Doctor[]);
@@ -104,7 +109,7 @@ export default function Page() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user?.clinic_id) return;
+    if (!user?.clinic_id || submittingRef.current) return;
 
     if (!patientId || !doctorId || !dueDate) {
       setError("Hasta, hekim ve teslim tarihi zorunludur.");
@@ -115,12 +120,14 @@ export default function Page() {
       return;
     }
 
+    submittingRef.current = true;
     setSubmitting(true);
     setError(null);
 
-    try {
-      const orderNumber = `LAB-${Date.now().toString(36).toUpperCase()}`;
+    const orderNumber = `LAB-${Date.now().toString(36).toUpperCase()}`;
+    let orderId: string | null = null;
 
+    try {
       const { data: order, error: orderError } = await supabase
         .from("lab_orders")
         .insert({
@@ -136,7 +143,8 @@ export default function Page() {
         .select("id")
         .single();
 
-      if (orderError || !order) throw orderError || new Error("Sipariş oluşturulamadı");
+      if (orderError || !order) throw orderError || new Error("Lab order was not created");
+      orderId = order.id;
 
       const { error: itemsError } = await supabase.from("lab_order_items").insert(
         items.map((item) => ({
@@ -151,16 +159,40 @@ export default function Page() {
         }))
       );
 
-      if (itemsError) {
-        setError("Sipariş oluşturuldu ancak kalemler kaydedilemedi. Lütfen sipariş listesini kontrol edin.");
-        setSubmitting(false);
-        return;
-      }
+      if (itemsError) throw itemsError;
 
       router.push("/lab");
     } catch (err) {
       console.error("Error creating lab order:", err);
-      setError("Sipariş kaydedilemedi. Lütfen tekrar deneyin.");
+
+      if (!orderId) {
+        setError("Sipariş kaydedilemedi. Lütfen tekrar deneyin.");
+      } else {
+        // Remove the empty order so a retry does not leave a duplicate behind.
+        let rolledBack = false;
+        try {
+          const { data: deleted, error: deleteError } = await supabase
+            .from("lab_orders")
+            .delete()
+            .eq("id", orderId)
+            .eq("clinic_id", user.clinic_id)
+            .eq("status", "draft")
+            .select("id");
+
+          if (deleteError) throw deleteError;
+          rolledBack = !!deleted && deleted.length > 0;
+        } catch (rollbackErr) {
+          console.error("Error rolling back lab order:", rollbackErr);
+        }
+
+        setError(
+          rolledBack
+            ? "Sipariş kalemleri kaydedilemediği için sipariş oluşturulmadı. Lütfen tekrar deneyin."
+            : `Sipariş kalemleri kaydedilemedi ve ${orderNumber} numaralı boş taslak sipariş geri alınamadı. Tekrar denemeden önce bu siparişi lab listesinden açıp silin.`
+        );
+      }
+
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };

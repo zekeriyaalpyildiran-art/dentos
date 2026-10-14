@@ -196,7 +196,7 @@ export default function Page() {
             <option value="">Seç...</option>
             {doctors.map((d) => (
               <option key={d.id} value={d.id}>
-                {d.users?.full_name || d.specialty || "Doctor"}
+                {d.users?.full_name || d.specialty || "Hekim"}
               </option>
             ))}
           </select>

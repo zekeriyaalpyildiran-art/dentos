@@ -28,6 +28,10 @@ const STATUS_LABELS: Record<LabOrderStatus, string> = {
 
 const STATUSES = Object.keys(STATUS_LABELS) as LabOrderStatus[];
 
+// Local calendar day as YYYY-MM-DD, so delivery_date matches the clinic's day rather than UTC.
+const localDateKey = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 export default function LabPage() {
   const { user } = useAuthStore();
   const supabase = createClient();
@@ -58,8 +62,18 @@ export default function LabPage() {
 
       if (error) throw error;
 
+      const rows = (data || []) as unknown as {
+        id: string;
+        order_number: string;
+        status: LabOrderStatus | null;
+        due_date: string;
+        created_at: string;
+        lab_name: string | null;
+        patients: { full_name: string } | null;
+      }[];
+
       setOrders(
-        (data || []).map((o: any) => ({
+        rows.map((o) => ({
           id: o.id,
           order_number: o.order_number,
           status: o.status ?? "draft",
@@ -78,18 +92,32 @@ export default function LabPage() {
     }
   };
 
-  const updateStatus = async (id: string, status: LabOrderStatus) => {
-    if (!user?.clinic_id) return;
+  const updateStatus = async (order: LabOrder, status: LabOrderStatus) => {
+    if (!user?.clinic_id || status === order.status) return;
 
-    setUpdatingId(id);
+    setUpdatingId(order.id);
+    setErrorMessage("");
+
+    // delivery_date records when the work came back from the lab; undoing delivery clears it.
+    const patch: { status: LabOrderStatus; updated_at: string; delivery_date?: string | null } = {
+      status,
+      updated_at: new Date().toISOString(),
+    };
+    if (status === "delivered") patch.delivery_date = localDateKey(new Date());
+    else if (order.status === "delivered") patch.delivery_date = null;
+
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("lab_orders")
-        .update({ status, updated_at: new Date().toISOString() })
-        .eq("id", id)
-        .eq("clinic_id", user.clinic_id);
+        .update(patch)
+        .eq("id", order.id)
+        .eq("clinic_id", user.clinic_id)
+        .select("id");
 
       if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error("Lab order was not updated");
+      }
       await fetchOrders();
     } catch (err) {
       console.error("Error updating lab order:", err);
@@ -187,8 +215,8 @@ export default function LabPage() {
                   <td className="px-6 py-4 text-sm">
                     <select
                       value={order.status}
-                      disabled={updatingId === order.id}
-                      onChange={(e) => updateStatus(order.id, e.target.value as LabOrderStatus)}
+                      disabled={updatingId !== null}
+                      onChange={(e) => updateStatus(order, e.target.value as LabOrderStatus)}
                       className="px-3 py-1 border rounded bg-white text-gray-900"
                     >
                       {STATUSES.map((s) => (

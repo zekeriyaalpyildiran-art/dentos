@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase";
 
 type Category =
@@ -20,6 +20,7 @@ interface Procedure {
   name: string;
   category: Category;
   is_active: boolean;
+  default_price: number | null;
 }
 
 const CATEGORIES: { value: Category; label: string }[] = [
@@ -38,6 +39,14 @@ const CATEGORIES: { value: Category; label: string }[] = [
 const inputClass =
   "px-3 py-2 border border-gray-300 rounded text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500";
 
+// Empty input means "no default price"; undefined signals an invalid value. The column is numeric(10,2).
+const parsePrice = (value: string): number | null | undefined => {
+  if (value.trim() === "") return null;
+  const price = Math.round(Number(value) * 100) / 100;
+  if (!Number.isFinite(price) || price < 0 || price >= 100000000) return undefined;
+  return price;
+};
+
 interface Props {
   clinicId: string;
   canEdit: boolean;
@@ -52,17 +61,21 @@ export function ProcedureCatalog({ clinicId, canEdit }: Props) {
 
   const [newName, setNewName] = useState("");
   const [newCategory, setNewCategory] = useState<Category>("examination");
+  const [newPrice, setNewPrice] = useState("");
   const [adding, setAdding] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editCategory, setEditCategory] = useState<Category>("examination");
+  const [editPrice, setEditPrice] = useState("");
+  // The edit row is not a form, so a value the number input cannot parse (e.g. "12,50") arrives as "" unvalidated.
+  const editPriceRef = useRef<HTMLInputElement>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const { data, error: loadError } = await supabase
       .from("procedures_catalog")
-      .select("id, name, category, is_active")
+      .select("id, name, category, is_active, default_price")
       .eq("clinic_id", clinicId)
       .order("name");
 
@@ -86,17 +99,27 @@ export function ProcedureCatalog({ clinicId, canEdit }: Props) {
     e.preventDefault();
     const name = newName.trim();
     if (!name) return;
+    const defaultPrice = parsePrice(newPrice);
+    if (defaultPrice === undefined) {
+      setError("Geçerli bir varsayılan ücret girin.");
+      return;
+    }
 
     setAdding(true);
     setError(null);
-    const { error: insertError } = await supabase
-      .from("procedures_catalog")
-      .insert({ clinic_id: clinicId, name, category: newCategory, is_active: true });
+    const { error: insertError } = await supabase.from("procedures_catalog").insert({
+      clinic_id: clinicId,
+      name,
+      category: newCategory,
+      is_active: true,
+      default_price: defaultPrice,
+    });
 
     if (insertError) {
       setError(describeError(insertError.code));
     } else {
       setNewName("");
+      setNewPrice("");
       await load();
     }
     setAdding(false);
@@ -130,12 +153,20 @@ export function ProcedureCatalog({ clinicId, canEdit }: Props) {
     setEditingId(p.id);
     setEditName(p.name);
     setEditCategory(p.category);
+    setEditPrice(p.default_price == null ? "" : String(p.default_price));
   };
 
   const saveEdit = async (id: string) => {
     const name = editName.trim();
     if (!name) return;
-    if (await update(id, { name, category: editCategory })) setEditingId(null);
+    const defaultPrice = editPriceRef.current?.validity.badInput ? undefined : parsePrice(editPrice);
+    if (defaultPrice === undefined) {
+      setError("Geçerli bir varsayılan ücret girin.");
+      return;
+    }
+    if (await update(id, { name, category: editCategory, default_price: defaultPrice })) {
+      setEditingId(null);
+    }
   };
 
   const visible = items.filter((p) => showInactive || p.is_active);
@@ -181,6 +212,17 @@ export function ProcedureCatalog({ clinicId, canEdit }: Props) {
               </option>
             ))}
           </select>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="Varsayılan Ücret (₺)"
+            aria-label="Varsayılan Ücret"
+            title="Varsayılan Ücret (isteğe bağlı)"
+            value={newPrice}
+            onChange={(e) => setNewPrice(e.target.value)}
+            className={`${inputClass} w-48`}
+          />
           <button
             type="submit"
             disabled={adding || !newName.trim()}
@@ -229,6 +271,18 @@ export function ProcedureCatalog({ clinicId, canEdit }: Props) {
                               </option>
                             ))}
                           </select>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder="Varsayılan Ücret (₺)"
+                            aria-label="Varsayılan Ücret"
+                            title="Varsayılan Ücret (isteğe bağlı)"
+                            ref={editPriceRef}
+                            value={editPrice}
+                            onChange={(e) => setEditPrice(e.target.value)}
+                            className={`${inputClass} w-48`}
+                          />
                           <button
                             type="button"
                             onClick={() => saveEdit(p.id)}
@@ -249,6 +303,14 @@ export function ProcedureCatalog({ clinicId, canEdit }: Props) {
                         <>
                           <span className={`flex-1 ${p.is_active ? "" : "text-gray-400 line-through"}`}>
                             {p.name}
+                          </span>
+                          <span
+                            className={`text-sm ${p.default_price == null ? "text-gray-400" : "text-gray-700"}`}
+                            title="Varsayılan Ücret"
+                          >
+                            {p.default_price == null
+                              ? "Ücret girilmedi"
+                              : `₺${Number(p.default_price).toLocaleString("tr-TR")}`}
                           </span>
                           {!p.is_active && (
                             <span className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">Pasif</span>

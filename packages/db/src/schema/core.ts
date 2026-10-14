@@ -6,6 +6,7 @@ import {
   boolean,
   integer,
   jsonb,
+  numeric,
   pgEnum,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -118,6 +119,7 @@ export const proceduresCatalog = pgTable("procedures_catalog", {
   name: text("name").notNull(), // "Dolgu", "Kanal Tedavisi", vb.
   category: procedureCategoryEnum("category").notNull(),
   description: text("description"),
+  default_price: numeric("default_price", { precision: 10, scale: 2 }),
   is_active: boolean("is_active").default(true),
   created_at: timestamp("created_at", { withTimezone: true })
     .default(sql`now()`)

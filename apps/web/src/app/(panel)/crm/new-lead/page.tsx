@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
@@ -30,12 +30,40 @@ export default function NewLeadPage() {
 
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [staff, setStaff] = useState<{ id: string; full_name: string }[]>([]);
   const [formData, setFormData] = useState({
     full_name: "",
     phone: "",
+    email: "",
+    address: "",
     source: "",
     status: "new",
+    assigned_to: "",
+    notes: "",
   });
+
+  useEffect(() => {
+    if (!user?.clinic_id) return;
+
+    const clinicId = user.clinic_id;
+    const client = createClient();
+
+    const fetchStaff = async () => {
+      const { data, error } = await client
+        .from("users")
+        .select("id, full_name, is_active")
+        .eq("clinic_id", clinicId)
+        .order("full_name", { ascending: true });
+
+      if (error) {
+        console.error("Error fetching staff:", error);
+        return;
+      }
+      setStaff((data || []).filter((u) => u.is_active !== false));
+    };
+
+    fetchStaff();
+  }, [user?.clinic_id]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,18 +88,24 @@ export default function NewLeadPage() {
           clinic_id: user.clinic_id,
           full_name: fullName,
           phone,
+          email: formData.email.trim() || null,
+          address: formData.address.trim() || null,
           source: formData.source || null,
           status: formData.status,
+          assigned_to: formData.assigned_to || null,
+          notes: formData.notes.trim() || null,
+          // A lead entered directly as a customer gets its conversion date now.
+          converted_at: formData.status === "converted" ? new Date().toISOString() : null,
         },
       ]);
 
       if (error) throw error;
 
+      // The button stays disabled until navigation so a second click cannot create a duplicate.
       router.push("/crm/leads");
     } catch (error) {
       console.error("Error creating lead:", error);
       setFormError("Lead kaydedilemedi. Lütfen tekrar deneyin.");
-    } finally {
       setSubmitting(false);
     }
   };
@@ -122,6 +156,32 @@ export default function NewLeadPage() {
         </div>
 
         <div className="mb-6">
+          <label htmlFor="email" className="block text-sm font-semibold mb-2">
+            E-posta
+          </label>
+          <input
+            id="email"
+            type="email"
+            value={formData.email}
+            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+            className="w-full px-4 py-2 border rounded"
+          />
+        </div>
+
+        <div className="mb-6">
+          <label htmlFor="address" className="block text-sm font-semibold mb-2">
+            Adres
+          </label>
+          <textarea
+            id="address"
+            rows={2}
+            value={formData.address}
+            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+            className="w-full px-4 py-2 border rounded"
+          />
+        </div>
+
+        <div className="mb-6">
           <label htmlFor="source" className="block text-sm font-semibold mb-2">
             Kaynak
           </label>
@@ -156,6 +216,38 @@ export default function NewLeadPage() {
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="mb-6">
+          <label htmlFor="assigned_to" className="block text-sm font-semibold mb-2">
+            Atanan Kişi
+          </label>
+          <select
+            id="assigned_to"
+            value={formData.assigned_to}
+            onChange={(e) => setFormData({ ...formData, assigned_to: e.target.value })}
+            className="w-full px-4 py-2 border rounded"
+          >
+            <option value="">Atanmamış</option>
+            {staff.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.full_name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="mb-6">
+          <label htmlFor="notes" className="block text-sm font-semibold mb-2">
+            Notlar
+          </label>
+          <textarea
+            id="notes"
+            rows={4}
+            value={formData.notes}
+            onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+            className="w-full px-4 py-2 border rounded"
+          />
         </div>
 
         <button

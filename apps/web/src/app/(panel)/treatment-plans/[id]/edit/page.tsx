@@ -19,6 +19,8 @@ const STATUS_OPTIONS: { value: TreatmentStatus; label: string }[] = [
 // Postgres rejects non-uuid ids, so such routes are treated as not found.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const roundMoney = (value: number) => Math.round(value * 100) / 100;
+
 export default function EditTreatmentPlanPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
@@ -33,7 +35,10 @@ export default function EditTreatmentPlanPage() {
   const [doctorName, setDoctorName] = useState("");
   const [title, setTitle] = useState("");
   const [totalCost, setTotalCost] = useState("");
+  // Sum of the plan's items, or null when it has none and the total is entered by hand.
+  const [itemsTotal, setItemsTotal] = useState<number | null>(null);
   const [status, setStatus] = useState<TreatmentStatus>("draft");
+  const [completedAt, setCompletedAt] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -47,7 +52,9 @@ export default function EditTreatmentPlanPage() {
 
         const { data, error } = await supabase
           .from("treatment_plans")
-          .select("title, description, total_cost, status, patients(full_name), doctors(users(full_name))")
+          .select(
+            "title, description, total_cost, status, completed_at, patients(full_name), doctors(users(full_name)), treatment_items(total_price)"
+          )
           .eq("id", id)
           .eq("clinic_id", user.clinic_id)
           .maybeSingle();
@@ -57,14 +64,22 @@ export default function EditTreatmentPlanPage() {
         const embeds = data as unknown as {
           patients: { full_name: string } | null;
           doctors: { users: { full_name: string } | null } | null;
+          treatment_items: { total_price: number }[] | null;
         };
+        const items = embeds.treatment_items || [];
 
         setFound(true);
         setPatientName(embeds.patients?.full_name || "-");
         setDoctorName(embeds.doctors?.users?.full_name || "-");
         setTitle(data.title);
         setTotalCost(String(data.total_cost));
+        setItemsTotal(
+          items.length > 0
+            ? roundMoney(items.reduce((sum, item) => sum + Number(item.total_price), 0))
+            : null
+        );
         setStatus(data.status);
+        setCompletedAt(data.completed_at);
         setNotes(data.description || "");
       } catch (err) {
         console.error("Error fetching plan:", err);
@@ -80,30 +95,63 @@ export default function EditTreatmentPlanPage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaveError("");
+    if (!user?.clinic_id) return;
 
-    const cost = parseFloat(totalCost);
-    if (Number.isNaN(cost) || cost < 0) {
-      setSaveError("Geçerli bir tutar girin");
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      setSaveError("Plan başlığı boş olamaz.");
       return;
+    }
+
+    const values: Record<string, unknown> = {
+      title: trimmedTitle,
+      description: notes.trim() || null,
+      status,
+      completed_at: status === "completed" ? completedAt ?? new Date().toISOString() : null,
+      updated_at: new Date().toISOString(),
+    };
+
+    // With items, total_cost follows their sum (as the detail page keeps it), so only a plan without items takes a typed total.
+    if (itemsTotal === null) {
+      const cost = Number(totalCost);
+      if (totalCost.trim() === "" || !Number.isFinite(cost) || cost < 0) {
+        setSaveError("Geçerli bir tutar girin");
+        return;
+      }
+      values.total_cost = roundMoney(cost);
     }
 
     setSaving(true);
     try {
-      const { error } = await supabase
+      if (itemsTotal !== null) {
+        // Save the current item sum shown above, which also repairs a total left stale by a failed recalculation.
+        const { data: rows, error: itemsError } = await supabase
+          .from("treatment_items")
+          .select("total_price")
+          .eq("treatment_plan_id", id)
+          .eq("clinic_id", user.clinic_id);
+
+        if (itemsError) throw itemsError;
+        values.total_cost = roundMoney(
+          (rows || []).reduce((sum, row) => sum + Number(row.total_price), 0)
+        );
+      }
+
+      const { data, error } = await supabase
         .from("treatment_plans")
-        .update({
-          title,
-          description: notes || null,
-          total_cost: cost,
-          status,
-          updated_at: new Date().toISOString(),
-        })
+        .update(values)
         .eq("id", id)
-        .eq("clinic_id", user?.clinic_id);
+        .eq("clinic_id", user.clinic_id)
+        .select("id");
 
       if (error) throw error;
+      // RLS silently skips rows the user may not update.
+      if (!data || data.length === 0) {
+        setSaveError("Plan güncellenemedi. Bu planı değiştirme yetkiniz olmayabilir.");
+        return;
+      }
 
-      router.push(`/treatment-plans/${id}`);
+      router.replace(`/treatment-plans/${id}`);
     } catch (err) {
       console.error("Error saving plan:", err);
       setSaveError("Plan kaydedilemedi, lütfen tekrar deneyin.");
@@ -157,15 +205,24 @@ export default function EditTreatmentPlanPage() {
 
           <div>
             <label className="block text-sm font-semibold mb-2">Toplam Tutar (₺)</label>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              value={totalCost}
-              onChange={(e) => setTotalCost(e.target.value)}
-              className="w-full px-4 py-2 border rounded"
-              required
-            />
+            {itemsTotal === null ? (
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={totalCost}
+                onChange={(e) => setTotalCost(e.target.value)}
+                className="w-full px-4 py-2 border rounded"
+                required
+              />
+            ) : (
+              <>
+                <div className="text-lg font-semibold">₺{itemsTotal.toLocaleString("tr-TR")}</div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Toplam tutar plandaki işlemlerden hesaplanır. Değiştirmek için plan detayından işlem ekleyin veya kaldırın.
+                </p>
+              </>
+            )}
           </div>
 
           <div>

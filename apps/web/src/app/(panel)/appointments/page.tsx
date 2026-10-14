@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { cancelPendingReminders } from "./reminder-utils";
 
 interface Appointment {
   id: string;
@@ -27,6 +28,30 @@ const STATUS_LABELS: Record<string, string> = {
   completed: "Tamamlandı",
   cancelled: "İptal",
   no_show: "Gelmedi",
+};
+
+const STATUS_STYLES: Record<string, string> = {
+  scheduled: "bg-blue-100 text-blue-800",
+  completed: "bg-green-100 text-green-800",
+  cancelled: "bg-red-100 text-red-800",
+  no_show: "bg-yellow-100 text-yellow-800",
+};
+
+type StatusAction = "completed" | "no_show" | "cancelled";
+
+const STATUS_ACTIONS: Record<StatusAction, { confirm: string; error: string }> = {
+  completed: {
+    confirm: "Bu randevuyu tamamlandı olarak işaretlemek istiyor musunuz?",
+    error: "Randevu tamamlandı olarak işaretlenemedi.",
+  },
+  no_show: {
+    confirm: "Hasta bu randevuya gelmedi olarak işaretlensin mi?",
+    error: "Randevu gelmedi olarak işaretlenemedi.",
+  },
+  cancelled: {
+    confirm: "Bu randevuyu iptal etmek istiyor musunuz?",
+    error: "Randevu iptal edilemedi.",
+  },
 };
 
 interface PatientInfo {
@@ -61,7 +86,7 @@ export default function Page() {
   const [chairs, setChairs] = useState<ChairInfo[]>([]);
   const [procedures, setProcedures] = useState<ProcedureInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "calendar">("list");
   const [selectedDate, setSelectedDate] = useState(localDateKey(new Date()));
 
@@ -108,23 +133,37 @@ export default function Page() {
   const getProcedureName = (id?: string | null) =>
     (id && procedures.find((p) => p.id === id)?.name) || "-";
 
-  const cancelAppointment = async (id: string) => {
-    if (!user?.clinic_id || !confirm("Bu randevuyu iptal etmek istiyor musunuz?")) return;
+  const updateStatus = async (id: string, status: StatusAction) => {
+    const action = STATUS_ACTIONS[status];
+    if (!user?.clinic_id || !confirm(action.confirm)) return;
 
-    setCancellingId(id);
-    const { data, error } = await supabase
-      .from("appointments")
-      .update({ status: "cancelled" })
-      .eq("id", id)
-      .eq("clinic_id", user.clinic_id)
-      .select("id");
+    setUpdatingId(id);
+    try {
+      // Only a still-scheduled appointment may change status, so a stale list cannot overwrite a status set elsewhere.
+      const { data, error } = await supabase
+        .from("appointments")
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("clinic_id", user.clinic_id)
+        .eq("status", "scheduled")
+        .select("id");
 
-    if (error || !data || data.length === 0) {
-      alert("Randevu iptal edilemedi.");
-    } else {
-      setAppointments((prev) => prev.map((a) => (a.id === id ? { ...a, status: "cancelled" } : a)));
+      if (error || !data || data.length === 0) {
+        alert(action.error);
+        return;
+      }
+      setAppointments((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
+
+      // A completed or missed appointment must not trigger its reminder either, so every status change closes them.
+      if (!(await cancelPendingReminders(supabase, user.clinic_id, id))) {
+        alert("Randevu durumu güncellendi ancak bekleyen hatırlatmalar kapatılamadı.");
+      }
+    } catch (error) {
+      console.error("Error updating appointment status:", error);
+      alert(action.error);
+    } finally {
+      setUpdatingId(null);
     }
-    setCancellingId(null);
   };
 
   return (
@@ -184,27 +223,41 @@ export default function Page() {
                     <td className="px-4 py-2">{getProcedureName(apt.procedure_id)}</td>
                     <td className="px-4 py-2">{new Date(apt.start_time).toLocaleString("tr-TR")}</td>
                     <td className="px-4 py-2">
-                      <span
-                        className={`px-2 py-1 rounded text-sm ${
-                          apt.status === "completed"
-                            ? "bg-green-100 text-green-800"
-                            : apt.status === "cancelled"
-                              ? "bg-red-100 text-red-800"
-                              : "bg-blue-100 text-blue-800"
-                        }`}
-                      >
+                      <span className={`px-2 py-1 rounded text-sm ${STATUS_STYLES[apt.status] ?? STATUS_STYLES.scheduled}`}>
                         {STATUS_LABELS[apt.status] ?? apt.status}
                       </span>
                     </td>
                     <td className="px-4 py-2">
                       {apt.status === "scheduled" && (
-                        <button
-                          onClick={() => cancelAppointment(apt.id)}
-                          disabled={cancellingId === apt.id}
-                          className="text-red-600 hover:underline disabled:opacity-50"
-                        >
-                          İptal Et
-                        </button>
+                        <div className="flex gap-3 whitespace-nowrap">
+                          <Link href={`/appointments/${apt.id}/edit`} className="text-blue-600 hover:underline">
+                            Düzenle
+                          </Link>
+                          <button
+                            onClick={() => updateStatus(apt.id, "completed")}
+                            disabled={updatingId === apt.id}
+                            className="text-green-700 hover:underline disabled:opacity-50"
+                          >
+                            Tamamlandı
+                          </button>
+                          {/* A no-show can only be recorded once the appointment has started. */}
+                          {new Date(apt.start_time).getTime() <= Date.now() && (
+                            <button
+                              onClick={() => updateStatus(apt.id, "no_show")}
+                              disabled={updatingId === apt.id}
+                              className="text-yellow-700 hover:underline disabled:opacity-50"
+                            >
+                              Gelmedi
+                            </button>
+                          )}
+                          <button
+                            onClick={() => updateStatus(apt.id, "cancelled")}
+                            disabled={updatingId === apt.id}
+                            className="text-red-600 hover:underline disabled:opacity-50"
+                          >
+                            İptal Et
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -227,11 +280,21 @@ export default function Page() {
           </div>
           <div className="grid grid-cols-1 gap-4">
             {dayAppointments.length === 0 ? (
-              <p className="text-gray-500">{selectedDate} tarihinde randevu yok</p>
+              <p className="text-gray-500">
+                {/* Parsed as local midnight; a bare YYYY-MM-DD would be read as UTC. */}
+                {selectedDate
+                  ? `${new Date(`${selectedDate}T00:00`).toLocaleDateString("tr-TR")} tarihinde randevu yok`
+                  : "Tarih seçin"}
+              </p>
             ) : (
               dayAppointments.map((apt) => (
                 <div key={apt.id} className="p-4 border rounded bg-blue-50">
-                  <div className="font-semibold">{getPatientName(apt.patient_id)}</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-semibold">{getPatientName(apt.patient_id)}</div>
+                    <span className={`px-2 py-1 rounded text-sm ${STATUS_STYLES[apt.status] ?? STATUS_STYLES.scheduled}`}>
+                      {STATUS_LABELS[apt.status] ?? apt.status}
+                    </span>
+                  </div>
                   <div className="text-sm text-gray-600">
                     {new Date(apt.start_time).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })} -{" "}
                     {new Date(apt.end_time).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}

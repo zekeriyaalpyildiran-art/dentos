@@ -17,6 +17,7 @@ interface TreatmentItem {
 interface Procedure {
   id: string;
   name: string;
+  default_price: number | null;
 }
 
 interface TreatmentPlan {
@@ -55,6 +56,15 @@ const parseUnitPrice = (value: string) => {
   if (value.trim() === "") return null;
   const price = Number(value);
   return Number.isFinite(price) && price >= 0 ? price : null;
+};
+
+const STATUS_LABELS: Record<string, { label: string; className: string }> = {
+  draft: { label: "Taslak", className: "bg-gray-100 text-gray-800" },
+  proposed: { label: "Önerilen", className: "bg-blue-100 text-blue-800" },
+  approved: { label: "Onaylı", className: "bg-green-100 text-green-800" },
+  in_progress: { label: "Devam Ediyor", className: "bg-yellow-100 text-yellow-800" },
+  completed: { label: "Tamamlandı", className: "bg-green-100 text-green-800" },
+  cancelled: { label: "İptal", className: "bg-red-100 text-red-800" },
 };
 
 export default function TreatmentPlanPage() {
@@ -123,11 +133,11 @@ export default function TreatmentPlanPage() {
       setPlan({
         id: data.id,
         patient_id: data.patient_id,
-        patient_name: embeds.patients?.full_name || "Unknown",
-        doctor_name: embeds.doctors?.users?.full_name || "Unknown",
+        patient_name: embeds.patients?.full_name || "-",
+        doctor_name: embeds.doctors?.users?.full_name || "-",
         title: data.title,
         description: data.description,
-        total_cost: data.total_cost,
+        total_cost: Number(data.total_cost),
         status: data.status,
         items: ((data.treatment_items || []) as TreatmentItem[])
           .slice()
@@ -160,7 +170,7 @@ export default function TreatmentPlanPage() {
   const fetchProcedures = async () => {
     const { data, error } = await supabase
       .from("procedures_catalog")
-      .select("id,name")
+      .select("id,name,default_price")
       .eq("clinic_id", user?.clinic_id)
       .eq("is_active", true)
       .order("name");
@@ -195,6 +205,21 @@ export default function TreatmentPlanPage() {
     if (updateError) throw updateError;
     if (!updated || updated.length === 0) {
       throw new Error("Treatment plan total was not updated");
+    }
+  };
+
+  // Prefill the catalog's default price unless the user has typed a price of their own.
+  const handleProcedureChange = (procedureId: string) => {
+    const previous = procedures.find((p) => p.id === itemProcedureId);
+    const next = procedures.find((p) => p.id === procedureId);
+    const currentPrice = parseUnitPrice(itemUnitPrice);
+    const untouched =
+      itemUnitPrice.trim() === "" ||
+      (previous?.default_price != null && currentPrice === Number(previous.default_price));
+
+    setItemProcedureId(procedureId);
+    if (untouched) {
+      setItemUnitPrice(next?.default_price != null ? String(next.default_price) : "");
     }
   };
 
@@ -294,8 +319,8 @@ export default function TreatmentPlanPage() {
     setSuccessMessage("");
 
     try {
-      const amount = parseFloat(paymentAmount);
-      if (amount <= 0) {
+      const amount = roundMoney(Number(paymentAmount));
+      if (!Number.isFinite(amount) || amount <= 0) {
         alert("Geçerli bir tutar girin");
         return;
       }
@@ -326,11 +351,13 @@ export default function TreatmentPlanPage() {
     }
   };
 
-  const totalPaid = payments
-    .filter((p) => p.status === "paid")
-    .reduce((sum, p) => sum + p.amount, 0);
+  const totalPaid = roundMoney(
+    payments
+      .filter((p) => p.status === "paid")
+      .reduce((sum, p) => sum + Number(p.amount), 0)
+  );
 
-  const remaining = plan ? plan.total_cost - totalPaid : 0;
+  const remaining = plan ? roundMoney(plan.total_cost - totalPaid) : 0;
 
   const itemBusy = addingItem || removingItemId !== null;
   const draftQuantity = parseQuantity(itemQuantity);
@@ -361,7 +388,16 @@ export default function TreatmentPlanPage() {
         {/* Plan Information */}
         <div className="col-span-2">
           <div className="bg-white rounded-lg shadow p-6 mb-6">
-            <h2 className="text-2xl font-bold mb-2">{plan.title}</h2>
+            <div className="flex flex-wrap items-center gap-3 mb-2">
+              <h2 className="text-2xl font-bold">{plan.title}</h2>
+              <span
+                className={`px-3 py-1 rounded text-sm font-semibold ${
+                  (STATUS_LABELS[plan.status] ?? STATUS_LABELS.draft).className
+                }`}
+              >
+                {STATUS_LABELS[plan.status]?.label ?? plan.status}
+              </span>
+            </div>
             <div className="grid grid-cols-2 gap-4 mb-6">
               <div>
                 <div className="text-gray-500 text-sm">Hasta</div>
@@ -446,14 +482,16 @@ export default function TreatmentPlanPage() {
                   </label>
                   <select
                     value={itemProcedureId}
-                    onChange={(e) => setItemProcedureId(e.target.value)}
+                    onChange={(e) => handleProcedureChange(e.target.value)}
                     className="w-full px-4 py-2 border rounded"
                     required
                   >
                     <option value="">İşlem seçin</option>
                     {procedures.map((procedure) => (
                       <option key={procedure.id} value={procedure.id}>
-                        {procedure.name}
+                        {procedure.default_price != null
+                          ? `${procedure.name} (₺${Number(procedure.default_price).toLocaleString("tr-TR")})`
+                          : procedure.name}
                       </option>
                     ))}
                   </select>
@@ -611,7 +649,7 @@ export default function TreatmentPlanPage() {
                   >
                     <div>
                       <div className="font-semibold">
-                        ₺{payment.amount.toLocaleString("tr-TR")}
+                        ₺{Number(payment.amount).toLocaleString("tr-TR")}
                       </div>
                       <div className="text-xs text-gray-500">
                         {new Date(payment.paid_at).toLocaleDateString("tr-TR")}

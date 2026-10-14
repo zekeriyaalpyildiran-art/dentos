@@ -5,18 +5,21 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 
+type LeadStatus = "new" | "contacted" | "interested" | "qualified" | "converted" | "lost";
+
 interface Lead {
   id: string;
   full_name: string;
   phone: string;
-  status: "new" | "contacted" | "interested" | "qualified" | "converted" | "lost";
-  source: string;
+  status: LeadStatus;
+  source: string | null;
   assigned_to: string | null;
   created_at: string;
+  converted_at: string | null;
 }
 
 interface KanbanColumn {
-  status: string;
+  status: LeadStatus;
   label: string;
   leads: Lead[];
   color: string;
@@ -37,7 +40,9 @@ export default function CRMKanbanPage() {
   ]);
 
   const [loading, setLoading] = useState(true);
-  const [draggedLead, setDraggedLead] = useState<{ lead: Lead; fromStatus: string } | null>(null);
+  const [draggedLead, setDraggedLead] = useState<{ lead: Lead; fromStatus: LeadStatus } | null>(
+    null
+  );
 
   useEffect(() => {
     if (!user?.clinic_id) return;
@@ -70,7 +75,7 @@ export default function CRMKanbanPage() {
     }
   };
 
-  const handleDragStart = (lead: Lead, status: string) => {
+  const handleDragStart = (lead: Lead, status: LeadStatus) => {
     setDraggedLead({ lead, fromStatus: status });
   };
 
@@ -78,52 +83,52 @@ export default function CRMKanbanPage() {
     e.preventDefault();
   };
 
-  const handleDrop = async (toStatus: string) => {
-    if (!draggedLead) return;
+  const handleDrop = async (toStatus: LeadStatus) => {
+    if (!draggedLead || !user?.clinic_id) return;
 
     const { lead, fromStatus } = draggedLead;
+    setDraggedLead(null);
 
     // Prevent dropping on same column
-    if (fromStatus === toStatus) {
-      setDraggedLead(null);
-      return;
-    }
+    if (fromStatus === toStatus) return;
+
+    const now = new Date().toISOString();
+    // converted_at is stamped when the lead becomes a customer and cleared when it leaves that status.
+    const convertedAt = toStatus === "converted" ? now : null;
 
     try {
       // Update lead status in database
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("leads")
-        .update({ status: toStatus })
+        .update({ status: toStatus, converted_at: convertedAt, updated_at: now })
         .eq("id", lead.id)
-        .eq("clinic_id", user?.clinic_id);
+        .eq("clinic_id", user.clinic_id)
+        .select("id");
 
-      if (error) throw error;
+      if (error || !data || data.length === 0) {
+        alert("Aday durumu güncellenemedi.");
+        return;
+      }
 
-      // Update UI
-      const updatedColumns = columns.map((col) => {
-        if (col.status === fromStatus) {
-          return {
-            ...col,
-            leads: col.leads.filter((l) => l.id !== lead.id),
-          };
-        }
-        if (col.status === toStatus) {
-          return {
-            ...col,
-            leads: [...col.leads, { ...lead, status: toStatus as any }],
-          };
-        }
-        return col;
-      });
-
-      setColumns(updatedColumns);
-      setDraggedLead(null);
+      // Update UI; the card is removed from every column so overlapping drags cannot duplicate it.
+      setColumns((prev) =>
+        prev.map((col) => {
+          const leads = col.leads.filter((l) => l.id !== lead.id);
+          if (col.status === toStatus) {
+            leads.push({ ...lead, status: toStatus, converted_at: convertedAt });
+          }
+          return { ...col, leads };
+        })
+      );
     } catch (error) {
       console.error("Error updating lead status:", error);
+      alert("Bağlantı hatası oluştu, tekrar deneyin.");
     }
   };
 
-  const getSourceBadge = (source: string) => {
+  const getSourceBadge = (source: string | null) => {
+    if (!source) return <span />;
+
     const colors: Record<string, string> = {
       direct: "bg-blue-200 text-blue-800",
       referral: "bg-purple-200 text-purple-800",
@@ -183,6 +188,7 @@ export default function CRMKanbanPage() {
                   key={lead.id}
                   draggable
                   onDragStart={() => handleDragStart(lead, column.status)}
+                  onDragEnd={() => setDraggedLead(null)}
                   onClick={() => router.push(`/crm/leads/${lead.id}`)}
                   className="bg-white rounded-lg p-4 shadow cursor-move hover:shadow-lg transition-shadow"
                 >

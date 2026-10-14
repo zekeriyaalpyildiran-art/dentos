@@ -35,18 +35,34 @@ export default function NewInventoryItemPage() {
       return;
     }
 
+    const code = itemCode.trim();
+    const name = itemName.trim();
+    const onHand = parseInt(quantityOnHand, 10);
+    const minimum = parseInt(quantityMinimum, 10);
+    const price = parseFloat(unitPrice);
+    if (!code || !name) {
+      setError("Malzeme kodu ve adı zorunludur.");
+      return;
+    }
+    if (![onHand, minimum, price].every((n) => Number.isFinite(n) && n >= 0)) {
+      setError("Stok ve fiyat alanlarına geçerli bir sayı girin.");
+      return;
+    }
+
     setSaving(true);
     setError("");
     try {
       const { error: insertError } = await supabase.from("stock_items").insert({
         clinic_id: user.clinic_id,
-        item_code: itemCode,
-        item_name: itemName,
+        item_code: code,
+        item_name: name,
         category,
-        quantity_on_hand: parseInt(quantityOnHand, 10),
-        quantity_minimum: parseInt(quantityMinimum, 10),
-        unit_price: parseFloat(unitPrice),
-        supplier: supplier || null,
+        quantity_on_hand: onHand,
+        quantity_minimum: minimum,
+        unit_price: price,
+        supplier: supplier.trim() || null,
+        // Opening stock counts as the first restock.
+        last_restocked_at: onHand > 0 ? new Date().toISOString() : null,
         expiry_date: expiryDate || null,
       });
 
@@ -56,12 +72,13 @@ export default function NewInventoryItemPage() {
             ? "Bu malzeme kodu zaten kayıtlı."
             : `Kaydedilemedi: ${insertError.message}`
         );
+        setSaving(false);
         return;
       }
+      // The button stays disabled until navigation so a second click cannot resubmit.
       router.push("/inventory");
     } catch {
       setError("Bağlantı hatası oluştu, tekrar deneyin.");
-    } finally {
       setSaving(false);
     }
   };

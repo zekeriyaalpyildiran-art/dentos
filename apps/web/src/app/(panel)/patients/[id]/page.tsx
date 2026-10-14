@@ -12,6 +12,69 @@ const GENDER_LABELS: Record<string, string> = {
   other: "Diğer",
 };
 
+const APPOINTMENT_STATUS_LABELS: Record<string, string> = {
+  scheduled: "Planlı",
+  completed: "Tamamlandı",
+  cancelled: "İptal",
+  no_show: "Gelmedi",
+};
+
+const APPOINTMENT_STATUS_STYLES: Record<string, string> = {
+  scheduled: "bg-blue-100 text-blue-800",
+  completed: "bg-green-100 text-green-800",
+  cancelled: "bg-red-100 text-red-800",
+  no_show: "bg-yellow-100 text-yellow-800",
+};
+
+const PLAN_STATUS_LABELS: Record<string, string> = {
+  draft: "Taslak",
+  proposed: "Önerilen",
+  approved: "Onaylı",
+  in_progress: "Devam Ediyor",
+  completed: "Tamamlandı",
+  cancelled: "İptal",
+};
+
+const PLAN_STATUS_STYLES: Record<string, string> = {
+  draft: "bg-gray-100 text-gray-800",
+  proposed: "bg-blue-100 text-blue-800",
+  approved: "bg-green-100 text-green-800",
+  in_progress: "bg-yellow-100 text-yellow-800",
+  completed: "bg-green-100 text-green-800",
+  cancelled: "bg-red-100 text-red-800",
+};
+
+const CHANNEL_LABELS: Record<string, string> = {
+  sms: "SMS",
+  email: "E-posta",
+  in_app: "Uygulama İçi",
+};
+
+const MESSAGE_STATUS_LABELS: Record<string, string> = {
+  pending: "Bekleniyor",
+  sent: "Gönderildi",
+  failed: "Başarısız",
+};
+
+const MESSAGE_STATUS_STYLES: Record<string, string> = {
+  pending: "bg-blue-100 text-blue-800",
+  sent: "bg-green-100 text-green-800",
+  failed: "bg-red-100 text-red-800",
+};
+
+const TABS = [
+  { key: "overview", label: "Özet" },
+  { key: "appointments", label: "Randevular" },
+  { key: "treatment-plan", label: "Tedavi Planları" },
+  { key: "messages", label: "Mesajlar" },
+] as const;
+
+type Tab = (typeof TABS)[number]["key"];
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const formatMoney = (value: number) => `₺${value.toLocaleString("tr-TR")}`;
+
 interface Patient {
   id: string;
   full_name: string;
@@ -30,32 +93,121 @@ interface Appointment {
   start_time: string;
   end_time: string;
   status: string;
-  notes?: string;
+  notes?: string | null;
+  doctors: { specialty: string | null; users: { full_name: string } | null } | null;
+  procedures_catalog: { name: string } | null;
+}
+
+interface TreatmentPlan {
+  id: string;
+  title: string;
+  status: string;
+  total_cost: number;
+  paid: number;
+  created_at: string;
+}
+
+interface Message {
+  id: string;
+  created_at: string;
+  notification_type: string;
+  recipient: string;
+  message: string | null;
+  status: string;
 }
 
 export default function Page() {
   const params = useParams();
   const patientId = params.id as string;
   const { user } = useAuthStore();
-  const supabase = createClient();
 
   const [patient, setPatient] = useState<Patient | null>(null);
+  const [patientError, setPatientError] = useState(false);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [activeTab, setActiveTab] = useState<"overview" | "appointments" | "treatment-plan" | "documents" | "messages">("overview");
+  const [plans, setPlans] = useState<TreatmentPlan[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loadErrors, setLoadErrors] = useState({ appointments: false, plans: false, messages: false });
+  const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user?.clinic_id || !patientId) return;
+    const clinicId = user?.clinic_id;
+    if (!clinicId || !patientId) return;
 
+    // Non-uuid ids would be rejected by Postgres; treat them as a missing patient.
+    if (!UUID_RE.test(patientId)) {
+      setLoading(false);
+      return;
+    }
+
+    const supabase = createClient();
     const fetchData = async () => {
+      setLoading(true);
       try {
-        const [ptRes, aptRes] = await Promise.all([
-          supabase.from("patients").select("*").eq("id", patientId).eq("clinic_id", user.clinic_id).maybeSingle(),
-          supabase.from("appointments").select("*").eq("patient_id", patientId).eq("clinic_id", user.clinic_id),
+        const [ptRes, aptRes, planRes, payRes, msgRes] = await Promise.all([
+          supabase.from("patients").select("*").eq("id", patientId).eq("clinic_id", clinicId).maybeSingle(),
+          supabase
+            .from("appointments")
+            .select("id,start_time,end_time,status,notes,doctors(specialty,users(full_name)),procedures_catalog(name)")
+            .eq("patient_id", patientId)
+            .eq("clinic_id", clinicId)
+            .order("start_time", { ascending: false }),
+          supabase
+            .from("treatment_plans")
+            .select("id,title,status,total_cost,created_at")
+            .eq("patient_id", patientId)
+            .eq("clinic_id", clinicId)
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("payments")
+            .select("treatment_plan_id,amount")
+            .eq("patient_id", patientId)
+            .eq("clinic_id", clinicId)
+            .eq("status", "paid"),
+          supabase
+            .from("notifications")
+            .select("id,created_at,notification_type,recipient,message,status")
+            .eq("patient_id", patientId)
+            .eq("clinic_id", clinicId)
+            .order("created_at", { ascending: false })
+            .limit(100),
         ]);
 
-        if (ptRes.data) setPatient(ptRes.data);
-        setAppointments(aptRes.data || []);
+        if (ptRes.error) console.error("Error fetching patient:", ptRes.error);
+        if (aptRes.error) console.error("Error fetching appointments:", aptRes.error);
+        if (planRes.error) console.error("Error fetching treatment plans:", planRes.error);
+        if (payRes.error) console.error("Error fetching payments:", payRes.error);
+        if (msgRes.error) console.error("Error fetching messages:", msgRes.error);
+
+        setPatientError(!!ptRes.error);
+        setPatient(ptRes.data);
+        // doctors/procedures_catalog are many-to-one, so each arrives as one object that the inferred type does not reflect.
+        setAppointments((aptRes.data || []) as unknown as Appointment[]);
+
+        const paidByPlan = new Map<string, number>();
+        for (const p of payRes.data || []) {
+          paidByPlan.set(p.treatment_plan_id, (paidByPlan.get(p.treatment_plan_id) || 0) + Number(p.amount));
+        }
+        setPlans(
+          (planRes.data || []).map((p) => ({
+            id: p.id,
+            title: p.title,
+            status: p.status,
+            total_cost: Number(p.total_cost),
+            paid: paidByPlan.get(p.id) || 0,
+            created_at: p.created_at,
+          }))
+        );
+        setMessages(msgRes.data || []);
+
+        setLoadErrors({
+          appointments: !!aptRes.error,
+          plans: !!planRes.error || !!payRes.error,
+          messages: !!msgRes.error,
+        });
+      } catch (err) {
+        console.error("Error loading patient file:", err);
+        setPatientError(true);
       } finally {
         setLoading(false);
       }
@@ -65,7 +217,18 @@ export default function Page() {
   }, [user?.clinic_id, patientId]);
 
   if (loading) return <div className="p-8">Yükleniyor...</div>;
-  if (!patient) return <div className="p-8">Hasta bulunamadı</div>;
+  if (!patient) {
+    return (
+      <div className="p-8">
+        <p className={patientError ? "text-red-600" : "text-gray-700"}>
+          {patientError ? "Hasta bilgileri yüklenemedi. Lütfen sayfayı yenileyin." : "Hasta bulunamadı"}
+        </p>
+        <Link href="/patients" className="inline-block mt-4 text-blue-600 hover:underline">
+          ← Hasta listesine dön
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="p-8">
@@ -116,23 +279,15 @@ export default function Page() {
       {/* Tabs */}
       <div className="border-b mb-6">
         <div className="flex gap-4">
-          {(["overview", "appointments", "treatment-plan", "documents", "messages"] as const).map((tab) => (
+          {TABS.map((tab) => (
             <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
               className={`px-4 py-2 border-b-2 ${
-                activeTab === tab ? "border-blue-600 text-blue-600 font-semibold" : "border-transparent text-gray-600"
+                activeTab === tab.key ? "border-blue-600 text-blue-600 font-semibold" : "border-transparent text-gray-600"
               }`}
             >
-              {tab === "overview"
-                ? "Özet"
-                : tab === "appointments"
-                  ? "Randevular"
-                  : tab === "treatment-plan"
-                    ? "İşlem Planı"
-                    : tab === "documents"
-                      ? "Dokümanlar"
-                      : "Mesajlar"}
+              {tab.label}
             </button>
           ))}
         </div>
@@ -162,7 +317,9 @@ export default function Page() {
       {activeTab === "appointments" && (
         <div>
           <h2 className="text-xl font-semibold mb-4">Randevu Geçmişi</h2>
-          {appointments.length === 0 ? (
+          {loadErrors.appointments ? (
+            <p className="text-red-600">Randevular yüklenemedi. Lütfen sayfayı yenileyin.</p>
+          ) : appointments.length === 0 ? (
             <p className="text-gray-500">Randevu bulunamadı</p>
           ) : (
             <div className="space-y-3">
@@ -171,18 +328,18 @@ export default function Page() {
                   <div className="flex justify-between">
                     <div>
                       <div className="font-semibold">{new Date(apt.start_time).toLocaleString("tr-TR")}</div>
-                      <div className="text-sm text-gray-600">{apt.notes}</div>
+                      <div className="text-sm text-gray-600">
+                        Hekim: {apt.doctors?.users?.full_name || apt.doctors?.specialty || "-"} · Tedavi:{" "}
+                        {apt.procedures_catalog?.name || "-"}
+                      </div>
+                      {apt.notes && <div className="text-sm text-gray-500">{apt.notes}</div>}
                     </div>
                     <span
-                      className={`px-3 py-1 rounded text-sm ${
-                        apt.status === "completed"
-                          ? "bg-green-100 text-green-800"
-                          : apt.status === "cancelled"
-                            ? "bg-red-100 text-red-800"
-                            : "bg-blue-100 text-blue-800"
+                      className={`px-3 py-1 rounded text-sm self-start ${
+                        APPOINTMENT_STATUS_STYLES[apt.status] ?? "bg-gray-100 text-gray-800"
                       }`}
                     >
-                      {apt.status === "scheduled" ? "Planlı" : apt.status === "completed" ? "Tamamlandı" : "İptal"}
+                      {APPOINTMENT_STATUS_LABELS[apt.status] ?? apt.status}
                     </span>
                   </div>
                 </div>
@@ -192,9 +349,126 @@ export default function Page() {
         </div>
       )}
 
-      {["treatment-plan", "documents", "messages"].includes(activeTab) && (
-        <div className="text-center py-12 text-gray-500">
-          <p>Bu sekme yakında aktif olacak</p>
+      {activeTab === "treatment-plan" && (
+        <div>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold">Tedavi Planları</h2>
+            <Link
+              href={`/treatment-plans/new?patient_id=${patientId}`}
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            >
+              + Yeni Tedavi Planı
+            </Link>
+          </div>
+          <div className="bg-white rounded-lg shadow overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-100 border-b">
+                <tr>
+                  {["Plan", "Durum", "Tutar", "Ödenen", "Oluşturulma", ""].map((h, i) => (
+                    <th key={i} className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {loadErrors.plans || plans.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className={`px-6 py-8 text-center ${loadErrors.plans ? "text-red-600" : "text-gray-500"}`}
+                    >
+                      {loadErrors.plans
+                        ? "Tedavi planları yüklenemedi. Lütfen sayfayı yenileyin."
+                        : "Tedavi planı bulunamadı"}
+                    </td>
+                  </tr>
+                ) : (
+                  plans.map((plan) => (
+                    <tr key={plan.id} className="border-b hover:bg-gray-50">
+                      <td className="px-6 py-4 text-sm text-gray-800 font-semibold">
+                        <Link href={`/treatment-plans/${plan.id}`} className="hover:underline">
+                          {plan.title}
+                        </Link>
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        <span
+                          className={`px-3 py-1 rounded text-sm font-semibold ${
+                            PLAN_STATUS_STYLES[plan.status] ?? PLAN_STATUS_STYLES.draft
+                          }`}
+                        >
+                          {PLAN_STATUS_LABELS[plan.status] ?? plan.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-800 font-semibold">{formatMoney(plan.total_cost)}</td>
+                      <td className="px-6 py-4 text-sm text-green-700 font-semibold">{formatMoney(plan.paid)}</td>
+                      <td className="px-6 py-4 text-sm text-gray-600">
+                        {new Date(plan.created_at).toLocaleDateString("tr-TR")}
+                      </td>
+                      <td className="px-6 py-4 text-sm">
+                        <Link href={`/treatment-plans/${plan.id}`} className="text-blue-600 hover:underline">
+                          Detay
+                        </Link>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "messages" && (
+        <div>
+          <h2 className="text-xl font-semibold mb-4">Mesajlar</h2>
+          <div className="bg-white rounded-lg shadow overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-100 border-b">
+                <tr>
+                  {["Tarih", "Kanal", "Alıcı", "Mesaj", "Durum"].map((h) => (
+                    <th key={h} className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {loadErrors.messages || messages.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={5}
+                      className={`px-6 py-8 text-center ${loadErrors.messages ? "text-red-600" : "text-gray-500"}`}
+                    >
+                      {loadErrors.messages ? "Mesajlar yüklenemedi. Lütfen sayfayı yenileyin." : "Mesaj bulunamadı"}
+                    </td>
+                  </tr>
+                ) : (
+                  messages.map((m) => (
+                    <tr key={m.id} className="border-b hover:bg-gray-50">
+                      <td className="px-6 py-4 text-sm text-gray-600 whitespace-nowrap">
+                        {new Date(m.created_at).toLocaleString("tr-TR")}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-600">
+                        {CHANNEL_LABELS[m.notification_type] ?? m.notification_type}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-600">{m.recipient}</td>
+                      <td className="px-6 py-4 text-sm text-gray-600 whitespace-pre-wrap">{m.message || "-"}</td>
+                      <td className="px-6 py-4 text-sm">
+                        <span
+                          className={`px-3 py-1 rounded text-sm font-semibold ${
+                            MESSAGE_STATUS_STYLES[m.status] ?? "bg-gray-100 text-gray-800"
+                          }`}
+                        >
+                          {MESSAGE_STATUS_LABELS[m.status] ?? m.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

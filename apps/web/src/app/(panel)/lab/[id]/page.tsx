@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 
@@ -40,6 +40,8 @@ const STATUS_LABELS: Record<LabOrderStatus, string> = {
   cancelled: "İptal",
 };
 
+const STATUSES = Object.keys(STATUS_LABELS) as LabOrderStatus[];
+
 const ITEM_TYPE_LABELS: Record<string, string> = {
   crown: "Kron",
   bridge: "Köprü",
@@ -61,9 +63,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const formatDay = (value: string | null) =>
   value ? new Date(value + "T00:00:00").toLocaleDateString("tr-TR") : "-";
 
+// Local calendar day as YYYY-MM-DD, so delivery_date matches the clinic's day rather than UTC.
+const localDateKey = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 export default function LabOrderDetailPage() {
   const params = useParams<{ id: string }>();
   const orderId = params.id;
+  const router = useRouter();
   const { user } = useAuthStore();
   const supabase = createClient();
 
@@ -72,6 +79,9 @@ export default function LabOrderDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [itemsError, setItemsError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!user?.clinic_id || !orderId) return;
@@ -134,6 +144,75 @@ export default function LabOrderDetailPage() {
     fetchOrder();
   }, [user?.clinic_id, orderId]);
 
+  const updateStatus = async (status: LabOrderStatus) => {
+    if (!user?.clinic_id || !order || status === order.status) return;
+
+    setUpdating(true);
+    setActionError(null);
+
+    // delivery_date records when the work came back from the lab; undoing delivery clears it.
+    const patch: { status: LabOrderStatus; updated_at: string; delivery_date?: string | null } = {
+      status,
+      updated_at: new Date().toISOString(),
+    };
+    if (status === "delivered") patch.delivery_date = localDateKey(new Date());
+    else if (order.status === "delivered") patch.delivery_date = null;
+
+    try {
+      const { data, error } = await supabase
+        .from("lab_orders")
+        .update(patch)
+        .eq("id", order.id)
+        .eq("clinic_id", user.clinic_id)
+        .select("id, status, delivery_date");
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error("Lab order was not updated");
+      }
+
+      const row = data[0] as { status: LabOrderStatus | null; delivery_date: string | null };
+      setOrder((prev) =>
+        prev ? { ...prev, status: row.status ?? "draft", delivery_date: row.delivery_date ?? null } : prev
+      );
+    } catch (err) {
+      console.error("Error updating lab order:", err);
+      setActionError("Sipariş durumu güncellenemedi. Lütfen tekrar deneyin.");
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const deleteOrder = async () => {
+    if (!user?.clinic_id || !order || order.status !== "draft") return;
+    if (!confirm(`${order.order_number} numaralı taslak sipariş ve kalemleri silinsin mi? Bu işlem geri alınamaz.`)) {
+      return;
+    }
+
+    setDeleting(true);
+    setActionError(null);
+    try {
+      // Items go with the order via ON DELETE CASCADE; RLS only allows deleting drafts.
+      const { data, error } = await supabase
+        .from("lab_orders")
+        .delete()
+        .eq("id", order.id)
+        .eq("clinic_id", user.clinic_id)
+        .eq("status", "draft")
+        .select("id");
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error("Lab order was not deleted");
+      }
+      router.push("/lab");
+    } catch (err) {
+      console.error("Error deleting lab order:", err);
+      setActionError("Sipariş silinemedi. Yalnızca taslak siparişler silinebilir.");
+      setDeleting(false);
+    }
+  };
+
   if (loading) return <div className="p-8">Yükleniyor...</div>;
 
   if (!order) {
@@ -159,7 +238,23 @@ export default function LabOrderDetailPage() {
         ← Geri Dön
       </Link>
 
-      <h1 className="text-3xl font-bold text-gray-900 mb-8">Sipariş {order.order_number}</h1>
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-3xl font-bold text-gray-900">Sipariş {order.order_number}</h1>
+        {order.status === "draft" && (
+          <button
+            type="button"
+            onClick={deleteOrder}
+            disabled={deleting || updating}
+            className="px-4 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-40"
+          >
+            {deleting ? "Siliniyor..." : "Siparişi Sil"}
+          </button>
+        )}
+      </div>
+
+      {actionError && (
+        <div className="mb-6 p-4 rounded bg-red-50 text-red-700">{actionError}</div>
+      )}
 
       <div className="bg-white rounded-lg shadow p-6 mb-8">
         <div className="grid grid-cols-2 gap-4">
@@ -169,9 +264,18 @@ export default function LabOrderDetailPage() {
           </div>
           <div>
             <div className="text-sm text-gray-600">Durum</div>
-            <div className="font-semibold text-gray-900">
-              {STATUS_LABELS[order.status] ?? order.status}
-            </div>
+            <select
+              value={order.status}
+              disabled={updating || deleting}
+              onChange={(e) => updateStatus(e.target.value as LabOrderStatus)}
+              className="mt-1 px-3 py-1 border rounded bg-white text-gray-900 font-semibold"
+            >
+              {STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {STATUS_LABELS[s]}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
             <div className="text-sm text-gray-600">Hasta</div>

@@ -26,9 +26,7 @@ export default function TreatmentPlansPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
-  const [filter, setFilter] = useState<"all" | "draft" | "proposed" | "approved" | "completed">(
-    "all"
-  );
+  const [filter, setFilter] = useState<"all" | TreatmentPlan["status"]>("all");
   const requestId = useRef(0);
 
   useEffect(() => {
@@ -68,10 +66,10 @@ export default function TreatmentPlansPage() {
 
       const mapped = (data || []).map((p: any) => ({
         id: p.id,
-        patient_name: p.patients?.full_name || "Unknown",
-        doctor_name: p.doctors?.users?.full_name || "Unknown",
+        patient_name: p.patients?.full_name || "-",
+        doctor_name: p.doctors?.users?.full_name || "-",
         title: p.title,
-        total_cost: p.total_cost,
+        total_cost: Number(p.total_cost),
         status: p.status,
         created_at: p.created_at,
       }));
@@ -133,8 +131,8 @@ export default function TreatmentPlansPage() {
       </div>
 
       {/* Filters */}
-      <div className="mb-6 flex gap-2">
-        {(["all", "draft", "proposed", "approved", "completed"] as const).map((f) => (
+      <div className="mb-6 flex flex-wrap gap-2">
+        {(["all", "draft", "proposed", "approved", "in_progress", "completed", "cancelled"] as const).map((f) => (
           <button
             key={f}
             onClick={() => setFilter(f)}

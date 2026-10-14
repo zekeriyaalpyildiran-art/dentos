@@ -34,6 +34,8 @@ export default function EditInventoryItemPage() {
   const supabase = createClient();
 
   const [form, setForm] = useState(emptyForm);
+  const [savedQuantity, setSavedQuantity] = useState(0);
+  const [lastRestockedAt, setLastRestockedAt] = useState<string | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "missing" | "error">("loading");
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -72,6 +74,8 @@ export default function EditInventoryItemPage() {
           supplier: data.supplier ?? "",
           expiry_date: data.expiry_date ?? "",
         });
+        setSavedQuantity(data.quantity_on_hand);
+        setLastRestockedAt(data.last_restocked_at);
         setStatus("ready");
       } catch (error) {
         console.error("Error fetching inventory item:", error);
@@ -89,30 +93,60 @@ export default function EditInventoryItemPage() {
     e.preventDefault();
     if (!user?.clinic_id) return;
 
+    const code = form.item_code.trim();
+    const name = form.item_name.trim();
+    const onHand = parseInt(form.quantity_on_hand, 10);
+    const minimum = parseInt(form.quantity_minimum, 10);
+    const price = parseFloat(form.unit_price);
+    if (!code || !name) {
+      setSaveError("Malzeme kodu ve adı zorunludur.");
+      return;
+    }
+    if (![onHand, minimum, price].every((n) => Number.isFinite(n) && n >= 0)) {
+      setSaveError("Stok ve fiyat alanlarına geçerli bir sayı girin.");
+      return;
+    }
+
     setSubmitting(true);
     setSaveError("");
     try {
-      const { error } = await supabase
+      const now = new Date().toISOString();
+      const { data, error } = await supabase
         .from("stock_items")
         .update({
-          item_code: form.item_code,
-          item_name: form.item_name,
+          item_code: code,
+          item_name: name,
           category: form.category || null,
-          quantity_on_hand: parseInt(form.quantity_on_hand, 10),
-          quantity_minimum: parseInt(form.quantity_minimum, 10),
-          unit_price: parseFloat(form.unit_price),
-          supplier: form.supplier || null,
+          quantity_on_hand: onHand,
+          quantity_minimum: minimum,
+          unit_price: price,
+          supplier: form.supplier.trim() || null,
           expiry_date: form.expiry_date || null,
-          updated_at: new Date().toISOString(),
+          // A stock increase is treated as a restock.
+          ...(onHand > savedQuantity ? { last_restocked_at: now } : {}),
+          updated_at: now,
         })
         .eq("id", params.id)
-        .eq("clinic_id", user.clinic_id);
+        .eq("clinic_id", user.clinic_id)
+        .select("id");
 
-      if (error) throw error;
+      if (error) {
+        console.error("Error updating inventory item:", error);
+        setSaveError(
+          error.code === "23505"
+            ? "Bu malzeme kodu zaten kayıtlı."
+            : "Malzeme güncellenirken hata oluştu"
+        );
+        return;
+      }
+      if (!data || data.length === 0) {
+        setSaveError("Malzeme güncellenemedi.");
+        return;
+      }
       router.push("/inventory");
     } catch (error) {
       console.error("Error updating inventory item:", error);
-      setSaveError("Malzeme güncellenirken hata oluştu");
+      setSaveError("Bağlantı hatası oluştu, tekrar deneyin.");
     } finally {
       setSubmitting(false);
     }
@@ -131,7 +165,11 @@ export default function EditInventoryItemPage() {
         ← Geri Dön
       </button>
 
-      <h1 className="text-3xl font-bold mb-8">Malzeme Düzenle</h1>
+      <h1 className="text-3xl font-bold mb-2">Malzeme Düzenle</h1>
+      <p className="text-sm text-gray-600 mb-8">
+        Son stok girişi:{" "}
+        {lastRestockedAt ? new Date(lastRestockedAt).toLocaleString("tr-TR") : "-"}
+      </p>
 
       <form
         onSubmit={handleSubmit}

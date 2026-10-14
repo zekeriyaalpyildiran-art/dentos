@@ -1,19 +1,59 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { REMINDER_CANCELLED_REASON } from "../appointments/reminder-utils";
+
+const PAGE_SIZE = 50;
+
+// "cancelled" is not a reminder_status value: it is a failed reminder closed because its appointment was cancelled.
+type DisplayStatus = "pending" | "sent" | "failed" | "cancelled";
+type Filter = "all" | DisplayStatus;
+
+const FILTERS: Filter[] = ["all", "pending", "sent", "failed", "cancelled"];
+
+const STATUS_LABELS: Record<DisplayStatus, string> = {
+  pending: "Bekleniyor",
+  sent: "Gönderildi",
+  failed: "Başarısız",
+  cancelled: "İptal",
+};
+
+const STATUS_STYLES: Record<DisplayStatus, string> = {
+  pending: "bg-blue-100 text-blue-800",
+  sent: "bg-green-100 text-green-800",
+  failed: "bg-red-100 text-red-800",
+  cancelled: "bg-gray-100 text-gray-800",
+};
 
 interface Reminder {
   id: string;
   appointment_id: string;
   patient_name: string;
   doctor_name: string;
-  appointment_time: string;
+  appointment_time: string | null;
   reminder_type: "sms" | "email" | "in_app";
   scheduled_at: string;
-  status: "pending" | "sent" | "failed";
+  status: DisplayStatus;
+  error_message: string | null;
 }
+
+interface ReminderRow {
+  id: string;
+  appointment_id: string;
+  reminder_type: Reminder["reminder_type"];
+  scheduled_at: string;
+  status: "pending" | "sent" | "failed";
+  error_message: string | null;
+  appointments: {
+    start_time: string;
+    patients: { full_name: string } | null;
+    doctors: { users: { full_name: string } | null } | null;
+  } | null;
+}
+
+type Stats = Record<"total" | DisplayStatus, number>;
 
 export default function RemindersPage() {
   const { user } = useAuthStore();
@@ -21,24 +61,56 @@ export default function RemindersPage() {
 
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<"all" | "pending" | "sent" | "failed">(
-    "all"
-  );
-  const [stats, setStats] = useState({
-    total: 0,
-    pending: 0,
-    sent: 0,
-    failed: 0,
-  });
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [stats, setStats] = useState<Stats | null>(null);
+  const requestId = useRef(0);
 
   useEffect(() => {
     if (!user?.clinic_id) return;
-    fetchReminders();
+    fetchStats();
   }, [user?.clinic_id]);
 
-  const fetchReminders = async () => {
+  useEffect(() => {
+    if (!user?.clinic_id) return;
+    fetchReminders(0);
+  }, [user?.clinic_id, filter]);
+
+  // Counts come from head-only count queries, so they cover every reminder rather than the loaded page.
+  const fetchStats = async () => {
     try {
-      const { data, error } = await supabase
+      const countQuery = () =>
+        supabase
+          .from("reminders")
+          .select("id", { count: "exact", head: true })
+          .eq("clinic_id", user?.clinic_id);
+
+      const results = await Promise.all([
+        countQuery(),
+        countQuery().eq("status", "pending"),
+        countQuery().eq("status", "sent"),
+        countQuery().eq("status", "failed"),
+        countQuery().eq("status", "failed").eq("error_message", REMINDER_CANCELLED_REASON),
+      ]);
+
+      const failedQuery = results.find((r) => r.error);
+      if (failedQuery) throw failedQuery.error;
+
+      const [total, pending, sent, failed, cancelled] = results.map((r) => r.count ?? 0);
+      setStats({ total, pending, sent, failed: failed - cancelled, cancelled });
+    } catch (error) {
+      console.error("Error fetching reminder stats:", error);
+      setStats(null);
+    }
+  };
+
+  const fetchReminders = async (from: number) => {
+    const reqId = ++requestId.current;
+    if (from === 0) setLoading(true);
+    else setLoadingMore(true);
+    try {
+      let query = supabase
         .from("reminders")
         .select(
           `
@@ -47,6 +119,7 @@ export default function RemindersPage() {
           reminder_type,
           scheduled_at,
           status,
+          error_message,
           appointments(
             start_time,
             patients(full_name),
@@ -54,71 +127,79 @@ export default function RemindersPage() {
           )
         `
         )
-        .eq("clinic_id", user?.clinic_id)
-        .order("scheduled_at", { ascending: false })
-        .limit(100);
+        .eq("clinic_id", user?.clinic_id);
+      if (filter === "pending" || filter === "sent") {
+        query = query.eq("status", filter);
+      } else if (filter === "cancelled") {
+        query = query.eq("status", "failed").eq("error_message", REMINDER_CANCELLED_REASON);
+      } else if (filter === "failed") {
+        query = query
+          .eq("status", "failed")
+          .or(`error_message.is.null,error_message.neq."${REMINDER_CANCELLED_REASON}"`);
+      }
 
+      const { data, error } = await query
+        .order("scheduled_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, from + PAGE_SIZE - 1);
+
+      // A newer request (filter change or another page) supersedes this one.
+      if (reqId !== requestId.current) return;
       if (error) throw error;
 
-      const mapped = (data || []).map((r: any) => ({
+      const mapped: Reminder[] = ((data || []) as unknown as ReminderRow[]).map((r) => ({
         id: r.id,
         appointment_id: r.appointment_id,
-        patient_name: r.appointments?.patients?.full_name || "Unknown",
-        doctor_name: r.appointments?.doctors?.users?.full_name || "Unknown",
-        appointment_time: r.appointments?.start_time,
+        patient_name: r.appointments?.patients?.full_name || "-",
+        doctor_name: r.appointments?.doctors?.users?.full_name || "-",
+        appointment_time: r.appointments?.start_time ?? null,
         reminder_type: r.reminder_type,
         scheduled_at: r.scheduled_at,
-        status: r.status,
+        status:
+          r.status === "failed" && r.error_message === REMINDER_CANCELLED_REASON ? "cancelled" : r.status,
+        error_message: r.error_message,
       }));
 
-      setReminders(mapped);
-
-      setStats({
-        total: mapped.length,
-        pending: mapped.filter((r) => r.status === "pending").length,
-        sent: mapped.filter((r) => r.status === "sent").length,
-        failed: mapped.filter((r) => r.status === "failed").length,
+      setReminders((prev) => {
+        if (from === 0) return mapped;
+        const seen = new Set(prev.map((r) => r.id));
+        return [...prev, ...mapped.filter((r) => !seen.has(r.id))];
       });
+      setHasMore(mapped.length === PAGE_SIZE);
     } catch (error) {
       console.error("Error fetching reminders:", error);
+      if (from === 0) {
+        setReminders([]);
+        setHasMore(false);
+      }
     } finally {
-      setLoading(false);
+      if (reqId === requestId.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
-  const filtered = reminders.filter((r) => {
-    if (filter === "all") return true;
-    return r.status === filter;
-  });
-
-  const getStatusBadge = (status: string) => {
-    const styles = {
-      pending: "bg-blue-100 text-blue-800",
-      sent: "bg-green-100 text-green-800",
-      failed: "bg-red-100 text-red-800",
-    };
-    const labels = {
-      pending: "Bekleniyor",
-      sent: "Gönderildi",
-      failed: "Başarısız",
-    };
-    return (
-      <span className={`px-3 py-1 rounded text-sm font-semibold ${styles[status as keyof typeof styles]}`}>
-        {labels[status as keyof typeof labels]}
-      </span>
-    );
-  };
+  const getStatusBadge = (reminder: Reminder) => (
+    <span
+      className={`px-3 py-1 rounded text-sm font-semibold ${STATUS_STYLES[reminder.status]}`}
+      title={reminder.status === "failed" ? reminder.error_message ?? undefined : undefined}
+    >
+      {STATUS_LABELS[reminder.status]}
+    </span>
+  );
 
   const getReminderTypeBadge = (type: string) => {
     const icons = {
       sms: "📱 SMS",
-      email: "📧 Email",
-      in_app: "🔔 In-App",
+      email: "📧 E-posta",
+      in_app: "🔔 Uygulama içi",
     };
     return icons[type as keyof typeof icons] || type;
   };
 
-  const formatDateTime = (dateString: string) => {
+  const formatDateTime = (dateString: string | null) => {
+    if (!dateString) return "-";
     return new Date(dateString).toLocaleString("tr-TR", {
       day: "2-digit",
       month: "2-digit",
@@ -128,37 +209,39 @@ export default function RemindersPage() {
     });
   };
 
-  if (loading) {
-    return <div className="p-8">Yükleniyor...</div>;
-  }
+  const formatCount = (key: keyof Stats) => (stats ? stats[key] : "-");
 
   return (
     <div className="p-8">
       <h1 className="text-3xl font-bold mb-8">Randevu Hatırlatmaları</h1>
 
       {/* Statistics */}
-      <div className="grid grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-5 gap-4 mb-8">
         <div className="bg-white p-6 rounded-lg shadow">
           <div className="text-gray-500 text-sm mb-2">Toplam</div>
-          <div className="text-3xl font-bold text-gray-800">{stats.total}</div>
+          <div className="text-3xl font-bold text-gray-800">{formatCount("total")}</div>
         </div>
         <div className="bg-white p-6 rounded-lg shadow">
           <div className="text-blue-700 text-sm mb-2">Bekleniyor</div>
-          <div className="text-3xl font-bold text-blue-600">{stats.pending}</div>
+          <div className="text-3xl font-bold text-blue-600">{formatCount("pending")}</div>
         </div>
         <div className="bg-white p-6 rounded-lg shadow">
           <div className="text-green-700 text-sm mb-2">Gönderildi</div>
-          <div className="text-3xl font-bold text-green-600">{stats.sent}</div>
+          <div className="text-3xl font-bold text-green-600">{formatCount("sent")}</div>
         </div>
         <div className="bg-white p-6 rounded-lg shadow">
           <div className="text-red-700 text-sm mb-2">Başarısız</div>
-          <div className="text-3xl font-bold text-red-600">{stats.failed}</div>
+          <div className="text-3xl font-bold text-red-600">{formatCount("failed")}</div>
+        </div>
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="text-gray-500 text-sm mb-2">İptal</div>
+          <div className="text-3xl font-bold text-gray-600">{formatCount("cancelled")}</div>
         </div>
       </div>
 
       {/* Filters */}
       <div className="mb-6 flex gap-2">
-        {(["all", "pending", "sent", "failed"] as const).map((f) => (
+        {FILTERS.map((f) => (
           <button
             key={f}
             onClick={() => setFilter(f)}
@@ -168,13 +251,7 @@ export default function RemindersPage() {
                 : "bg-gray-200 text-gray-800 hover:bg-gray-300"
             }`}
           >
-            {f === "all"
-              ? "Tümü"
-              : f === "pending"
-              ? "Bekleniyor"
-              : f === "sent"
-              ? "Gönderildi"
-              : "Başarısız"}
+            {f === "all" ? "Tümü" : STATUS_LABELS[f]}
           </button>
         ))}
       </div>
@@ -205,14 +282,20 @@ export default function RemindersPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 ? (
+            {loading ? (
+              <tr>
+                <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
+                  Yükleniyor...
+                </td>
+              </tr>
+            ) : reminders.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
                   Hatırlatma bulunamadı
                 </td>
               </tr>
             ) : (
-              filtered.map((reminder) => (
+              reminders.map((reminder) => (
                 <tr key={reminder.id} className="border-b hover:bg-gray-50">
                   <td className="px-6 py-4 text-sm text-gray-800">
                     {reminder.patient_name}
@@ -230,7 +313,7 @@ export default function RemindersPage() {
                     {formatDateTime(reminder.scheduled_at)}
                   </td>
                   <td className="px-6 py-4 text-sm">
-                    {getStatusBadge(reminder.status)}
+                    {getStatusBadge(reminder)}
                   </td>
                 </tr>
               ))
@@ -238,6 +321,18 @@ export default function RemindersPage() {
           </tbody>
         </table>
       </div>
+
+      {hasMore && !loading && (
+        <div className="mt-6 flex justify-center">
+          <button
+            onClick={() => fetchReminders(reminders.length)}
+            disabled={loadingMore}
+            className="px-4 py-2 rounded font-semibold bg-gray-200 text-gray-800 hover:bg-gray-300 disabled:opacity-50"
+          >
+            {loadingMore ? "Yükleniyor..." : "Daha fazla yükle"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
