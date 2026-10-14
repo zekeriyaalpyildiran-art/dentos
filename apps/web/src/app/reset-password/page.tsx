@@ -27,12 +27,40 @@ export default function ResetPasswordPage() {
       }
     });
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) setReady(true);
-      setChecking(false);
-    });
+    let cancelled = false;
 
-    return () => listener.subscription.unsubscribe();
+    const init = async () => {
+      const hash = new URLSearchParams(window.location.hash.slice(1));
+      const accessToken = hash.get("access_token");
+      const refreshToken = hash.get("refresh_token");
+      const code = new URLSearchParams(window.location.search).get("code");
+
+      if (accessToken && refreshToken) {
+        // Recovery emails use the implicit flow, which the PKCE browser client does not pick up by itself.
+        const { error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+        window.history.replaceState(null, "", window.location.pathname);
+        if (!cancelled && !error) setReady(true);
+      } else if (code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        window.history.replaceState(null, "", window.location.pathname);
+        if (!cancelled && !error) setReady(true);
+      } else {
+        const { data } = await supabase.auth.getSession();
+        if (!cancelled && data.session) setReady(true);
+      }
+
+      if (!cancelled) setChecking(false);
+    };
+
+    init();
+
+    return () => {
+      cancelled = true;
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
