@@ -175,7 +175,11 @@ export default function LabPage() {
                   <td className="px-6 py-4 text-sm font-semibold text-gray-900">
                     {order.patient_name}
                   </td>
-                  <td className="px-6 py-4 text-sm text-gray-900">{order.order_number}</td>
+                  <td className="px-6 py-4 text-sm text-gray-900">
+                    <Link href={`/lab/${order.id}`} className="text-blue-600 hover:underline">
+                      {order.order_number}
+                    </Link>
+                  </td>
                   <td className="px-6 py-4 text-sm text-gray-900">{order.lab_name || "-"}</td>
                   <td className="px-6 py-4 text-sm text-gray-900">
                     {new Date(order.due_date + "T00:00:00").toLocaleDateString("tr-TR")}

@@ -11,6 +11,12 @@ interface TreatmentItem {
   quantity: number;
   unit_price: number;
   total_price: number;
+  created_at: string;
+}
+
+interface Procedure {
+  id: string;
+  name: string;
 }
 
 interface TreatmentPlan {
@@ -37,6 +43,20 @@ type PaymentMethod = "cash" | "card" | "transfer";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const roundMoney = (value: number) => Math.round(value * 100) / 100;
+
+const parseQuantity = (value: string) => {
+  if (!/^\d+$/.test(value.trim())) return null;
+  const quantity = parseInt(value, 10);
+  return quantity >= 1 ? quantity : null;
+};
+
+const parseUnitPrice = (value: string) => {
+  if (value.trim() === "") return null;
+  const price = Number(value);
+  return Number.isFinite(price) && price >= 0 ? price : null;
+};
+
 export default function TreatmentPlanPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -50,11 +70,19 @@ export default function TreatmentPlanPage() {
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
   const [successMessage, setSuccessMessage] = useState("");
+  const [procedures, setProcedures] = useState<Procedure[]>([]);
+  const [itemProcedureId, setItemProcedureId] = useState("");
+  const [itemQuantity, setItemQuantity] = useState("1");
+  const [itemUnitPrice, setItemUnitPrice] = useState("");
+  const [addingItem, setAddingItem] = useState(false);
+  const [removingItemId, setRemovingItemId] = useState<string | null>(null);
+  const [itemError, setItemError] = useState("");
 
   useEffect(() => {
     if (!user?.clinic_id || !params.id) return;
     fetchPlan();
     fetchPayments();
+    fetchProcedures();
   }, [user?.clinic_id, params.id]);
 
   const fetchPlan = async () => {
@@ -101,7 +129,9 @@ export default function TreatmentPlanPage() {
         description: data.description,
         total_cost: data.total_cost,
         status: data.status,
-        items: data.treatment_items || [],
+        items: ((data.treatment_items || []) as TreatmentItem[])
+          .slice()
+          .sort((a, b) => a.created_at.localeCompare(b.created_at)),
         created_at: data.created_at,
       });
     } catch (error) {
@@ -124,6 +154,137 @@ export default function TreatmentPlanPage() {
       setPayments(data || []);
     } catch (error) {
       console.error("Error fetching payments:", error);
+    }
+  };
+
+  const fetchProcedures = async () => {
+    const { data, error } = await supabase
+      .from("procedures_catalog")
+      .select("id,name")
+      .eq("clinic_id", user?.clinic_id)
+      .eq("is_active", true)
+      .order("name");
+
+    if (error) {
+      console.error("Error fetching procedures:", error);
+      setItemError("İşlem listesi yüklenemedi.");
+      return;
+    }
+    setProcedures(data || []);
+  };
+
+  const syncPlanTotal = async () => {
+    const { data: rows, error } = await supabase
+      .from("treatment_items")
+      .select("total_price")
+      .eq("treatment_plan_id", params.id)
+      .eq("clinic_id", user?.clinic_id);
+
+    if (error) throw error;
+    const total = roundMoney(
+      (rows || []).reduce((sum, row) => sum + Number(row.total_price), 0)
+    );
+
+    const { data: updated, error: updateError } = await supabase
+      .from("treatment_plans")
+      .update({ total_cost: total, updated_at: new Date().toISOString() })
+      .eq("id", params.id)
+      .eq("clinic_id", user?.clinic_id)
+      .select("id");
+
+    if (updateError) throw updateError;
+    if (!updated || updated.length === 0) {
+      throw new Error("Treatment plan total was not updated");
+    }
+  };
+
+  const handleAddItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user?.clinic_id) return;
+    setItemError("");
+
+    const procedure = procedures.find((p) => p.id === itemProcedureId);
+    const quantity = parseQuantity(itemQuantity);
+    const unitPrice = parseUnitPrice(itemUnitPrice);
+
+    if (!procedure) {
+      setItemError("Lütfen bir işlem seçin.");
+      return;
+    }
+    if (quantity === null) {
+      setItemError("Miktar en az 1 olan bir tam sayı olmalı.");
+      return;
+    }
+    if (unitPrice === null) {
+      setItemError("Geçerli bir birim fiyat girin.");
+      return;
+    }
+
+    setAddingItem(true);
+    let inserted = false;
+    try {
+      const { error } = await supabase.from("treatment_items").insert([
+        {
+          clinic_id: user.clinic_id,
+          treatment_plan_id: params.id,
+          procedure_id: procedure.id,
+          procedure_name: procedure.name,
+          quantity,
+          unit_price: unitPrice,
+          total_price: roundMoney(quantity * unitPrice),
+        },
+      ]);
+
+      if (error) throw error;
+      inserted = true;
+      setItemProcedureId("");
+      setItemQuantity("1");
+      setItemUnitPrice("");
+      await syncPlanTotal();
+    } catch (error) {
+      console.error("Error adding treatment item:", error);
+      setItemError(
+        inserted
+          ? "İşlem eklendi ancak plan toplamı güncellenemedi."
+          : "İşlem eklenirken hata oluştu."
+      );
+    } finally {
+      if (inserted) await fetchPlan();
+      setAddingItem(false);
+    }
+  };
+
+  const handleRemoveItem = async (itemId: string) => {
+    if (!user?.clinic_id) return;
+    if (!confirm("Bu işlem plandan kaldırılsın mı?")) return;
+    setItemError("");
+    setRemovingItemId(itemId);
+
+    let removed = false;
+    try {
+      const { data, error } = await supabase
+        .from("treatment_items")
+        .delete()
+        .eq("id", itemId)
+        .eq("clinic_id", user.clinic_id)
+        .select("id");
+
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        throw new Error("Treatment item was not deleted");
+      }
+      removed = true;
+      await syncPlanTotal();
+    } catch (error) {
+      console.error("Error removing treatment item:", error);
+      setItemError(
+        removed
+          ? "İşlem kaldırıldı ancak plan toplamı güncellenemedi."
+          : "İşlem kaldırılırken hata oluştu."
+      );
+    } finally {
+      if (removed) await fetchPlan();
+      setRemovingItemId(null);
     }
   };
 
@@ -170,6 +331,14 @@ export default function TreatmentPlanPage() {
     .reduce((sum, p) => sum + p.amount, 0);
 
   const remaining = plan ? plan.total_cost - totalPaid : 0;
+
+  const itemBusy = addingItem || removingItemId !== null;
+  const draftQuantity = parseQuantity(itemQuantity);
+  const draftUnitPrice = parseUnitPrice(itemUnitPrice);
+  const draftLineTotal =
+    draftQuantity !== null && draftUnitPrice !== null
+      ? roundMoney(draftQuantity * draftUnitPrice)
+      : 0;
 
   if (loading) {
     return <div className="p-8">Yükleniyor...</div>;
@@ -229,23 +398,122 @@ export default function TreatmentPlanPage() {
                   <th className="px-6 py-4 text-right text-sm font-semibold">
                     Toplam
                   </th>
+                  <th className="px-6 py-4" />
                 </tr>
               </thead>
               <tbody>
-                {plan.items.map((item) => (
-                  <tr key={item.id} className="border-b">
-                    <td className="px-6 py-4 text-sm">{item.procedure_name}</td>
-                    <td className="px-6 py-4 text-sm">{item.quantity}</td>
-                    <td className="px-6 py-4 text-sm text-right">
-                      ₺{item.unit_price.toLocaleString("tr-TR")}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-right font-semibold">
-                      ₺{item.total_price.toLocaleString("tr-TR")}
+                {plan.items.length === 0 ? (
+                  <tr className="border-b">
+                    <td
+                      colSpan={5}
+                      className="px-6 py-8 text-center text-sm text-gray-500"
+                    >
+                      Bu plana işlem eklenmemiş
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  plan.items.map((item) => (
+                    <tr key={item.id} className="border-b">
+                      <td className="px-6 py-4 text-sm">{item.procedure_name}</td>
+                      <td className="px-6 py-4 text-sm">{item.quantity}</td>
+                      <td className="px-6 py-4 text-sm text-right">
+                        ₺{Number(item.unit_price).toLocaleString("tr-TR")}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-right font-semibold">
+                        ₺{Number(item.total_price).toLocaleString("tr-TR")}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveItem(item.id)}
+                          disabled={itemBusy}
+                          className="text-red-600 hover:underline disabled:opacity-50"
+                        >
+                          {removingItemId === item.id ? "Kaldırılıyor..." : "Kaldır"}
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
+
+            <form onSubmit={handleAddItem} className="p-6">
+              <div className="grid grid-cols-4 gap-4">
+                <div className="col-span-2">
+                  <label className="block text-sm font-semibold mb-2">
+                    İşlem
+                  </label>
+                  <select
+                    value={itemProcedureId}
+                    onChange={(e) => setItemProcedureId(e.target.value)}
+                    className="w-full px-4 py-2 border rounded"
+                    required
+                  >
+                    <option value="">İşlem seçin</option>
+                    {procedures.map((procedure) => (
+                      <option key={procedure.id} value={procedure.id}>
+                        {procedure.name}
+                      </option>
+                    ))}
+                  </select>
+                  {procedures.length === 0 && (
+                    <p className="mt-2 text-xs text-gray-500">
+                      Katalogda aktif işlem bulunamadı.
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold mb-2">
+                    Miktar
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={itemQuantity}
+                    onChange={(e) => setItemQuantity(e.target.value)}
+                    className="w-full px-4 py-2 border rounded"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold mb-2">
+                    Birim Fiyat
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={itemUnitPrice}
+                    onChange={(e) => setItemUnitPrice(e.target.value)}
+                    className="w-full px-4 py-2 border rounded"
+                    placeholder="0.00"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between">
+                <div className="text-sm text-gray-600">
+                  Satır Toplamı:{" "}
+                  <span className="font-semibold text-gray-900">
+                    ₺{draftLineTotal.toLocaleString("tr-TR")}
+                  </span>
+                </div>
+                <button
+                  type="submit"
+                  disabled={itemBusy}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-500"
+                >
+                  {addingItem ? "Ekleniyor..." : "İşlem Ekle"}
+                </button>
+              </div>
+
+              {itemError && (
+                <p className="mt-4 text-sm text-red-600">{itemError}</p>
+              )}
+            </form>
           </div>
         </div>
 

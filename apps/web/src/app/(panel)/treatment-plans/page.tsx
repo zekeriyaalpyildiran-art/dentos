@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+
+const PAGE_SIZE = 50;
 
 interface TreatmentPlan {
   id: string;
@@ -22,18 +24,24 @@ export default function TreatmentPlansPage() {
 
   const [plans, setPlans] = useState<TreatmentPlan[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [filter, setFilter] = useState<"all" | "draft" | "proposed" | "approved" | "completed">(
     "all"
   );
+  const requestId = useRef(0);
 
   useEffect(() => {
     if (!user?.clinic_id) return;
-    fetchPlans();
-  }, [user?.clinic_id]);
+    fetchPlans(0);
+  }, [user?.clinic_id, filter]);
 
-  const fetchPlans = async () => {
+  const fetchPlans = async (from: number) => {
+    const reqId = ++requestId.current;
+    if (from === 0) setLoading(true);
+    else setLoadingMore(true);
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from("treatment_plans")
         .select(
           `
@@ -46,10 +54,16 @@ export default function TreatmentPlansPage() {
           doctors(users(full_name))
         `
         )
-        .eq("clinic_id", user?.clinic_id)
-        .order("created_at", { ascending: false })
-        .limit(50);
+        .eq("clinic_id", user?.clinic_id);
+      if (filter !== "all") query = query.eq("status", filter);
 
+      const { data, error } = await query
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .range(from, from + PAGE_SIZE - 1);
+
+      // A newer request (filter change or another page) supersedes this one.
+      if (reqId !== requestId.current) return;
       if (error) throw error;
 
       const mapped = (data || []).map((p: any) => ({
@@ -62,18 +76,25 @@ export default function TreatmentPlansPage() {
         created_at: p.created_at,
       }));
 
-      setPlans(mapped);
+      setPlans((prev) => {
+        if (from === 0) return mapped;
+        const seen = new Set(prev.map((p) => p.id));
+        return [...prev, ...mapped.filter((p) => !seen.has(p.id))];
+      });
+      setHasMore(mapped.length === PAGE_SIZE);
     } catch (error) {
       console.error("Error fetching treatment plans:", error);
+      if (from === 0) {
+        setPlans([]);
+        setHasMore(false);
+      }
     } finally {
-      setLoading(false);
+      if (reqId === requestId.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
-
-  const filtered = plans.filter((p) => {
-    if (filter === "all") return true;
-    return p.status === filter;
-  });
 
   const getStatusColor = (status: string) => {
     const colors: Record<string, string> = {
@@ -98,10 +119,6 @@ export default function TreatmentPlansPage() {
     };
     return labels[status] || status;
   };
-
-  if (loading) {
-    return <div className="p-8">Yükleniyor...</div>;
-  }
 
   return (
     <div className="p-8">
@@ -158,14 +175,20 @@ export default function TreatmentPlansPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 ? (
+            {loading ? (
+              <tr>
+                <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
+                  Yükleniyor...
+                </td>
+              </tr>
+            ) : plans.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
                   Plan bulunamadı
                 </td>
               </tr>
             ) : (
-              filtered.map((plan) => (
+              plans.map((plan) => (
                 <tr key={plan.id} className="border-b hover:bg-gray-50">
                   <td className="px-6 py-4 text-sm text-gray-800 font-semibold">
                     {plan.patient_name}
@@ -204,6 +227,18 @@ export default function TreatmentPlansPage() {
           </tbody>
         </table>
       </div>
+
+      {hasMore && !loading && (
+        <div className="mt-6 flex justify-center">
+          <button
+            onClick={() => fetchPlans(plans.length)}
+            disabled={loadingMore}
+            className="px-4 py-2 rounded font-semibold bg-gray-200 text-gray-800 hover:bg-gray-300 disabled:opacity-50"
+          >
+            {loadingMore ? "Yükleniyor..." : "Daha fazla yükle"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
