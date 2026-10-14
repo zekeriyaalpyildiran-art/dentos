@@ -13,6 +13,7 @@ interface LabOrder {
   status: LabOrderStatus;
   due_date: string;
   created_at: string;
+  lab_name: string | null;
   patient_name: string;
 }
 
@@ -51,7 +52,7 @@ export default function LabPage() {
     try {
       const { data, error } = await supabase
         .from("lab_orders")
-        .select("id, order_number, status, due_date, created_at, patients(full_name)")
+        .select("id, order_number, status, due_date, created_at, lab_name, patients(full_name)")
         .eq("clinic_id", user.clinic_id)
         .order("created_at", { ascending: false });
 
@@ -64,6 +65,7 @@ export default function LabPage() {
           status: o.status ?? "draft",
           due_date: o.due_date,
           created_at: o.created_at,
+          lab_name: o.lab_name ?? null,
           patient_name: o.patients?.full_name || "-",
         }))
       );
@@ -147,6 +149,9 @@ export default function LabPage() {
                 Sipariş No
               </th>
               <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
+                Laboratuvar
+              </th>
+              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
                 Teslim Tarihi
               </th>
               <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
@@ -157,7 +162,7 @@ export default function LabPage() {
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-gray-500">
+                <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
                   Lab siparişi bulunamadı
                 </td>
               </tr>
@@ -171,6 +176,7 @@ export default function LabPage() {
                     {order.patient_name}
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-900">{order.order_number}</td>
+                  <td className="px-6 py-4 text-sm text-gray-900">{order.lab_name || "-"}</td>
                   <td className="px-6 py-4 text-sm text-gray-900">
                     {new Date(order.due_date + "T00:00:00").toLocaleDateString("tr-TR")}
                   </td>

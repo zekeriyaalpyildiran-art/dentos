@@ -213,21 +213,114 @@ async function seedDatabase() {
       new Date(Date.now() + 24 * 60 * 60 * 1000)
     );
 
-    const { error: appointmentsError } = await supabase
+    const { count: existingAppointments } = await supabase
       .from('appointments')
-      .upsert([
-        {
-          clinic_id: CLINIC_ID,
-          patient_id: '55555555-5555-5555-5555-555555555555',
-          doctor_id: DOCTOR_ECE_ID,
-          chair_id: chair2?.id,
-          start_time: `${day}T09:30:00+03:00`,
-          end_time: `${day}T10:00:00+03:00`,
-          status: 'scheduled',
-          notes: 'Rutin kontrol',
-        },
-      ]);
-    record('appointments', appointmentsError, 1);
+      .select('id', { count: 'exact', head: true })
+      .eq('clinic_id', CLINIC_ID)
+      .eq('patient_id', '55555555-5555-5555-5555-555555555555')
+      .eq('doctor_id', DOCTOR_ECE_ID)
+      .eq('notes', 'Rutin kontrol');
+
+    const { error: appointmentsError } = existingAppointments
+      ? { error: null }
+      : await supabase.from('appointments').insert([
+          {
+            clinic_id: CLINIC_ID,
+            patient_id: '55555555-5555-5555-5555-555555555555',
+            doctor_id: DOCTOR_ECE_ID,
+            chair_id: chair2?.id,
+            start_time: `${day}T09:30:00+03:00`,
+            end_time: `${day}T10:00:00+03:00`,
+            status: 'scheduled',
+            notes: 'Rutin kontrol',
+          },
+        ]);
+    record('appointments', appointmentsError, existingAppointments ? 0 : 1);
+
+    // 8. Insert leads for the CRM pages
+    console.log('Seeding leads...');
+    const { error: leadsError } = await supabase
+      .from('leads')
+      .upsert(
+        [
+          {
+            id: '66666666-6666-6666-6666-666666666601',
+            clinic_id: CLINIC_ID,
+            full_name: 'Can Demir',
+            phone: '+90 (555) 456-7890',
+            email: 'can.demir@example.com',
+            source: 'online',
+            status: 'new',
+            notes: 'Web sitesi üzerinden randevu talebi',
+          },
+          {
+            id: '66666666-6666-6666-6666-666666666602',
+            clinic_id: CLINIC_ID,
+            full_name: 'Zeynep Arslan',
+            phone: '+90 (555) 567-8901',
+            email: 'zeynep.arslan@example.com',
+            source: 'referral',
+            status: 'contacted',
+            notes: 'Mevcut hasta tavsiyesiyle geldi',
+          },
+        ],
+        { onConflict: 'id', ignoreDuplicates: true }
+      );
+    record('leads', leadsError, 2);
+
+    // 9. Insert stock items (ORT-002 is below its minimum so the low-stock badge shows)
+    console.log('Seeding stock items...');
+    const { error: stockItemsError } = await supabase
+      .from('stock_items')
+      .upsert(
+        [
+          {
+            id: '77777777-7777-7777-7777-777777777701',
+            clinic_id: CLINIC_ID,
+            item_code: 'ORT-001',
+            item_name: 'Ortodontik Tel (0.016)',
+            category: 'materials',
+            quantity_on_hand: 40,
+            quantity_minimum: 10,
+            unit_price: 85,
+            supplier: 'Dental Tedarik',
+          },
+          {
+            id: '77777777-7777-7777-7777-777777777702',
+            clinic_id: CLINIC_ID,
+            item_code: 'ORT-002',
+            item_name: 'Ortodontik Braket',
+            category: 'materials',
+            quantity_on_hand: 3,
+            quantity_minimum: 10,
+            unit_price: 12.5,
+            supplier: 'Dental Tedarik',
+          },
+        ],
+        { onConflict: 'clinic_id,item_code', ignoreDuplicates: true }
+      );
+    record('stock_items', stockItemsError, 2);
+
+    // 10. Insert treatment plan for the treatment plan detail page
+    console.log('Seeding treatment plans...');
+    const { error: treatmentPlansError } = await supabase
+      .from('treatment_plans')
+      .upsert(
+        [
+          {
+            id: '88888888-8888-8888-8888-888888888801',
+            clinic_id: CLINIC_ID,
+            patient_id: '55555555-5555-5555-5555-555555555555',
+            doctor_id: DOCTOR_ECE_ID,
+            title: 'Kron tedavisi',
+            description: 'Sağ alt molar için seramik kron',
+            total_cost: 8500,
+            status: 'proposed',
+          },
+        ],
+        { onConflict: 'id', ignoreDuplicates: true }
+      );
+    record('treatment_plans', treatmentPlansError, 1);
 
     const success = results.every((r) => r.status === 'success');
     return {

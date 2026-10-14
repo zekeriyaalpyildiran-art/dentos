@@ -67,6 +67,7 @@ export default function Page() {
   const [patientId, setPatientId] = useState("");
   const [doctorId, setDoctorId] = useState("");
   const [dueDate, setDueDate] = useState("");
+  const [labName, setLabName] = useState("");
   const [notes, setNotes] = useState("");
   const [items, setItems] = useState<ItemDraft[]>([emptyItem()]);
 
@@ -129,6 +130,7 @@ export default function Page() {
           order_number: orderNumber,
           status: "draft",
           due_date: dueDate,
+          lab_name: labName.trim() || null,
           notes: notes.trim() || null,
         })
         .select("id")
@@ -209,6 +211,14 @@ export default function Page() {
               className={inputClass}
               value={dueDate}
               onChange={(e) => setDueDate(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Laboratuvar</label>
+            <input
+              className={inputClass}
+              value={labName}
+              onChange={(e) => setLabName(e.target.value)}
             />
           </div>
           <div className="md:col-span-2">

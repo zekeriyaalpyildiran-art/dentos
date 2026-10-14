@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 
@@ -9,6 +9,11 @@ interface Clinic {
   phone: string | null;
   address: string | null;
   plan: string | null;
+}
+
+interface Message {
+  type: "success" | "error";
+  text: string;
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -38,43 +43,81 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-// Read-only: clinics has no UPDATE policy, so edits would be blocked by RLS.
 export default function Page() {
   const { user } = useAuthStore();
   const supabase = createClient();
+  const canEdit = user?.role === "owner" || user?.role === "admin";
 
   const [clinic, setClinic] = useState<Clinic | null>(null);
+  const [form, setForm] = useState({ name: "", phone: "", address: "" });
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<Message | null>(null);
 
-  useEffect(() => {
+  const fetchClinic = useCallback(async () => {
     if (!user?.clinic_id) {
       setLoading(false);
       return;
     }
 
-    const fetchClinic = async () => {
-      setLoading(true);
-      setFailed(false);
-      try {
-        const { data, error } = await supabase
-          .from("clinics")
-          .select("name, phone, address, plan")
-          .eq("id", user.clinic_id)
-          .maybeSingle();
+    setFailed(false);
+    try {
+      const { data, error } = await supabase
+        .from("clinics")
+        .select("name, phone, address, plan")
+        .eq("id", user.clinic_id)
+        .maybeSingle();
 
-        if (error) throw error;
-        setClinic(data);
-      } catch (err) {
-        console.error("Error fetching clinic:", err);
-        setFailed(true);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchClinic();
+      if (error) throw error;
+      setClinic(data);
+      setForm({
+        name: data?.name ?? "",
+        phone: data?.phone ?? "",
+        address: data?.address ?? "",
+      });
+    } catch (err) {
+      console.error("Error fetching clinic:", err);
+      setFailed(true);
+    } finally {
+      setLoading(false);
+    }
   }, [user?.clinic_id]);
+
+  useEffect(() => {
+    fetchClinic();
+  }, [fetchClinic]);
+
+  const setField = (key: keyof typeof form) => (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+  ) => setForm((prev) => ({ ...prev, [key]: e.target.value }));
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user?.clinic_id) return;
+
+    setSaving(true);
+    setMessage(null);
+    try {
+      const { error } = await supabase
+        .from("clinics")
+        .update({
+          name: form.name,
+          phone: form.phone || null,
+          address: form.address || null,
+        })
+        .eq("id", user.clinic_id);
+
+      if (error) throw error;
+      setMessage({ type: "success", text: "Klinik bilgileri güncellendi." });
+      await fetchClinic();
+    } catch (err) {
+      console.error("Error updating clinic:", err);
+      setMessage({ type: "error", text: "Klinik bilgileri güncellenirken hata oluştu." });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div className="p-8">
@@ -90,6 +133,48 @@ export default function Page() {
               <p className="text-red-600">
                 Klinik bilgileri yüklenemedi. Lütfen sayfayı yenileyin.
               </p>
+            ) : canEdit ? (
+              <form onSubmit={handleSave} className="text-gray-900">
+                <div className="mb-4">
+                  <label className="block text-sm font-semibold mb-2">Klinik Adı</label>
+                  <input
+                    type="text"
+                    value={form.name}
+                    onChange={setField("name")}
+                    className="w-full px-4 py-2 border rounded"
+                    required
+                  />
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm font-semibold mb-2">Telefon</label>
+                  <input
+                    type="tel"
+                    value={form.phone}
+                    onChange={setField("phone")}
+                    className="w-full px-4 py-2 border rounded"
+                  />
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm font-semibold mb-2">Adres</label>
+                  <textarea
+                    rows={3}
+                    value={form.address}
+                    onChange={setField("address")}
+                    className="w-full px-4 py-2 border rounded"
+                  />
+                </div>
+                <div className="mb-6">
+                  <p className="text-sm font-semibold mb-2">Plan</p>
+                  <p className="text-gray-600">{labelOf(PLAN_LABELS, clinic?.plan)}</p>
+                </div>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-500"
+                >
+                  {saving ? "Kaydediliyor..." : "Kaydet"}
+                </button>
+              </form>
             ) : (
               <dl>
                 <Row label="Klinik Adı" value={clinic?.name || "-"} />
@@ -98,10 +183,21 @@ export default function Page() {
                 <Row label="Plan" value={labelOf(PLAN_LABELS, clinic?.plan)} />
               </dl>
             )}
+            {message && (
+              <p
+                className={`mt-4 text-sm ${
+                  message.type === "success" ? "text-green-600" : "text-red-600"
+                }`}
+              >
+                {message.text}
+              </p>
+            )}
           </div>
-          <p className="mt-3 text-sm text-gray-600">
-            Klinik bilgilerinde değişiklik yapmak için bir yöneticiyle iletişime geçin.
-          </p>
+          {!canEdit && (
+            <p className="mt-3 text-sm text-gray-600">
+              Klinik bilgilerinde değişiklik yapmak için bir yöneticiyle iletişime geçin.
+            </p>
+          )}
         </div>
 
         <div className="bg-white p-6 rounded-lg shadow">
