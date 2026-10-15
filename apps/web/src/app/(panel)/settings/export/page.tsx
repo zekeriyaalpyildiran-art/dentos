@@ -49,6 +49,18 @@ const CLINIC_TABLES = [
   "lab_order_items",
   "stock_items",
   "stock_transactions",
+  // Phase 7 (0024): prices live only in stock_item_costs / stock_batch_costs (the owner is a cost viewer), and the
+  // ledger, lots and balances only in these tables. stock_operations (no client access) and user_favorite_items
+  // (RLS returns only the caller's own rows) are left out.
+  "stock_locations",
+  "suppliers",
+  "stock_item_costs",
+  "stock_batches",
+  "stock_balances",
+  "stock_movements",
+  "stock_counts",
+  "stock_correction_requests",
+  "stock_product_requests",
   "einvoices",
   "enabiz_logs",
   "consent_logs",
@@ -57,7 +69,10 @@ const CLINIC_TABLES = [
 ] as const;
 
 /** Tables keyed by something other than `id`: read with keyset paging on that column. */
-const KEYED_TABLES: { table: string; key: string }[] = [{ table: "crm_handoff_private_notes", key: "handoff_id" }];
+const KEYED_TABLES: { table: string; key: string }[] = [
+  { table: "crm_handoff_private_notes", key: "handoff_id" },
+  { table: "stock_batch_costs", key: "batch_id" },
+];
 
 /** Rows hidden by RLS (trashed leads and what belongs to them), fetched through crm_export_trashed. */
 const CRM_TRASHED_TABLES: CrmTrashedExportTable[] = ["leads", "lead_activities", "crm_calls", "crm_handoffs"];

@@ -121,7 +121,8 @@ export function PermissionManager({ clinicId, canManageFinance }: Props) {
         <p className="text-sm text-gray-600 mt-1">
           Yetkiler rolden bağımsızdır ve kişiye tek tek verilir. Finans yetkileri yalnızca Finans
           yetkisi olan biri tarafından verilebilir veya geri alınabilir; kliniğin son Finans
-          yetkilisinin yetkisi geri alınamaz.
+          yetkilisinin yetkisi geri alınamaz. Stok yönetim yetkisini yalnızca klinik sahibi, stok
+          maliyet yetkisini klinik sahibi veya Finans yetkilisi verebilir.
         </p>
         <p className="text-sm text-gray-600 mt-2">
           Şu an Finans yetkisi raporlardaki tahsilat tutarını, ödeme kayıtlarını düzeltmeyi ve
@@ -176,21 +177,31 @@ export function PermissionManager({ clinicId, canManageFinance }: Props) {
                     // The database lets only an owner take a permission away from an owner.
                     const ownerLocked =
                       member.role === "owner" && myRole !== "owner" && granted.has(key);
+                    // Stock grants stay with the owner (migration 0024): 'stock_manage' only by the owner,
+                    // 'stock_cost_view' by the owner or a finance holder.
+                    const stockLocked =
+                      (p === "stock_manage" && myRole !== "owner") ||
+                      (p === "stock_cost_view" && myRole !== "owner" && !canManageFinance);
+                    const locked = ownerLocked || stockLocked;
                     return (
                       <td key={p} className="px-3 py-3 text-center">
                         <input
                           type="checkbox"
                           checked={granted.has(key)}
-                          disabled={busyKey !== null || ownerLocked}
+                          disabled={busyKey !== null || locked}
                           onChange={() => toggle(member, p)}
                           title={
                             ownerLocked
                               ? "Klinik sahibinin yetkilerini yalnızca klinik sahibi kaldırabilir."
-                              : undefined
+                              : stockLocked
+                                ? p === "stock_manage"
+                                  ? "Stok yönetim yetkisini yalnızca klinik sahibi verebilir veya kaldırabilir."
+                                  : "Stok maliyet yetkisini yalnızca klinik sahibi veya finans yetkisi olan kullanıcılar verebilir."
+                                : undefined
                           }
                           aria-label={`${member.full_name}: ${PERMISSION_LABELS[p]}`}
                           className={`h-4 w-4 accent-blue-600 ${
-                            ownerLocked ? "cursor-not-allowed" : "cursor-pointer disabled:cursor-wait"
+                            locked ? "cursor-not-allowed" : "cursor-pointer disabled:cursor-wait"
                           }`}
                         />
                       </td>

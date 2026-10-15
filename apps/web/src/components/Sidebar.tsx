@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { signOut } from "@/lib/auth";
+import { clearStockStorage } from "@/lib/stock/storage";
 import { canSeeFinance } from "@/lib/permissions";
 
 /** Shown only to finance / finance_readonly holders (owner decision 1: role alone gives nothing). */
@@ -20,7 +21,7 @@ const MENU_ITEMS: { name: string; href: string; match?: string; exclude?: string
   { name: "📊 CRM", href: "/crm/leads", match: "/crm", exclude: "/crm/today" },
   { name: "✅ Görevler", href: "/tasks" },
   { name: "🧪 Lab", href: "/lab" },
-  { name: "📦 Stok", href: "/inventory" },
+  { name: "📦 Stok", href: "/inventory", match: "/inventory" },
   { name: "👔 Ekip", href: "/team" },
   { name: "📈 Raporlar", href: "/reports" },
   { name: "⚙️ Ayarlar", href: "/settings" },
@@ -46,6 +47,8 @@ export function Sidebar() {
 
   const handleLogout = async () => {
     try {
+      // Per-viewer stock drafts (bulk cart with costs, count drafts) never outlive the session on a shared PC.
+      clearStockStorage();
       await signOut();
       router.push("/login");
     } catch (error) {

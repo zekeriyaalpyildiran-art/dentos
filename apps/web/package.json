@@ -3,15 +3,16 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "predev": "pnpm run pdf-worker",
+    "predev": "pnpm run pdf-worker && pnpm run stock-wasm",
     "dev": "next dev",
-    "prebuild": "pnpm run pdf-worker",
+    "prebuild": "pnpm run pdf-worker && pnpm run stock-wasm",
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "pdf-worker": "node -e \"const p=require('path');require('fs').copyFileSync(p.join(p.dirname(require.resolve('pdfjs-dist/package.json')),'legacy','build','pdf.worker.min.mjs'),'public/pdf.worker.min.mjs')\""
+    "pdf-worker": "node -e \"const p=require('path');require('fs').copyFileSync(p.join(p.dirname(require.resolve('pdfjs-dist/package.json')),'legacy','build','pdf.worker.min.mjs'),'public/pdf.worker.min.mjs')\"",
+    "stock-wasm": "node -e \"const f=require('fs'),p=require('path');const v=require('zxing-wasm/reader').ZXING_WASM_VERSION;const d='public/vendor';const n='zxing-reader-'+v+'.wasm';f.mkdirSync(d,{recursive:true});for(const x of f.readdirSync(d))if(/^zxing-reader-.*\\.wasm$/.test(x)&&x!==n)f.unlinkSync(p.join(d,x));f.copyFileSync(require.resolve('zxing-wasm/reader/zxing_reader.wasm'),p.join(d,n))\""
   },
   "dependencies": {
     "@pdf-lib/fontkit": "1.1.1",
@@ -24,7 +25,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
-    "zustand": "^4.4.0"
+    "zustand": "^4.4.0",
+    "zxing-wasm": "3.1.3"
   },
   "devDependencies": {
     "@testing-library/react": "^14.1.2",
