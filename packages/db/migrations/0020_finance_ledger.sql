@@ -2465,7 +2465,7 @@ BEGIN
 END;
 $$;
 
--- Report groups: replace the hard-coded Alp / Baykara / Lab groups (FM:79-81, FP:63) with owner data.
+-- Report groups: replace the legacy hard-coded person/company and Lab groups (FM:79-81, FP:63) with owner data.
 CREATE OR REPLACE FUNCTION public.fin_save_report_group(
   p_id uuid,
   p_version integer,
@@ -4408,7 +4408,7 @@ END;
 $$;
 
 -- ---------------------------------------------------------------------------
--- 4. Seeds. No person or company names (owner decision 4): the legacy groups 'Alp' / 'Baykara' (FM:81), the name
+-- 4. Seeds. No person or company names (owner decision 4): the legacy person/company named groups (FM:81), the name
 --    lists (FC:7-8, FC:28-30) and the '%4 dahil' note (FP:65, IP:55) are not seeded; the owner recreates them as
 --    counterparties, report groups and settings. Physician counterparties are not generated from doctors either.
 --    Idempotent: accounts, the report group and settings only while the clinic has no fin_settings row (written
