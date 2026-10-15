@@ -2,7 +2,9 @@
 
 // Small counts next to the menu items. They reuse the read RPCs of the pages they point to (nothing new in the
 // database): crm_work_list for CRM · Bugün ("Günlük liste") and the caller's open tasks, stock_item_levels for the
-// critical stock cards. Refreshed every minute while the tab is visible; any failure just hides that badge.
+// critical stock cards. crm_work_list builds the whole work list on every call, so on the free database the badges
+// refresh only every 5 minutes while the tab is visible (page changes at most once a minute); any failure just hides
+// that badge.
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
@@ -12,9 +14,9 @@ import type { MenuBadgeKey } from "@/lib/nav";
 
 export type MenuBadges = Partial<Record<MenuBadgeKey, number>>;
 
-const REFRESH_MS = 60_000;
+const REFRESH_MS = 5 * 60_000;
 /** Page changes and returning to the tab refresh too, but never more often than this. */
-const MIN_GAP_MS = 15_000;
+const MIN_GAP_MS = 60_000;
 
 function count(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;

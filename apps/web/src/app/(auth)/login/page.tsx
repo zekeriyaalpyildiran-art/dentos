@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { signIn, signOut, getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase";
 import { useAuthStore } from "@/lib/store";
-import { homePathFor } from "@/lib/nav";
+import { homePathForUser } from "@/lib/nav";
 
 function loginErrorMessage(err: unknown) {
   const message = err instanceof Error ? err.message : "";
@@ -65,7 +65,7 @@ export default function LoginPage() {
       // Straight to the role's start page; the store gets the user now so the panel does not wait for the
       // auth listener's own lookup.
       useAuthStore.getState().setUser(user);
-      router.push(homePathFor(user.role));
+      router.push(homePathForUser(user));
     } finally {
       setLoading(false);
     }

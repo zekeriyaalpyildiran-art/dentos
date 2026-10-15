@@ -73,6 +73,18 @@ export function homePathFor(role: string | null | undefined): string {
   return role && Object.prototype.hasOwnProperty.call(ROLE_HOME, role) ? ROLE_HOME[role as UserRole] : DEFAULT_HOME;
 }
 
+/**
+ * The owner starts on Finans (owner's choice, 2026-10-15). Finance pages are gated by permission, not by role, so the
+ * owner goes there only while holding 'finance' or 'finance_readonly'; otherwise the role's start page (no loop via
+ * /dashboard).
+ */
+export const OWNER_FINANCE_HOME = "/finance";
+
+export function homePathForUser(user: NavUser): string {
+  if (user?.role === "owner" && canSeeFinance(user)) return OWNER_FINANCE_HOME;
+  return homePathFor(user?.role);
+}
+
 /** Badge text: hidden at 0, capped at 99+. */
 export function badgeText(n: number | null | undefined): string | null {
   if (!n || n <= 0 || !Number.isFinite(n)) return null;

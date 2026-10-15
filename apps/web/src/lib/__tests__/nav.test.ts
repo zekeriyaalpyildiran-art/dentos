@@ -8,7 +8,9 @@ import {
   MENU_ITEMS,
   ROLE_HOME,
   badgeText,
+  OWNER_FINANCE_HOME,
   homePathFor,
+  homePathForUser,
   isMenuItemActive,
   menuItemsFor,
   type MenuItem,
@@ -106,6 +108,16 @@ describe("homePathFor", () => {
     expect(homePathFor("constructor")).toBe(DEFAULT_HOME);
     expect(homePathFor(null)).toBe(DEFAULT_HOME);
     expect(homePathFor(undefined)).toBe(DEFAULT_HOME);
+  });
+
+  it("sends the owner to Finans only while the owner can see finance", () => {
+    expect(homePathForUser({ role: "owner", permissions: ["finance"] })).toBe(OWNER_FINANCE_HOME);
+    expect(homePathForUser({ role: "owner", permissions: ["finance_readonly"] })).toBe(OWNER_FINANCE_HOME);
+    expect(homePathForUser({ role: "owner", permissions: [] })).toBe(ROLE_HOME.owner);
+    expect(homePathForUser({ role: "admin", permissions: ["finance"] })).toBe(ROLE_HOME.admin);
+    expect(homePathForUser({ role: "reception", permissions: ["finance"] })).toBe(ROLE_HOME.reception);
+    expect(homePathForUser(null)).toBe(DEFAULT_HOME);
+    expect(pageSource(OWNER_FINANCE_HOME)).not.toBeNull();
   });
 
   it("only uses pages every role may open (a refused page sends the user to /dashboard)", () => {

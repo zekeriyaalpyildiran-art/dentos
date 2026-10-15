@@ -7,12 +7,12 @@ import Link from "next/link";
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
-import { homePathFor } from "@/lib/nav";
+import { homePathForUser } from "@/lib/nav";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const role = useAuthStore((state) => state.user?.role);
-  const target = role ? homePathFor(role) : null;
+  const user = useAuthStore((state) => state.user);
+  const target = user?.role ? homePathForUser(user) : null;
 
   useEffect(() => {
     if (target) router.replace(target);
@@ -25,7 +25,7 @@ export default function DashboardPage() {
         <p className="mt-4 text-foreground/60">Başlangıç sayfanız açılıyor...</p>
         {target && (
           <Link href={target} replace className="mt-2 inline-block text-sm text-blue-700 underline">
-            Açılmazsa buraya dokunun
+            Açılmazsa buraya tıklayın
           </Link>
         )}
       </div>
