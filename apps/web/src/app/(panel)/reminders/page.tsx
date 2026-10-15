@@ -227,34 +227,34 @@ export default function RemindersPage() {
   const formatCount = (key: keyof Stats) => (stats ? stats[key] : "-");
 
   return (
-    <div className="p-8">
-      <h1 className="text-3xl font-bold mb-6">Randevu Hatırlatmaları</h1>
+    <div className="p-4 sm:p-8">
+      <h1 className="text-2xl sm:text-3xl font-bold mb-6">Randevu Hatırlatmaları</h1>
 
       <SmsNotActiveNotice className="mb-8" />
 
       {/* Statistics */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
-        <div className="bg-white p-6 rounded-lg shadow">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4 mb-8">
+        <div className="bg-white p-4 sm:p-6 rounded-lg shadow min-w-0">
           <div className="text-gray-500 text-sm mb-2">Toplam</div>
           <div className="text-3xl font-bold text-gray-800">{formatCount("total")}</div>
         </div>
-        <div className="bg-white p-6 rounded-lg shadow">
+        <div className="bg-white p-4 sm:p-6 rounded-lg shadow min-w-0">
           <div className="text-blue-700 text-sm mb-2">Bekleniyor</div>
           <div className="text-3xl font-bold text-blue-600">{formatCount("pending")}</div>
         </div>
-        <div className="bg-white p-6 rounded-lg shadow">
+        <div className="bg-white p-4 sm:p-6 rounded-lg shadow min-w-0">
           <div className="text-green-700 text-sm mb-2">Gönderildi</div>
           <div className="text-3xl font-bold text-green-600">{formatCount("sent")}</div>
         </div>
-        <div className="bg-white p-6 rounded-lg shadow">
+        <div className="bg-white p-4 sm:p-6 rounded-lg shadow min-w-0">
           <div className="text-red-700 text-sm mb-2">Başarısız</div>
           <div className="text-3xl font-bold text-red-600">{formatCount("failed")}</div>
         </div>
-        <div className="bg-white p-6 rounded-lg shadow">
+        <div className="bg-white p-4 sm:p-6 rounded-lg shadow min-w-0">
           <div className="text-gray-500 text-sm mb-2">İptal</div>
           <div className="text-3xl font-bold text-gray-600">{formatCount("cancelled")}</div>
         </div>
-        <div className="bg-white p-6 rounded-lg shadow">
+        <div className="bg-white p-4 sm:p-6 rounded-lg shadow min-w-0">
           <div className="text-amber-700 text-sm mb-2">Gönderilmedi</div>
           <div className="text-3xl font-bold text-amber-600">{formatCount("not_sent")}</div>
         </div>
@@ -278,8 +278,8 @@ export default function RemindersPage() {
       </div>
 
       {/* Reminders Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="w-full">
+      <div className="bg-white rounded-lg shadow overflow-x-auto">
+        <table className="w-full min-w-[720px]">
           <thead className="bg-gray-100 border-b">
             <tr>
               <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">

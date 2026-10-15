@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { signIn, signOut, getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase";
+import { useAuthStore } from "@/lib/store";
+import { homePathFor } from "@/lib/nav";
 
 function loginErrorMessage(err: unknown) {
   const message = err instanceof Error ? err.message : "";
@@ -60,7 +62,10 @@ export default function LoginPage() {
         setError("Bu hesap bir kliniğe bağlı değil veya pasif durumda. Yöneticinizle iletişime geçin.");
         return;
       }
-      router.push("/dashboard");
+      // Straight to the role's start page; the store gets the user now so the panel does not wait for the
+      // auth listener's own lookup.
+      useAuthStore.getState().setUser(user);
+      router.push(homePathFor(user.role));
     } finally {
       setLoading(false);
     }
