@@ -22,7 +22,7 @@ export default function DashboardPage() {
     <div className="flex items-center justify-center p-8 min-h-[50vh]">
       <div className="text-center" role="status">
         <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mx-auto" aria-hidden="true" />
-        <p className="mt-4 text-foreground/60">Başlangıç sayfanız açılıyor...</p>
+        <p className="mt-4 text-gray-600">Başlangıç sayfanız açılıyor...</p>
         {target && (
           <Link href={target} replace className="mt-2 inline-block text-sm text-blue-700 underline">
             Açılmazsa buraya tıklayın

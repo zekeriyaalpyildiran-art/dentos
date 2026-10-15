@@ -97,7 +97,7 @@ export function StockShell({
                 {n > 0 && (
                   <span
                     className={`ml-1.5 inline-block min-w-[1.25rem] px-1 rounded-full text-xs text-center ${
-                      isActive(tab.href) ? "bg-white text-blue-700" : tab.badge === "critical" ? "bg-red-600 text-white" : "bg-amber-500 text-white"
+                      isActive(tab.href) ? "bg-white text-blue-700" : tab.badge === "critical" ? "bg-red-600 text-white" : "bg-amber-700 text-white"
                     }`}
                   >
                     {n}

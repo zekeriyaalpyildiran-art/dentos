@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 import { PASSWORD_TEXTS, newPasswordError, passwordUpdateErrorMessage } from "@/lib/password";
+import { ClinicLogo } from "@/components/ClinicLogo";
 
 const inputClass =
   "w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500";
@@ -232,11 +233,12 @@ export default function ResetPasswordPage() {
     !!pending?.currentEmail && pending.currentEmail.trim().toLowerCase() !== pending.email.trim().toLowerCase();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-8 space-y-6">
+    <div className="min-h-screen bg-background flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-lg border border-border p-8 space-y-6">
         <div className="text-center space-y-2">
-          <span className="text-5xl">🦷</span>
-          <h1 className="text-2xl font-bold text-gray-900">
+          <ClinicLogo priority className="mx-auto max-w-[220px]" />
+          <p className="text-sm font-medium text-gray-600">DentOS · Klinik yönetim sistemi</p>
+          <h1 className="pt-2 text-2xl font-bold text-gray-900">
             {/* An expired / used link redirects with #error=… and no type, so the title must not guess the mode. */}
             {linkError ? "Bağlantı geçersiz" : setup ? "Şifrenizi belirleyin" : "Yeni Şifre Belirle"}
           </h1>
