@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { createClient } from "@/lib/supabase";
 import { useAuthStore } from "@/lib/store";
 import { hasPermission } from "@/lib/permissions";
 import { finExportManifest, toFinanceError, type ExportManifestJson } from "@/lib/finance";
 import { crmExportCounts, crmExportTrashed, toCrmError, type CrmTrashedExportTable } from "@/lib/crm";
+import { describeBackupStatus, fetchBackupStatus, type BackupStatusView, type Db } from "@/lib/backup";
 
 /**
  * Owner JSON export (owner decision 3: no paid Supabase backups). Reads every clinic table directly through
@@ -17,6 +18,9 @@ import { crmExportCounts, crmExportTrashed, toCrmError, type CrmTrashedExportTab
  * CRM (Phase 6): RLS hides trashed leads and their history, calls and handoffs from direct reads, so those rows
  * come from crm_export_trashed (owner only) and are merged into the same tables; crm_export_counts then proves
  * that every CRM table was read completely.
+ *
+ * Above the export the page shows the nightly automatic backup (0029 backup_status: private repo dentos-yedek,
+ * encrypted pg_dump every night at 02:30 Istanbul time).
  */
 
 const PAGE = 1000;
@@ -129,6 +133,42 @@ export default function ExportPage() {
     <ProtectedRoute allowedRoles={["owner"]}>
       <Exporter />
     </ProtectedRoute>
+  );
+}
+
+const BACKUP_TONE_CLASSES: Record<BackupStatusView["tone"], string> = {
+  green: "bg-green-50 text-green-800 border-green-200",
+  amber: "bg-amber-50 text-amber-900 border-amber-300",
+  gray: "bg-gray-50 text-gray-700 border-gray-200",
+};
+
+/** Nightly automatic backup (0029 backup_status): amber when older than 36 hours or none yet. */
+function BackupStatusBox({ supabase }: { supabase: Db }) {
+  const [view, setView] = useState<BackupStatusView | null | "loading">("loading");
+
+  useEffect(() => {
+    let alive = true;
+    fetchBackupStatus(supabase).then((result) => {
+      if (alive) setView(describeBackupStatus(result));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [supabase]);
+
+  if (view === "loading") {
+    return (
+      <div className="p-4 rounded-lg border border-gray-200 bg-white text-sm text-gray-500">
+        Otomatik yedek durumu yükleniyor...
+      </div>
+    );
+  }
+  if (!view) return null;
+  return (
+    <div role="status" className={`p-4 rounded-lg border text-sm ${BACKUP_TONE_CLASSES[view.tone]}`}>
+      <p className="font-semibold">{view.title}</p>
+      {view.detail && <p className="mt-1">{view.detail}</p>}
+    </div>
   );
 }
 
@@ -342,6 +382,8 @@ function Exporter() {
         ← Ayarlar
       </Link>
       <h1 className="text-3xl font-bold">Veri yedeği (JSON)</h1>
+
+      <BackupStatusBox supabase={supabase} />
 
       <div className="bg-white p-6 rounded-lg shadow space-y-4">
         <p className="text-sm text-gray-700">
