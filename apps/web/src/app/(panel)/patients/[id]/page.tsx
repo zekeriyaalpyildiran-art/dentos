@@ -15,6 +15,8 @@ import {
   type PatientAccountJson,
 } from "@/lib/payments";
 import { PatientAccountTab } from "../_components/PatientAccountTab";
+import { PatientArchiveDialog } from "../_components/PatientArchiveDialog";
+import { InlineMessage } from "@/components/staff/Modal";
 import { PatientImplantsTab } from "@/components/clinical/PatientImplantsTab";
 import { PatientMaterialsTab } from "@/components/clinical/PatientMaterialsTab";
 
@@ -101,6 +103,7 @@ interface Patient {
   kvkk_consent: boolean;
   notes?: string;
   created_at: string;
+  is_active?: boolean | null;
 }
 
 interface Appointment {
@@ -153,6 +156,10 @@ export default function Page() {
   const accountReq = useRef(0);
   // Phase 9 tabs load lazily on first open and stay mounted afterwards (like Hesap).
   const [openedTabs, setOpenedTabs] = useState<Set<Tab>>(() => new Set());
+  // Phase 10 archive (spec p10 §5.5): banner + "Arşivden çıkar" for owner/admin.
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [archiveNotice, setArchiveNotice] = useState<string | null>(null);
+  const canArchive = user?.role === "owner" || user?.role === "admin";
 
   // ?tab=account (link from Finans > Teklifler ve tahsilat); read directly so no Suspense boundary is needed.
   useEffect(() => {
@@ -276,6 +283,42 @@ export default function Page() {
 
   return (
     <div className="p-8">
+      {archiveNotice && (
+        <div className="mb-4">
+          <InlineMessage tone="success" onClose={() => setArchiveNotice(null)}>
+            {archiveNotice}
+          </InlineMessage>
+        </div>
+      )}
+      {patient.is_active === false && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-300 bg-gray-100 px-4 py-3 text-gray-800">
+          <span className="font-medium">Bu hasta arşivde.</span>
+          {canArchive && (
+            <button
+              type="button"
+              className="px-4 py-2 min-h-[44px] bg-blue-600 text-white rounded hover:bg-blue-700"
+              onClick={() => {
+                setArchiveNotice(null);
+                setRestoreOpen(true);
+              }}
+            >
+              Arşivden çıkar
+            </button>
+          )}
+        </div>
+      )}
+      {restoreOpen && (
+        <PatientArchiveDialog
+          patient={{ id: patient.id, full_name: patient.full_name }}
+          mode="restore"
+          onClose={() => setRestoreOpen(false)}
+          onDone={(text) => {
+            setRestoreOpen(false);
+            setPatient((prev) => (prev ? { ...prev, is_active: true } : prev));
+            setArchiveNotice(text);
+          }}
+        />
+      )}
       {/* Header */}
       <div className="flex justify-between items-start mb-8">
         <div>

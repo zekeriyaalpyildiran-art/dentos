@@ -220,10 +220,26 @@ export default function Page() {
       {user?.clinic_id && (
         <div className="mt-6 space-y-6">
           {canEdit && (
-            <PermissionManager
-              clinicId={user.clinic_id}
-              canManageFinance={hasPermission(user, "finance")}
-            />
+            <section id="yetkiler" className="scroll-mt-4">
+              <PermissionManager
+                clinicId={user.clinic_id}
+                canManageFinance={hasPermission(user, "finance")}
+              />
+            </section>
+          )}
+          {canEdit && (
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h2 className="text-xl font-semibold text-gray-900 mb-2">Değişiklik geçmişi</h2>
+              <p className="text-gray-600 mb-4">
+                Personel, yetki, ödeme, finans, stok, CRM ve klinik kayıtlarındaki değişiklikleri görüntüleyin.
+              </p>
+              <Link
+                href="/settings/audit"
+                className="inline-block px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              >
+                Geçmişi aç
+              </Link>
+            </div>
           )}
           <ChairManager clinicId={user.clinic_id} canEdit={canEdit} />
           <ProcedureCatalog clinicId={user.clinic_id} canEdit={canEdit} />
