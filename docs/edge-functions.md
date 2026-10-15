@@ -20,16 +20,18 @@ Sıra: migration → fonksiyon + Auth ayarları (bu belge) → web deploy.
 2. Function name **tam olarak** `invite-staff` olmalı (web uygulaması bu adı çağırır).
 3. Örnek kodu silin, `supabase/functions/invite-staff/index.ts` dosyasının **tamamını** yapıştırın → **Deploy function**.
 4. Fonksiyonun **Details / Settings** sayfasında "Enforce JWT verification" **açık** kalabilir; fonksiyon token'ı ayrıca kendisi de doğrular. Geçerli kullanıcılar gateway'den `401 Invalid JWT` alıyorsa (yeni JWT signing keys kullanan projelerde olabilir) bu ayarı **kapatın**. Fonksiyonun kendi kontrolü (`auth.getUser`) yine geçerlidir.
-5. **Edge Functions → Secrets**: isteğe bağlı olarak `SITE_URL = https://dentos-eight.vercel.app` ekleyin (sonunda `/` olmadan; boş bırakılırsa varsayılan budur). `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` **eklemeyin**: Supabase bunları otomatik sağlar. `ALLOW_LOCAL_ORIGIN` secret'ını üretimde **eklemeyin** (aşağıya bakın).
+5. **Edge Functions → Secrets**: `SITE_URL = https://dentos.klinikprimemaltepe.com` (kliniğin alan adı; sonunda `/` olmadan). Boş bırakılırsa varsayılan `https://dentos-eight.vercel.app` olur. `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` **eklemeyin**: Supabase bunları otomatik sağlar. `ALLOW_LOCAL_ORIGIN` secret'ını üretimde **eklemeyin** (aşağıya bakın).
 6. Fonksiyon adresi: `https://knzrcgqpzjbajfboqlhq.supabase.co/functions/v1/invite-staff`.
 
 İzin verilen tarayıcı kaynakları (CORS): `https://dentos-eight.vercel.app` ve `SITE_URL`'in kendisi. `http://localhost:3002` yalnız `ALLOW_LOCAL_ORIGIN = 1` secret'ı varken izinlidir; bunu yalnız bilgisayarınızda yerel test yaparken geçici olarak ekleyin, test bitince silin. Vercel önizleme (preview) adresleri bilinçli olarak izinli değildir. CORS izni tek başına yetki vermez: her istek, oturum açmış aktif sahip/yöneticinin token'ını taşımak zorundadır ve bu token yalnız uygulamanın kendi adresinde saklanır.
 
 ## 4. Auth ayarları (Authentication)
 
-1. **URL Configuration**: Site URL `https://dentos-eight.vercel.app`. Redirect URLs listesinde yalnız uygulamanın gerçekten kullanılan üretim adres(ler)inin `/reset-password` yolu kalmalı:
-   - `https://dentos-eight.vercel.app/reset-password`
-   - varsa özel alan adınız: `https://<alan-adınız>/reset-password` (giriş sayfasındaki "Şifremi unuttum" bağlantıyı uygulamanın açıldığı adrese yönlendirir; o adres listede yoksa bağlantı ana sayfaya düşer ve çalışmaz)
+1. **URL Configuration**: Site URL `https://dentos.klinikprimemaltepe.com` (kliniğin alan adı; Vercel'de bağlı). Redirect URLs listesinde yalnız uygulamanın gerçekten kullanılan üretim adreslerinin `/reset-password` yolu kalmalı:
+   - `https://dentos.klinikprimemaltepe.com/reset-password`
+   - `https://dentos-eight.vercel.app/reset-password` (Vercel'in kendi adresi; hâlâ açılıyor)
+
+   Giriş sayfasındaki "Şifremi unuttum" bağlantıyı uygulamanın açıldığı adrese yönlendirir; o adres listede yoksa bağlantı ana sayfaya düşer ve çalışmaz. Yeni bir alan adı bağlanırsa onun `/reset-password` yolu da eklenmelidir.
 
    Listede `*` içeren joker adresler (ör. `https://*.vercel.app/**`) varsa **silin**: davet ve şifre bağlantılarındaki oturum bilgisi bu adreslere gönderilebilir. `http://localhost:3002/reset-password` yalnız bilgisayarınızda yerel test yaparken geçici olarak eklenip test bitince silinmelidir. Davetler özel alan adından gönderilecekse aynı adresi `SITE_URL` olarak da girin (CORS izni de buradan gelir).
 2. **SMTP** (zaten kurulu: Hostinger, gönderen `info@klinikprimemaltepe.com`): olduğu gibi bırakın; yalnız gönderen adının (Sender name) doğru olduğunu kontrol edin.
@@ -93,7 +95,7 @@ Uygulamadan:
 | Bağlantı "süresi dolmuş veya kullanılmış" | 24 saat geçti ya da e-posta güvenlik tarayıcısı bağlantıyı önceden açtı | Ekip → "Daveti yeniden gönder" (durum "Davet gönderildi" ise) |
 | Ekip ekranında durum "Aktif · son giriş …" ama kişi şifre belirlemedi / giriş yapamıyor | Bağlantı açıldığı anda (kişi veya e-posta güvenlik tarayıcısı) hesap aktif sayılır; "Daveti yeniden gönder" artık sunulmaz (`PLT_ALREADY_ACTIVE`) | Kişi `/login` sayfasındaki "Şifremi unuttum" bağlantısını kullanır |
 | `PLT_INVITE_FINANCE` / `PLT_EMAIL_FINANCE` | Personelin finans veya finans (salt okunur) yetkisi var; bu kişiyi yalnız klinik sahibi veya finans yetkilisi davet edebilir / e-postasını değiştirebilir | Klinik sahibi davet göndersin |
-| Tarayıcı konsolunda CORS hatası | İstek izinli olmayan bir adresten geliyor (ör. Vercel preview) | Ana adresten (`dentos-eight.vercel.app`) deneyin; preview adresleri bilinçli olarak kapalı |
+| Tarayıcı konsolunda CORS hatası | İstek izinli olmayan bir adresten geliyor (ör. Vercel preview) | Ana adresten (`dentos.klinikprimemaltepe.com` veya `dentos-eight.vercel.app`) deneyin; preview adresleri bilinçli olarak kapalı. Alan adından geliyorsa `SITE_URL` secret'ının o adres olduğunu kontrol edin |
 | "Davet servisi bulunamadı …" veya "Davet servisine ulaşılamadı … invite-staff …" (uygulamada); tarayıcı konsolunda `CORS` / `Failed to fetch` | Fonksiyon kurulmamış, adı `invite-staff` değil, ya da gateway JWT doğrulaması token'ı reddetti (bu cevaplarda CORS başlığı olmadığı için tarayıcı bunu bağlantı hatası gibi gösterir) | Bölüm 5'teki `curl` ön kontrolü: `404` → Bölüm 3; `204` ise Bölüm 3 adım 4 (JWT doğrulaması) |
 | `401` | Oturum süresi dolmuş, ya da gateway JWT doğrulaması yeni imza anahtarlarıyla uyumsuz | Yeniden giriş; sürerse Bölüm 3 adım 4 |
 
