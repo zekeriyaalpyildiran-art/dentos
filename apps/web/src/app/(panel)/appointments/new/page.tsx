@@ -62,6 +62,11 @@ export default function Page() {
         ]);
 
         setPatients(ptsRes.data || []);
+        // The CRM lead card links here with ?patient=; read directly so the page needs no Suspense boundary.
+        const presetPatient = new URLSearchParams(window.location.search).get("patient");
+        if (presetPatient && (ptsRes.data || []).some((p) => p.id === presetPatient)) {
+          setFormData((prev) => ({ ...prev, patient_id: prev.patient_id || presetPatient }));
+        }
         // users(full_name) is a single object at runtime (many-to-one), which supabase's inferred type does not reflect.
         setDoctors((docsRes.data || []) as any[]);
         setChairs(chrsRes.data || []);

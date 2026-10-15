@@ -5,6 +5,9 @@ import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { cancelPendingReminders } from "./reminder-utils";
+import { ReminderDialog } from "@/components/crm/ReminderDialog";
+import { isReminderCurrent, istanbulToday, splitIstanbul } from "@/lib/crm";
+import { REMINDER_OUTCOME_LABELS, type ReminderOutcome } from "@/lib/crm/codes";
 
 interface Appointment {
   id: string;
@@ -16,6 +19,11 @@ interface Appointment {
   end_time: string;
   status: string;
   notes?: string;
+  /** Phase 6 manual reminder outcome (written only by crm_set_reminder_outcome). */
+  reminder_outcome?: ReminderOutcome | null;
+  reminder_note?: string | null;
+  reminder_start_time?: string | null;
+  reminder_doctor_id?: string | null;
 }
 
 interface ProcedureInfo {
@@ -89,6 +97,7 @@ export default function Page() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "calendar">("list");
   const [selectedDate, setSelectedDate] = useState(localDateKey(new Date()));
+  const [reminderFor, setReminderFor] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user?.clinic_id) return;
@@ -132,6 +141,15 @@ export default function Page() {
   const getChairName = (id: string) => chairs.find((c) => c.id === id)?.name || "-";
   const getProcedureName = (id?: string | null) =>
     (id && procedures.find((p) => p.id === id)?.name) || "-";
+
+  // Manual reminder (no SMS is sent): only for scheduled appointments from today on (Istanbul).
+  const today = istanbulToday();
+  const canRemind = (apt: Appointment) =>
+    apt.status === "scheduled" && splitIstanbul(apt.start_time).date >= today;
+  const reminderLabel = (apt: Appointment) => {
+    if (!apt.reminder_outcome || !isReminderCurrent({ ...apt, doctor_id: apt.doctor_id ?? null })) return null;
+    return REMINDER_OUTCOME_LABELS[apt.reminder_outcome] ?? apt.reminder_outcome;
+  };
 
   const updateStatus = async (id: string, status: StatusAction) => {
     const action = STATUS_ACTIONS[status];
@@ -204,13 +222,14 @@ export default function Page() {
                 <th className="px-4 py-2 text-left">Tedavi</th>
                 <th className="px-4 py-2 text-left">Tarih/Saat</th>
                 <th className="px-4 py-2 text-left">Durum</th>
+                <th className="px-4 py-2 text-left">Hatırlatma</th>
                 <th className="px-4 py-2 text-left"></th>
               </tr>
             </thead>
             <tbody>
               {appointments.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
+                  <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
                     Randevu bulunamadı
                   </td>
                 </tr>
@@ -226,6 +245,24 @@ export default function Page() {
                       <span className={`px-2 py-1 rounded text-sm ${STATUS_STYLES[apt.status] ?? STATUS_STYLES.scheduled}`}>
                         {STATUS_LABELS[apt.status] ?? apt.status}
                       </span>
+                    </td>
+                    <td className="px-4 py-2 text-sm">
+                      {reminderLabel(apt) && (
+                        <span
+                          className={apt.reminder_outcome === "reminded" ? "text-green-700" : "text-amber-700"}
+                          title={apt.reminder_note ?? undefined}
+                        >
+                          {reminderLabel(apt)}
+                        </span>
+                      )}
+                      {canRemind(apt) && (
+                        <button
+                          onClick={() => setReminderFor(apt.id)}
+                          className="block text-blue-600 hover:underline whitespace-nowrap"
+                        >
+                          {reminderLabel(apt) ? "Yeniden kaydet" : "Sonuç kaydet"}
+                        </button>
+                      )}
                     </td>
                     <td className="px-4 py-2">
                       {apt.status === "scheduled" && (
@@ -305,11 +342,44 @@ export default function Page() {
                   {apt.procedure_id && (
                     <div className="text-sm text-gray-600">{getProcedureName(apt.procedure_id)}</div>
                   )}
+                  {(reminderLabel(apt) || canRemind(apt)) && (
+                    <div className="text-sm text-gray-600 flex gap-3">
+                      {reminderLabel(apt) && <span>Hatırlatma: {reminderLabel(apt)}</span>}
+                      {canRemind(apt) && (
+                        <button onClick={() => setReminderFor(apt.id)} className="text-blue-600 hover:underline">
+                          Hatırlatma sonucu
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))
             )}
           </div>
         </div>
+      )}
+
+      {reminderFor && (
+        <ReminderDialog
+          appointmentId={reminderFor}
+          onClose={() => setReminderFor(null)}
+          onSaved={(r) => {
+            setAppointments((prev) =>
+              prev.map((a) =>
+                a.id === r.appointment.id
+                  ? {
+                      ...a,
+                      reminder_outcome: r.appointment.reminder_outcome,
+                      reminder_note: r.appointment.reminder_note,
+                      reminder_start_time: r.appointment.start_time,
+                      reminder_doctor_id: r.appointment.doctor_id,
+                    }
+                  : a
+              )
+            );
+            setReminderFor(null);
+          }}
+        />
       )}
     </div>
   );

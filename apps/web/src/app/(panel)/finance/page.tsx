@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { FinanceShell, useCanWriteFinance } from "@/components/finance/FinanceShell";
 import { Card, ErrorBox, Loading, MoneyRow, buttonPrimary, buttonSecondary } from "@/components/finance/ui";
 import { CategoryReportCard, ResultFigure } from "@/components/finance/ReportBlocks";
+import { FinancingSummaryCard } from "@/components/finance/import/FinancingSummaryCard";
 import {
   finDashboard,
   formatDay,
@@ -97,6 +98,9 @@ function Dashboard() {
             </Link>
             <Link href="/finance/balances" className={buttonSecondary}>
               Banka / kasa güncelle
+            </Link>
+            <Link href="/finance/import" className={buttonSecondary}>
+              Dosyadan aktar
             </Link>
           </div>
         )}
@@ -195,6 +199,8 @@ function Dashboard() {
           </p>
         </Card>
       )}
+
+      <FinancingSummaryCard month={month} compact />
 
       {data.exclusions.entry_count > 0 && (
         <div className="p-4 rounded bg-orange-50 text-orange-800 text-sm">{exclusionWarning(data, monthTitle)}</div>

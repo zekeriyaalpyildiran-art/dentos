@@ -7,11 +7,16 @@ import { createClient } from "@/lib/supabase";
 import { useAuthStore } from "@/lib/store";
 import { hasPermission } from "@/lib/permissions";
 import { finExportManifest, toFinanceError, type ExportManifestJson } from "@/lib/finance";
+import { crmExportCounts, crmExportTrashed, toCrmError, type CrmTrashedExportTable } from "@/lib/crm";
 
 /**
  * Owner JSON export (owner decision 3: no paid Supabase backups). Reads every clinic table directly through
  * PostgREST, 1000 rows per request with keyset paging on id, so RLS decides what is included. fin_* tables are
  * read only when the owner also holds 'finance' (fin_export_manifest requires both).
+ *
+ * CRM (Phase 6): RLS hides trashed leads and their history, calls and handoffs from direct reads, so those rows
+ * come from crm_export_trashed (owner only) and are merged into the same tables; crm_export_counts then proves
+ * that every CRM table was read completely.
  */
 
 const PAGE = 1000;
@@ -34,6 +39,11 @@ const CLINIC_TABLES = [
   "payments",
   "leads",
   "lead_activities",
+  "crm_calls",
+  "crm_handoffs",
+  "staff_tasks",
+  "crm_followup_rules",
+  "appointment_reminder_logs",
   "lab_orders",
   "lab_order_items",
   "stock_items",
@@ -44,6 +54,15 @@ const CLINIC_TABLES = [
   "compliance_checks",
   "audit_logs",
 ] as const;
+
+/** Tables keyed by something other than `id`: read with keyset paging on that column. */
+const KEYED_TABLES: { table: string; key: string }[] = [{ table: "crm_handoff_private_notes", key: "handoff_id" }];
+
+/** Rows hidden by RLS (trashed leads and what belongs to them), fetched through crm_export_trashed. */
+const CRM_TRASHED_TABLES: CrmTrashedExportTable[] = ["leads", "lead_activities", "crm_calls", "crm_handoffs"];
+
+/** Read only with 'finance' (crm_ad_spend amounts are finance data). */
+const CRM_FINANCE_TABLES = ["crm_ad_spend"] as const;
 
 const FINANCE_TABLES = [
   "fin_settings",
@@ -56,6 +75,13 @@ const FINANCE_TABLES = [
   "fin_balance_snapshots",
   "fin_balance_sources",
 ] as const;
+
+/** Finance tables to read: every table fin_export_manifest names (0022 adds the import and financing tables), in the
+ *  manifest's order, with the Phase 1 list as the floor so an older manifest never drops a table. */
+function financeTablesOf(manifest: ExportManifestJson): string[] {
+  const names = manifest.tables.map((m) => m.name).filter((n) => n !== "audit_logs" && /^fin_[a-z0-9_]+$/.test(n));
+  return Array.from(new Set<string>([...FINANCE_TABLES, ...names]));
+}
 
 /** A finance read is restarted when the row counts move during the export (a write happened meanwhile). */
 const MAX_FINANCE_ATTEMPTS = 3;
@@ -87,22 +113,37 @@ function Exporter() {
   const [doneAt, setDoneAt] = useState<string | null>(null);
   const cancelled = useRef(false);
 
-  /** Reads one table completely with keyset paging (`id > last`), so the 1000-row cap never truncates it. */
-  const readAll = async (table: string, scope: "clinic" | "self"): Promise<Row[]> => {
+  /** Reads one table completely with keyset paging (`key > last`), so the 1000-row cap never truncates it. */
+  const readAll = async (table: string, scope: "clinic" | "self", key = "id"): Promise<Row[]> => {
     const rows: Row[] = [];
     let last: string | null = null;
     for (;;) {
       if (cancelled.current) throw new Error("İptal edildi.");
-      let q = supabase.from(table).select("*").order("id", { ascending: true }).limit(PAGE);
+      let q = supabase.from(table).select("*").order(key, { ascending: true }).limit(PAGE);
       q = scope === "self" ? q.eq("id", user!.clinic_id) : q.eq("clinic_id", user!.clinic_id);
-      if (last) q = q.gt("id", last);
+      if (last) q = q.gt(key, last);
       const { data, error: err } = await q;
       if (err) throw new Error(`${table}: ${err.message}`);
       const page = (data ?? []) as Row[];
       rows.push(...page);
       setProgress({ table, rows: rows.length });
       if (page.length < PAGE) break;
-      last = String(page[page.length - 1].id);
+      last = String(page[page.length - 1][key]);
+    }
+    return rows;
+  };
+
+  /** Trashed rows of one CRM table (hidden from direct reads), keyset paged through crm_export_trashed. */
+  const readTrashed = async (table: CrmTrashedExportTable): Promise<Row[]> => {
+    const rows: Row[] = [];
+    let after: string | null = null;
+    for (;;) {
+      if (cancelled.current) throw new Error("İptal edildi.");
+      const r = await crmExportTrashed({ p_table: table, p_after: after, p_limit: PAGE });
+      rows.push(...r.rows);
+      setProgress({ table: `${table} (çöp kutusu)`, rows: rows.length });
+      if (!r.next_after) break;
+      after = r.next_after;
     }
     return rows;
   };
@@ -118,12 +159,13 @@ function Exporter() {
       attempt += 1;
       const manifest = await finExportManifest();
       const tables: Record<string, Row[]> = {};
-      for (const t of FINANCE_TABLES) tables[t] = await readAll(t, "clinic");
+      for (const t of financeTablesOf(manifest)) tables[t] = await readAll(t, "clinic");
       const after = await finExportManifest();
       const mismatch = after.tables.some((m) => {
         if (m.name === "audit_logs") return false; // compared below against the audit export
         const before = manifest.tables.find((x) => x.name === m.name)?.row_count;
-        return before !== m.row_count || (tables[m.name] && tables[m.name].length !== m.row_count);
+        // A manifest table that was not read at all is a mismatch too (a new fin_* table can never be left out).
+        return before !== m.row_count || !tables[m.name] || tables[m.name].length !== m.row_count;
       });
       if (!mismatch || attempt >= MAX_FINANCE_ATTEMPTS) {
         return { manifest: after, tables, attempts: attempt, consistent: !mismatch };
@@ -146,14 +188,54 @@ function Exporter() {
       const tableErrors: Record<string, string> = {};
 
       tables.clinics = await readAll("clinics", "self");
-      for (const t of CLINIC_TABLES) {
+      const clinicReads: { table: string; key: string }[] = [
+        ...CLINIC_TABLES.map((table) => ({ table, key: "id" })),
+        ...KEYED_TABLES,
+        ...(includeFinance ? CRM_FINANCE_TABLES.map((table) => ({ table, key: "id" })) : []),
+      ];
+      for (const { table: t, key } of clinicReads) {
         try {
-          tables[t] = await readAll(t, "clinic");
+          tables[t] = await readAll(t, "clinic", key);
         } catch (err) {
           if (cancelled.current) throw err;
           tableErrors[t] = err instanceof Error ? err.message : String(err);
           warn.push(`${t} okunamadı: ${tableErrors[t]}`);
         }
+      }
+
+      // Trashed CRM rows (RLS hides them from the reads above), merged into the same tables.
+      const trashedCounts: Record<string, number> = {};
+      for (const t of CRM_TRASHED_TABLES) {
+        if (tableErrors[t]) continue;
+        try {
+          const extra = await readTrashed(t);
+          const seen = new Set((tables[t] ?? []).map((r) => String(r.id)));
+          const fresh = extra.filter((r) => !seen.has(String(r.id)));
+          tables[t] = [...(tables[t] ?? []), ...fresh];
+          trashedCounts[t] = fresh.length;
+        } catch (err) {
+          if (cancelled.current) throw err;
+          const message = toCrmError(err).message;
+          tableErrors[`${t} (çöp kutusu)`] = message;
+          warn.push(`${t} çöp kutusundaki kayıtlar okunamadı: ${message}`);
+        }
+      }
+
+      // Completeness: every CRM table must hold exactly the server's row count (trashed rows included).
+      let crmExpected: Record<string, number> | null = null;
+      try {
+        crmExpected = await crmExportCounts();
+        for (const [name, expected] of Object.entries(crmExpected)) {
+          if (name === "leads_trashed" || !tables[name]) continue;
+          if (tables[name].length !== expected) {
+            warn.push(
+              `${name}: sunucuda ${expected} kayıt var, yedeğe ${tables[name].length} kayıt alındı. Kimse CRM kaydı girmezken tekrar deneyin.`
+            );
+          }
+        }
+      } catch (err) {
+        if (cancelled.current) throw err;
+        warn.push(`CRM kayıt sayıları doğrulanamadı: ${toCrmError(err).message}`);
       }
 
       let financeManifest: ExportManifestJson | null = null;
@@ -196,6 +278,8 @@ function Exporter() {
         excluded_tables: { device_tokens: "Bildirim cihaz anahtarları yedeğe alınmaz." },
         errors: tableErrors,
         counts: perTable,
+        crm_trashed_counts: trashedCounts,
+        crm_expected_counts: crmExpected,
         tables,
       };
 

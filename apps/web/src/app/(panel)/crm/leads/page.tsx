@@ -1,225 +1,265 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
-import { useAuthStore } from "@/lib/store";
-import { createClient } from "@/lib/supabase";
+import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
+import { useStaff } from "@/components/crm/useCrmRefs";
+import {
+  CrmErrorBox,
+  CrmShell,
+  EmptyState,
+  InterestBadge,
+  Loading,
+  Pager,
+  StageBadge,
+  buttonPrimary,
+  buttonSecondary,
+  inputClass,
+} from "@/components/crm/ui";
+import {
+  crmLeadList,
+  dayTimeLabel,
+  toCrmError,
+  type CrmError,
+  type LeadJson,
+  type LeadListFilters,
+} from "@/lib/crm";
+import { INTERESTS, SOURCES, STAGES, sourceLabel, type Interest, type Stage } from "@/lib/crm/codes";
 
-interface Lead {
-  id: string;
-  full_name: string;
-  phone: string;
-  email: string;
-  status: string;
-  source: string;
-  created_at: string;
-}
+const PAGE = 50;
 
+/** 'Hasta adayları' (CRM:93): server-side search, filters and paging (crm_lead_list). */
 export default function LeadsListPage() {
-  const router = useRouter();
-  const { user } = useAuthStore();
-  const supabase = createClient();
-
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<"all" | "new" | "contacted" | "interested" | "qualified">(
-    "all"
-  );
+  const staff = useStaff();
   const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [stage, setStage] = useState<Stage | "">("");
+  const [source, setSource] = useState("");
+  const [interest, setInterest] = useState<Interest | "">("");
+  const [assignee, setAssignee] = useState("");
+  const [missingPlan, setMissingPlan] = useState(false);
+  const [includeClosed, setIncludeClosed] = useState(true);
+  const [sort, setSort] = useState<NonNullable<LeadListFilters["sort"]>>("created_desc");
+  const [offset, setOffset] = useState(0);
+  const [rows, setRows] = useState<LeadJson[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [error, setError] = useState<CrmError | null>(null);
+
+  // Debounced free-text search.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQuery(search.trim());
+      setOffset(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await crmLeadList({
+        p_filters: {
+          q: query || undefined,
+          stage: stage || undefined,
+          source: source || undefined,
+          interest: interest || undefined,
+          assigned_to: assignee || undefined,
+          missing_plan: missingPlan || undefined,
+          include_closed: includeClosed,
+          sort,
+        },
+        p_page: { offset, limit: PAGE },
+      });
+      setRows(r.rows);
+      setTotal(r.total_count);
+      setError(null);
+    } catch (err) {
+      setError(toCrmError(err));
+      setRows([]);
+    }
+  }, [query, stage, source, interest, assignee, missingPlan, includeClosed, sort, offset]);
 
   useEffect(() => {
-    if (!user?.clinic_id) return;
-    fetchLeads();
-  }, [user?.clinic_id]);
+    load();
+  }, [load]);
 
-  const fetchLeads = async () => {
-    try {
-      const { data, error } = await supabase
-        .from("leads")
-        .select("*")
-        .eq("clinic_id", user?.clinic_id)
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-      setLeads(data || []);
-    } catch (error) {
-      console.error("Error fetching leads:", error);
-    } finally {
-      setLoading(false);
-    }
+  const resetPage = <T,>(setter: (v: T) => void) => (v: T) => {
+    setter(v);
+    setOffset(0);
   };
-
-  const filtered = leads.filter((lead) => {
-    let match = true;
-
-    if (filter !== "all") {
-      match = match && lead.status === filter;
-    }
-
-    if (search) {
-      const q = search.toLocaleLowerCase("tr-TR");
-      match =
-        match &&
-        (lead.full_name.toLocaleLowerCase("tr-TR").includes(q) ||
-          lead.phone.includes(search));
-    }
-
-    return match;
-  });
-
-  const getStatusColor = (status: string) => {
-    const colors: Record<string, string> = {
-      new: "bg-gray-100 text-gray-800",
-      contacted: "bg-blue-100 text-blue-800",
-      interested: "bg-yellow-100 text-yellow-800",
-      qualified: "bg-green-100 text-green-800",
-      converted: "bg-emerald-100 text-emerald-800",
-      lost: "bg-red-100 text-red-800",
-    };
-    return colors[status] || colors.new;
-  };
-
-  const getStatusLabel = (status: string) => {
-    const labels: Record<string, string> = {
-      new: "Yeni",
-      contacted: "İletişime Geçildi",
-      interested: "İlgilendiği",
-      qualified: "Nitelikli",
-      converted: "Müşteri",
-      lost: "Kaybedildi",
-    };
-    return labels[status] || status;
-  };
-
-  const getSourceLabel = (source: string | null) => {
-    const labels: Record<string, string> = {
-      direct: "Doğrudan",
-      referral: "Referans",
-      online: "Online",
-      social_media: "Sosyal Medya",
-      other: "Diğer",
-    };
-    if (!source) return "-";
-    return labels[source] || source;
-  };
-
-  if (loading) {
-    return <div className="p-8">Yükleniyor...</div>;
-  }
 
   return (
-    <div className="p-8">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold">Müşteri Adayları</h1>
-        <button
-          onClick={() => router.push("/crm/new-lead")}
-          className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-        >
-          Yeni Aday
-        </button>
-      </div>
-
-      {/* Search and Filters */}
-      <div className="mb-6 flex gap-4">
+    <CrmShell
+      title="Hasta adayları"
+      subtitle={`${total} kayıt`}
+      actions={
+        <>
+          <Link href="/crm/new-lead" className={buttonPrimary}>
+            Yeni aday
+          </Link>
+          <Link href="/crm/kanban" className={buttonSecondary}>
+            Kanban
+          </Link>
+        </>
+      }
+    >
+      <div className="bg-white rounded-lg shadow p-4 mb-4 grid gap-3 md:grid-cols-4">
         <input
-          type="text"
-          placeholder="Ad veya telefon ile ara..."
+          type="search"
+          placeholder="Ad, telefon veya kampanya ile ara..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="flex-1 px-4 py-2 border rounded"
+          className={`${inputClass} md:col-span-2`}
+          aria-label="Ara"
         />
+        <select
+          aria-label="Aşama"
+          value={stage}
+          onChange={(e) => resetPage(setStage)(e.target.value as Stage | "")}
+          className={inputClass}
+        >
+          <option value="">Tüm aşamalar (arşiv hariç)</option>
+          {STAGES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="Sıralama"
+          value={sort}
+          onChange={(e) => resetPage(setSort)(e.target.value as NonNullable<LeadListFilters["sort"]>)}
+          className={inputClass}
+        >
+          <option value="created_desc">En yeni başvuru</option>
+          <option value="followup_asc">Takip tarihine göre</option>
+          <option value="name_asc">Ada göre</option>
+        </select>
+        <select aria-label="Kaynak" value={source} onChange={(e) => resetPage(setSource)(e.target.value)} className={inputClass}>
+          <option value="">Tüm kaynaklar</option>
+          {SOURCES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="İlgi"
+          value={interest}
+          onChange={(e) => resetPage(setInterest)(e.target.value as Interest | "")}
+          className={inputClass}
+        >
+          <option value="">Tüm ilgi durumları</option>
+          {INTERESTS.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="Sorumlu"
+          value={assignee}
+          onChange={(e) => resetPage(setAssignee)(e.target.value)}
+          className={inputClass}
+        >
+          <option value="">Tüm sorumlular</option>
+          {staff.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.full_name}
+            </option>
+          ))}
+        </select>
+        <div className="flex flex-col justify-center gap-1 text-sm">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={missingPlan} onChange={(e) => resetPage(setMissingPlan)(e.target.checked)} />
+            Yalnızca takip planı eksik
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={includeClosed}
+              onChange={(e) => resetPage(setIncludeClosed)(e.target.checked)}
+            />
+            Olumsuz ve tamamlananları göster
+          </label>
+        </div>
       </div>
 
-      <div className="mb-6 flex gap-2">
-        {(["all", "new", "contacted", "interested", "qualified"] as const).map(
-          (f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`px-4 py-2 rounded font-semibold ${
-                filter === f
-                  ? "bg-blue-600 text-white"
-                  : "bg-gray-200 text-gray-800 hover:bg-gray-300"
-              }`}
-            >
-              {f === "all" ? "Tümü" : getStatusLabel(f)}
-            </button>
-          )
-        )}
-      </div>
-
-      {/* Leads Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-100 border-b">
-            <tr>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
-                İsim
-              </th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
-                Telefon
-              </th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
-                E-posta
-              </th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
-                Durum
-              </th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
-                Kaynak
-              </th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
-                Tarih
-              </th>
-              <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
-                İşlemler
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-6 py-8 text-center text-gray-500">
-                  Aday bulunamadı
-                </td>
+      <CrmErrorBox error={error} />
+      {!rows ? (
+        <Loading />
+      ) : (
+        <div className="bg-white rounded-lg shadow overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-100 border-b">
+              <tr className="text-left text-gray-800">
+                <th className="px-4 py-3 font-semibold">Ad soyad</th>
+                <th className="px-4 py-3 font-semibold">Telefon</th>
+                <th className="px-4 py-3 font-semibold">Aşama</th>
+                <th className="px-4 py-3 font-semibold">Sonraki adım</th>
+                <th className="px-4 py-3 font-semibold">Sıradaki arama</th>
+                <th className="px-4 py-3 font-semibold">Sorumlu</th>
+                <th className="px-4 py-3 font-semibold">Kaynak</th>
+                <th className="px-4 py-3 font-semibold">Başvuru</th>
               </tr>
-            ) : (
-              filtered.map((lead) => (
-                <tr key={lead.id} className="border-b hover:bg-gray-50">
-                  <td className="px-6 py-4 text-sm font-semibold text-gray-800">
-                    {lead.full_name}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-600">
-                    {lead.phone}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-600">
-                    {lead.email || "-"}
-                  </td>
-                  <td className="px-6 py-4 text-sm">
-                    <span className={`px-3 py-1 rounded text-sm font-semibold ${getStatusColor(lead.status)}`}>
-                      {getStatusLabel(lead.status)}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-600">
-                    {getSourceLabel(lead.source)}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-600">
-                    {new Date(lead.created_at).toLocaleDateString("tr-TR")}
-                  </td>
-                  <td className="px-6 py-4 text-sm">
-                    <button
-                      onClick={() => router.push(`/crm/leads/${lead.id}`)}
-                      className="text-blue-600 hover:underline"
-                    >
-                      Detay
-                    </button>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? (
+                <tr>
+                  <td colSpan={8}>
+                    <EmptyState>Aday bulunamadı</EmptyState>
                   </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
+              ) : (
+                rows.map((lead) => (
+                  <tr key={lead.id} className="border-b hover:bg-gray-50 align-top">
+                    <td className="px-4 py-3">
+                      <Link href={`/crm/leads/${lead.id}`} className="font-semibold text-blue-700 hover:underline">
+                        {lead.full_name}
+                      </Link>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        <InterestBadge interest={lead.interest} />
+                        {lead.do_not_contact && (
+                          <span className="px-2 py-0.5 rounded text-xs bg-red-100 text-red-700">Aranmak istemiyor</span>
+                        )}
+                        {lead.automation_review && (
+                          <span className="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-800">Karar gerekiyor</span>
+                        )}
+                        {lead.patient_id && (
+                          <span className="px-2 py-0.5 rounded text-xs bg-emerald-100 text-emerald-800">Hasta</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-gray-700 whitespace-nowrap">{lead.phone}</td>
+                    <td className="px-4 py-3">
+                      <StageBadge stage={lead.stage} />
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">
+                      {lead.followup_state === "done" ? (
+                        <span className="text-gray-500">Takip tamamlandı</span>
+                      ) : (
+                        <>
+                          <div>{lead.next_action || <span className="text-amber-700">Sonraki adım yok</span>}</div>
+                          <div className="text-xs text-gray-500">{dayTimeLabel(lead.followup_date)}</div>
+                        </>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-gray-700 whitespace-nowrap">
+                      {lead.next_call ? dayTimeLabel(lead.next_call.date, lead.next_call.time) : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">{lead.assigned_name ?? "—"}</td>
+                    <td className="px-4 py-3 text-gray-700">{sourceLabel(lead.source)}</td>
+                    <td className="px-4 py-3 text-gray-700 whitespace-nowrap">
+                      {new Date(lead.created_at).toLocaleDateString("tr-TR", { timeZone: "Europe/Istanbul" })}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+          <div className="px-4 pb-4">
+            <Pager offset={offset} limit={PAGE} total={total} onChange={setOffset} />
+          </div>
+        </div>
+      )}
+    </CrmShell>
   );
 }

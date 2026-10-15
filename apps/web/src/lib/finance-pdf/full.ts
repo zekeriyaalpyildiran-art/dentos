@@ -11,6 +11,7 @@ import {
   formatMonth,
   type DashboardJson,
   type EntryJson,
+  type FinancingSummaryJson,
   type ReferenceData,
 } from "../finance";
 import type { FullReportExtra, RawPayment } from "../finance-report-data";
@@ -27,6 +28,8 @@ import {
 
 export interface FullPdfInput {
   dashboard: DashboardJson;
+  /** Phase 4 patient financing (legacy Burgan block); omitted or null when there is none */
+  financing?: FinancingSummaryJson | null;
   reference: ReferenceData | null;
   extra: FullReportExtra;
   brand: string;
@@ -158,6 +161,24 @@ export async function createFullPdf(input: FullPdfInput): Promise<Uint8Array> {
   val("Gerçekleşmiş tüm girişler", ms.inflow_cents);
   val("Toplam ödeme", ms.outflow_cents);
   val("Brüt giriş eksi ödeme (blokeli dahil)", ms.net_cents, { strong: true });
+
+  // 3b. Hasta finansmanı (legacy Burgan block): the gross is inside the receipts, the fees inside the expenses,
+  //     the blocked net is never added to liquidity.
+  const fin = input.financing;
+  if (fin && (fin.monthly_count > 0 || fin.blocked_count > 0)) {
+    section("Hasta finansmanı");
+    val("Finansmanla gelen brüt tahsilat (tahsilatın içinde)", fin.gross_cents);
+    val("Finansman kesintileri (giderin içinde)", fin.fee_cents);
+    val("Blokede bekleyen net (tüm dönemler)", fin.blocked_net_cents, { strong: true });
+    text(
+      `${fin.monthly_count} finansman bu ay. Blokeli tutarlar kullanılabilir banka bakiyesine eklenmez.` +
+        (fin.needs_check_count > 0
+          ? ` ${fin.needs_check_count} finansmanın tahmini çözülme tarihi geçti; bankadan kontrol gerekli.`
+          : ""),
+      9,
+      muted
+    );
+  }
 
   // 4. Aylık gider dağılımı
   section("Aylık gider dağılımı");

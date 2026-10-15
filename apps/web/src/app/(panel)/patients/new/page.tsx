@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { PhoneMatchWarning } from "@/components/crm/PhoneMatches";
 
 const GENDERS = [
   { value: "male", label: "Erkek" },
@@ -111,6 +112,11 @@ export default function NewPatientPage() {
               className="w-full px-4 py-2 border rounded text-gray-900"
               required
             />
+          </div>
+
+          {/* Shared numbers are allowed (owner decision): a non-blocking warning with links to the other records. */}
+          <div className="md:col-span-2">
+            <PhoneMatchWarning phone={phone} />
           </div>
 
           <div>

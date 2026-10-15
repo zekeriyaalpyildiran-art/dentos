@@ -124,6 +124,11 @@ function EntryDetailView() {
   const payments = detail.payments;
   const cancelled = e.status === "cancelled";
   const payLabel = e.direction === "in" ? "Tahsilat kaydet" : "Ödeme kaydet";
+  // 0022: financing fee entries change only through /finance/financing (the database refuses every other write);
+  // receipt-reconciliation exclusions are controlled by the clinic Excel reconciliation.
+  const locked = !!e.is_locked;
+  const reconciled = e.exclusion_source === "receipt_reconciliation";
+  const canEdit = canWrite && !locked;
 
   return (
     <div className="space-y-6">
@@ -142,7 +147,11 @@ function EntryDetailView() {
           </span>
         }
         actions={
-          canWrite ? (
+          canWrite && locked ? (
+            <Link href="/finance/financing" className={buttonSecondary}>
+              Hasta finansmanında düzelt
+            </Link>
+          ) : canWrite ? (
             <>
               {!cancelled && e.outstanding_cents > 0 && (
                 <button type="button" className={buttonPrimary} onClick={() => setDialog({ kind: "pay" })}>
@@ -160,7 +169,13 @@ function EntryDetailView() {
                 </button>
               )}
               {e.excluded_from_totals ? (
-                <button type="button" className={buttonSecondary} onClick={() => setDialog({ kind: "include" })}>
+                <button
+                  type="button"
+                  className={buttonSecondary}
+                  onClick={() => setDialog({ kind: "include" })}
+                  disabled={reconciled}
+                  title={reconciled ? "Klinik Excel tahsilat mutabakatı bu kaydı yönetir." : undefined}
+                >
                   Toplamlara geri al
                 </button>
               ) : (
@@ -200,6 +215,23 @@ function EntryDetailView() {
             Hekim hakedişi kaydı. Sonraki ödemeleri bu kayda ekleyin; hekim, ay ve kategori değiştirilemez.
           </p>
         )}
+        {locked && (
+          <p className="mt-4 text-sm text-indigo-700">
+            Hasta finansmanı kesinti kaydı{e.financing ? ` (${e.financing.reference})` : ""}. Tutar, ödeme ve iptal
+            yalnızca{" "}
+            <Link href="/finance/financing" className="text-blue-600 hover:underline">
+              Hasta finansmanı
+            </Link>{" "}
+            bölümünden düzeltilir.
+          </p>
+        )}
+        {reconciled && (
+          <p className="mt-4 text-sm text-orange-800">
+            Bu tahsilat klinik Excel günlük toplamlarıyla eşleştiği için otomatik olarak toplam dışında
+            {e.reconciled_month ? ` (${formatMonth(e.reconciled_month)})` : ""}. Klinik Excel aktarımı değişirse
+            kendiliğinden güncellenir; elle geri alınamaz.
+          </p>
+        )}
         {cancelled && (
           <div className="mt-4 p-3 rounded bg-gray-100 text-gray-800 text-sm">
             Kalan plan iptal edildi ({formatTimestamp(e.cancelled_at)}
@@ -227,7 +259,7 @@ function EntryDetailView() {
                 {e.report_bucket === "doctor" && <th className="px-3 py-2 font-semibold">Dönem</th>}
                 <th className="px-3 py-2 font-semibold">Kaydeden</th>
                 <th className="px-3 py-2 font-semibold">Durum</th>
-                {canWrite && <th className="px-3 py-2" />}
+                {canEdit && <th className="px-3 py-2" />}
               </tr>
             </thead>
             <tbody>
@@ -279,7 +311,7 @@ function EntryDetailView() {
                         "Geçerli"
                       )}
                     </td>
-                    {canWrite && (
+                    {canEdit && (
                       <td className="px-3 py-2 text-right whitespace-nowrap">
                         {!p.is_voided && (
                           <>

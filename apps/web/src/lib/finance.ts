@@ -118,6 +118,11 @@ export const AUDIT_ENTITY_LABELS: Record<string, string> = {
   fin_payments: "Ödeme",
   fin_balance_snapshots: "Bakiye",
   fin_balance_sources: "Bakiye kaynağı",
+  fin_import_batches: "Dosya aktarımı",
+  fin_import_sources: "Aktarım kaynağı",
+  fin_classification_rules: "Sınıflandırma kuralı",
+  fin_import_layouts: "Sütun eşleştirmesi",
+  fin_patient_financing: "Hasta finansmanı",
 };
 
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
@@ -313,12 +318,18 @@ export class FinanceError extends Error {
 }
 
 const NETWORK_MESSAGE = "İşlem tamamlanamadı. Bağlantınızı kontrol edip tekrar deneyin.";
+/**
+ * 40P01: two receipt writes of one month reconciled at the same time (0022 live reconciliation); the database
+ * cancelled one. Every finance write is idempotent, so retrying is safe. Mapped here so every finance page shows it.
+ */
+const DEADLOCK_MESSAGE = "Aynı anda başka bir finans işlemi kaydedildi. Tekrar deneyin.";
 
 export function toFinanceError(err: unknown): FinanceError {
   if (err instanceof FinanceError) return err;
   if (err && typeof err === "object") {
     const e = err as { message?: unknown; code?: unknown; details?: unknown };
-    const message = typeof e.message === "string" && e.message ? e.message : NETWORK_MESSAGE;
+    const message =
+      e.code === "40P01" ? DEADLOCK_MESSAGE : typeof e.message === "string" && e.message ? e.message : NETWORK_MESSAGE;
     return new FinanceError(
       message,
       typeof e.code === "string" ? e.code : null,
@@ -389,6 +400,23 @@ export interface EntryJson {
   created_by_name: string | null;
   updated_at: string;
   updated_by_name: string | null;
+  // Phase 2 / 4 (0022 fin__entry_json); optional so pages keep working before the migration is applied.
+  /** 'receipt_reconciliation' exclusions are controlled by the clinic Excel reconciliation, not by hand */
+  exclusion_source?: "manual" | "receipt_reconciliation" | null;
+  reconciled_month?: string | null;
+  /** financing fee entry: changes only through /finance/financing */
+  is_locked?: boolean;
+  financing?: {
+    id: string;
+    version: number;
+    provider: string;
+    reference: string;
+    blocked: boolean;
+    expected_release: string | null;
+    released_on: string | null;
+    is_voided: boolean;
+  } | null;
+  import?: { source_kind: string; batch_id: string | null; file_name: string | null; origin: string } | null;
 }
 
 export interface PaymentJson {
@@ -726,7 +754,12 @@ export type AuditEntityType =
   | "fin_entries"
   | "fin_payments"
   | "fin_balance_snapshots"
-  | "fin_balance_sources";
+  | "fin_balance_sources"
+  | "fin_import_batches"
+  | "fin_import_sources"
+  | "fin_classification_rules"
+  | "fin_import_layouts"
+  | "fin_patient_financing";
 
 export interface AuditFilters {
   entity_type?: AuditEntityType;
@@ -1122,4 +1155,577 @@ export function matchCounterparty(
   const key = searchKey(text);
   if (!key || !ref) return undefined;
   return ref.counterparties.find((c) => c.is_active && searchKey(c.name) === key);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 + 4: file imports, bank matching, balances from files, patient financing (spec p2i_db_contract §4).
+// Files are parsed in the browser (lib/finance-import); only confirmed rows reach these RPCs.
+// ---------------------------------------------------------------------------
+
+export type FinancingReceiptsSource = "clinic_excel" | "dentos_payments";
+
+/** fin__settings_json after Phase 2/4 (§2.12): the P1 shape plus the four financing fields. */
+export interface ImportSettingsJson extends SettingsJson {
+  financing_receipts_source: FinancingReceiptsSource;
+  default_block_days: number;
+  financing_counterparty_id: string | null;
+  financing_account_id: string | null;
+}
+
+export type RuleScope = "any" | "bank" | "clinic";
+export type RuleMatchKind = "contains" | "starts_with" | "exact" | "regex" | "always";
+
+export interface ClassificationRuleJson {
+  id: string;
+  version: number;
+  priority: number;
+  scope: RuleScope;
+  match_kind: RuleMatchKind;
+  pattern: string | null;
+  category_id: string;
+  category_name: string;
+  report_bucket: ReportBucket;
+  direction: Direction;
+  subcategory: Subcategory | null;
+  counterparty_id: string | null;
+  counterparty_name: string | null;
+  requires_entitlement_month: boolean;
+  auto_select: boolean;
+  warning: string;
+  is_active: boolean;
+  is_seed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ImportLayoutKind = "clinic_workbook" | "bank_table";
+
+export interface ImportLayoutJson {
+  id: string;
+  version: number;
+  kind: ImportLayoutKind;
+  name: string;
+  config: Record<string, unknown>;
+  key_label: string | null;
+  account_id: string | null;
+  account_name: string | null;
+  receipts_account_id: string | null;
+  receipts_account_name: string | null;
+  bank_paid_account_id: string | null;
+  bank_paid_account_name: string | null;
+  cash_paid_account_id: string | null;
+  cash_paid_account_name: string | null;
+  is_default: boolean;
+  is_active: boolean;
+  sort_order: number;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ImportSetupAccountJson {
+  id: string;
+  /** not part of the §4.1 shape; read the version from fin_reference_data when writing */
+  version?: number;
+  name: string;
+  kind: AccountKind;
+  bank_name: string | null;
+  import_key: string | null;
+  is_active: boolean;
+  sort_order: number;
+}
+
+export interface ImportSetupJson {
+  today: string;
+  current_month: string;
+  can_write: boolean;
+  settings: ImportSettingsJson;
+  financing_ready: boolean;
+  accounts: ImportSetupAccountJson[];
+  rules: ClassificationRuleJson[];
+  layouts: ImportLayoutJson[];
+}
+
+export function finImportSetup() {
+  return rpc<ImportSetupJson>("fin_import_setup");
+}
+
+export function finSaveImportSettings(args: {
+  p_version: number;
+  p_financing_receipts_source: FinancingReceiptsSource;
+  p_default_block_days: number;
+  p_financing_counterparty_id: string | null;
+  p_financing_account_id: string | null;
+}) {
+  return rpc<MasterWriteResult<ImportSettingsJson>>("fin_save_import_settings", args);
+}
+
+/** Writes fin_accounts.import_key ('<Bank>:<account>'); null / blank clears it. Compared exactly, never folded. */
+export function finSetAccountImportKey(args: { p_id: string; p_version: number; p_import_key: string | null }) {
+  return rpc<MasterWriteResult<AccountJson>>("fin_set_account_import_key", args);
+}
+
+export function finSaveClassificationRule(args: {
+  p_id: string;
+  p_version: number;
+  p_priority: number;
+  p_scope: RuleScope;
+  p_match_kind: RuleMatchKind;
+  p_pattern: string | null;
+  p_category_id: string;
+  p_subcategory: Subcategory | null;
+  p_counterparty_id: string | null;
+  p_requires_entitlement_month: boolean;
+  p_auto_select: boolean;
+  p_warning: string;
+  p_is_active: boolean;
+}) {
+  return rpc<MasterWriteResult<ClassificationRuleJson>>("fin_save_classification_rule", args);
+}
+
+export function finSaveImportLayout(args: {
+  p_id: string;
+  p_version: number;
+  p_kind: ImportLayoutKind;
+  p_name: string;
+  p_config: Record<string, unknown>;
+  p_key_label: string | null;
+  p_account_id: string | null;
+  p_receipts_account_id: string | null;
+  p_bank_paid_account_id: string | null;
+  p_cash_paid_account_id: string | null;
+  p_is_default: boolean;
+  p_is_active: boolean;
+}) {
+  return rpc<MasterWriteResult<ImportLayoutJson>>("fin_save_import_layout", args);
+}
+
+// --- Review preflight (§4.5) -------------------------------------------------
+
+export type ImportSourceKind = "clinic_excel" | "bank_known" | "bank_table";
+export type ImportWarningCode = "possible_duplicate" | "batch_duplicate" | "manual_receipt_overlap";
+export type ImportRowError = "outside_month" | "future_date" | "financing_line" | "receipts_day_taken" | "invalid_key";
+export type ImportCheckStatus =
+  | "new"
+  | "saved_same"
+  | "saved_changed"
+  | "matched_same"
+  | "matched_changed"
+  | "match_voided"
+  | "id_taken";
+
+export interface ImportCheckRowInput {
+  row_no: number;
+  key: string;
+  kind: ImportSourceKind;
+  entry_id: string;
+  date: string;
+  amount_cents: number;
+  direction: Direction;
+  /** sent only for rows the user selected (narrations of unselected rows never leave the browser) */
+  description?: string;
+  fingerprint: string | null;
+}
+
+export interface DuplicateExampleJson {
+  entry_id: string;
+  counterparty_name: string;
+  paid_on: string;
+  amount_cents: number;
+  account_name: string;
+}
+
+export interface ImportCheckWarningJson {
+  code: ImportWarningCode;
+  examples?: DuplicateExampleJson[];
+  row_no?: number;
+}
+
+export interface ReceiptReconciliationCoreJson {
+  month: string;
+  equivalent: boolean;
+  through: string | null;
+  excluded_ids: string[];
+  manual_total_cents: number;
+  imported_total_cents: number;
+  overlap: boolean;
+}
+
+export interface ImportCheckRowJson {
+  row_no: number;
+  key: string;
+  status: ImportCheckStatus;
+  existing: {
+    entry_id: string;
+    amount_cents: number;
+    counterparty_name: string;
+    paid_on: string | null;
+    source_kind: string;
+    batch_id: string | null;
+  } | null;
+  warnings: ImportCheckWarningJson[];
+  errors: ImportRowError[];
+}
+
+export interface ImportCheckJson {
+  month: string;
+  manual_receipts: { count: number; total_cents: number };
+  reconciliation: ReceiptReconciliationCoreJson;
+  rows: ImportCheckRowJson[];
+}
+
+/** Write permission; reads only. 1..2000 rows in review-list order. */
+export function finImportCheck(month: string, rows: ImportCheckRowInput[]) {
+  return rpc<ImportCheckJson>("fin_import_check", { p_month: month, p_rows: rows });
+}
+
+// --- Bank matching candidates (§4.6) -------------------------------------------
+
+export interface DebtCandidateJson {
+  suggested: boolean;
+  score: number;
+  reason: string;
+  entry: {
+    id: string;
+    version: number;
+    counterparty_name: string;
+    description: string;
+    category_name: string;
+    report_bucket: ReportBucket;
+    due_date: string;
+    amount_cents: number;
+    outstanding_cents: number;
+  };
+}
+
+export function finDebtCandidates(amountCents: number, date: string, text: string, limit = 50) {
+  return rpc<{ total_count: number; candidates: DebtCandidateJson[] }>("fin_debt_candidates", {
+    p_amount_cents: amountCents,
+    p_date: date,
+    p_text: text.slice(0, 1000),
+    p_limit: limit,
+  });
+}
+
+// --- Commit (§4.7) ----------------------------------------------------------------
+
+export interface ImportRowPayload {
+  row_no: number;
+  key: string;
+  kind: ImportSourceKind;
+  file: string;
+  date: string;
+  amount_cents: number;
+  direction: Direction;
+  currency: "TRY";
+  account_id: string;
+  acknowledged: ImportWarningCode[];
+  description: string;
+  entry_id?: string | null;
+  fingerprint?: string | null;
+  category_id?: string | null;
+  subcategory?: Subcategory | null;
+  entitlement_month?: string | null;
+  counterparty_id?: string | null;
+  counterparty_text?: string | null;
+  match: { entry_id: string; version: number; payment_id: string } | null;
+}
+
+export interface ImportBatchJson {
+  id: string;
+  kind: "rows" | "financing";
+  month: string | null;
+  file_names: string[];
+  layout_ids: string[];
+  rows_sent: number;
+  inserted: number;
+  matched: number;
+  skipped: number;
+  acknowledged: number;
+  created_at: string;
+  created_by_name: string | null;
+}
+
+export interface ImportRowsResultJson {
+  already_saved: boolean;
+  batch: ImportBatchJson;
+  inserted: number;
+  matched: number;
+  skipped: number;
+  acknowledged: number;
+  rows: {
+    row_no: number;
+    key: string;
+    status: "inserted" | "matched" | "skipped_same" | "skipped_matched";
+    entry_id: string;
+    payment_id: string | null;
+  }[];
+  reconciliation: {
+    month: string;
+    equivalent: boolean;
+    through: string | null;
+    excluded_count: number;
+    manual_total_cents: number;
+    imported_total_cents: number;
+  } | null;
+}
+
+export function finImportRows(
+  rows: ImportRowPayload[],
+  batch: { id: string; month: string; file_names: string[]; layout_ids: string[] }
+) {
+  return rpc<ImportRowsResultJson>("fin_import_rows", { p_rows: rows, p_batch: batch });
+}
+
+// --- Receipt reconciliation read side (§4.8) ------------------------------------
+
+export interface ReconciliationEntryJson {
+  id: string;
+  counterparty_name: string;
+  due_date: string;
+  paid_cents: number;
+  is_cancelled: boolean;
+  excluded_from_totals: boolean;
+  exclusion_source: "manual" | "receipt_reconciliation" | null;
+}
+
+export interface ReceiptReconciliationJson extends ReceiptReconciliationCoreJson {
+  applied_ids: string[];
+  in_sync: boolean;
+  manual_entries: ReconciliationEntryJson[];
+  imported_entries: ReconciliationEntryJson[];
+}
+
+export function finReceiptReconciliation(month: string | null) {
+  return rpc<ReceiptReconciliationJson>("fin_receipt_reconciliation", { p_month: month });
+}
+
+// --- Balances read from files (§4.9) --------------------------------------------
+
+export interface ImportBalanceItem {
+  kind: "bank" | "cash";
+  /** '<Bank>:<account>' for bank sources, 'clinic-cash' for the workbook cash */
+  import_key: string;
+  amount_cents: number;
+  as_of: string;
+  label: string;
+  file_name: string;
+  note: string;
+}
+
+export interface ImportBalancesResultJson extends BalanceWriteResult {
+  mapped: { import_key: string; account_id: string | null; account_name: string | null }[];
+}
+
+export function finImportBalances(args: {
+  p_sources: ImportBalanceItem[];
+  /** updated_at of the current snapshot exactly as read; null when there is none */
+  p_base_updated_at: string | null;
+  p_initialize_banks: boolean;
+  p_dry_run: boolean;
+}) {
+  return rpc<ImportBalancesResultJson>("fin_import_balances", args);
+}
+
+// --- Patient financing (§4.10) ----------------------------------------------------
+
+export type FinancingStatus = "unblocked" | "blocked" | "released" | "voided";
+
+export interface FinancingJson {
+  id: string;
+  version: number;
+  provider: string;
+  reference: string;
+  loan_key: string;
+  patient_name_raw: string;
+  patient_id: string | null;
+  patient_name: string | null;
+  txn_date: string;
+  gross_cents: number;
+  commission_cents: number;
+  kkdf_cents: number;
+  bsmv_cents: number;
+  fee_cents: number;
+  net_cents: number;
+  blocked: boolean;
+  expected_release: string | null;
+  released_on: string | null;
+  released_by_name: string | null;
+  status: FinancingStatus;
+  needs_check: boolean;
+  entry_id: string;
+  source_key: string;
+  source_file: string | null;
+  voided_at: string | null;
+  void_reason: string | null;
+  corrected_at: string | null;
+  correction_reason: string | null;
+  created_at: string;
+  created_by_name: string | null;
+  updated_at: string;
+  updated_by_name: string | null;
+}
+
+export interface FinancingItemPayload {
+  id: string;
+  entry_id: string;
+  provider: string;
+  reference: string;
+  patient_name_raw: string;
+  txn_date: string;
+  currency: "TRY";
+  gross_cents: number;
+  commission_cents: number;
+  kkdf_cents: number;
+  bsmv_cents: number;
+  blocked: boolean;
+  expected_release: string | null;
+  file: string;
+}
+
+export interface FinancingImportResultJson {
+  already_saved: boolean;
+  batch: ImportBatchJson;
+  added: number;
+  skipped: number;
+  items: FinancingJson[];
+}
+
+export function finFinancingImport(batchId: string, items: FinancingItemPayload[], grossConfirmed: boolean) {
+  return rpc<FinancingImportResultJson>("fin_financing_import", {
+    p_batch_id: batchId,
+    p_items: items,
+    p_gross_confirmed: grossConfirmed,
+  });
+}
+
+export interface FinancingWriteResult {
+  already_saved: boolean;
+  record: FinancingJson;
+  entry: EntryJson;
+}
+
+export function finFinancingRelease(args: { p_id: string; p_version: number; p_date: string }) {
+  return rpc<FinancingWriteResult>("fin_financing_release", args);
+}
+
+export function finFinancingCorrect(args: {
+  p_id: string;
+  p_version: number;
+  p_gross_cents: number;
+  p_commission_cents: number;
+  p_kkdf_cents: number;
+  p_bsmv_cents: number;
+  p_blocked: boolean;
+  p_expected_release: string | null;
+  p_released_on: string | null;
+  p_reason: string;
+}) {
+  return rpc<FinancingWriteResult>("fin_financing_correct", args);
+}
+
+export function finFinancingVoid(args: { p_id: string; p_version: number; p_reason: string }) {
+  return rpc<FinancingWriteResult>("fin_financing_void", args);
+}
+
+export function finFinancingLinkPatient(args: { p_id: string; p_version: number; p_patient_id: string | null }) {
+  return rpc<FinancingWriteResult>("fin_financing_link_patient", args);
+}
+
+export interface FinancingSummaryJson {
+  today: string;
+  month: string;
+  receipts_source: FinancingReceiptsSource;
+  gross_cents: number;
+  fee_cents: number;
+  monthly_count: number;
+  blocked_net_cents: number;
+  blocked_count: number;
+  needs_check_count: number;
+}
+
+export function finFinancingSummary(month: string | null) {
+  return rpc<FinancingSummaryJson>("fin_financing_summary", { p_month: month });
+}
+
+export type FinancingStatusFilter = "all" | "unblocked" | "blocked" | "needs_check" | "released" | "voided";
+
+export interface FinancingFilters {
+  month?: string;
+  status?: FinancingStatusFilter;
+  query?: string;
+  patient_id?: string;
+}
+
+export interface FinancingListJson extends Paged {
+  today: string;
+  rows: FinancingJson[];
+  totals: { gross_cents: number; fee_cents: number; net_cents: number };
+}
+
+export function finFinancingList(filters: FinancingFilters, page: PageArg) {
+  const f: FinancingFilters = { ...filters };
+  if (f.status === "all") delete f.status;
+  return rpc<FinancingListJson>("fin_financing_list", { p_filters: compactFilters(f), p_page: page });
+}
+
+// --- History (§4.11) ------------------------------------------------------------
+
+export interface ImportHistoryFilters {
+  kind?: "rows" | "financing";
+  month?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+export function finImportHistory(filters: ImportHistoryFilters, page: PageArg) {
+  return rpc<{ rows: ImportBatchJson[] } & Paged>("fin_import_history", {
+    p_filters: compactFilters(filters),
+    p_page: page,
+  });
+}
+
+export interface ImportBatchSourceJson {
+  source_key: string;
+  source_kind: string;
+  link_kind: "entry" | "payment_match";
+  file_name: string | null;
+  txn_date: string | null;
+  amount_cents: number | null;
+  entry_id: string;
+  payment_id: string | null;
+  payment_is_voided: boolean;
+  rebind_count: number;
+  rebound_at: string | null;
+  entry: {
+    counterparty_name: string;
+    category_name: string;
+    status: EntryStatus;
+    amount_cents: number;
+    outstanding_cents: number;
+  } | null;
+}
+
+export function finImportBatch(id: string) {
+  return rpc<{ batch: ImportBatchJson; sources: ImportBatchSourceJson[] }>("fin_import_batch", { p_id: id });
+}
+
+/** §1 item 6: two concurrent receipt writes in one month can deadlock; the retry is safe (every write is idempotent). */
+export function importErrorMessage(err: FinanceError): string {
+  if (err.code === "40P01") return DEADLOCK_MESSAGE;
+  return err.message;
+}
+
+/** DETAIL of per-row import errors: {"row_no": n, "key": "…"} (§1 item 1). */
+export function importErrorRow(err: FinanceError): { row_no: number | null; key: string | null } {
+  if (!err.details) return { row_no: null, key: null };
+  try {
+    const d = JSON.parse(err.details) as { row_no?: unknown; key?: unknown };
+    return {
+      row_no: typeof d.row_no === "number" ? d.row_no : null,
+      key: typeof d.key === "string" ? d.key : null,
+    };
+  } catch {
+    return { row_no: null, key: null };
+  }
 }

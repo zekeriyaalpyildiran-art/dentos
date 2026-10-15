@@ -1,8 +1,8 @@
 // 'Ortaklar için kısa rapor · PDF' — one A4 page (legacy lib/finance-partner-pdf.ts, same sections and order).
-// Every amount comes from fin_dashboard(p_month); the Burgan financing block follows in Phase 4.
+// Every amount comes from fin_dashboard(p_month); the patient-financing line from fin_financing_summary(p_month).
 
 import { A4, COLORS, createKit, drawRight, fit, wrap, type FontBytes } from "./common";
-import { formatDay, formatMonth, type DashboardJson } from "../finance";
+import { formatDay, formatMonth, type DashboardJson, type FinancingSummaryJson } from "../finance";
 import {
   PARTNER_AFTER_ALL_LABEL,
   RESULT_FIGURES,
@@ -13,6 +13,8 @@ import {
 
 export interface PartnerPdfInput {
   dashboard: DashboardJson;
+  /** Phase 4 patient financing (legacy Burgan block); omitted or null when there is none */
+  financing?: FinancingSummaryJson | null;
   brand: string;
   fonts: FontBytes;
 }
@@ -20,7 +22,7 @@ export interface PartnerPdfInput {
 const profit = RESULT_FIGURES.find((f) => f.key === "profit_cents")!;
 const currentPeriod = RESULT_FIGURES.find((f) => f.key === "current_period_result_cents")!;
 
-export async function createPartnerPdf({ dashboard: d, brand, fonts }: PartnerPdfInput): Promise<Uint8Array> {
+export async function createPartnerPdf({ dashboard: d, financing, brand, fonts }: PartnerPdfInput): Promise<Uint8Array> {
   const monthLabel = formatMonth(d.month);
   const kit = await createKit(fonts, {
     title: `${brand} - Ortaklar için finans özeti ${d.month}`,
@@ -132,6 +134,12 @@ export async function createPartnerPdf({ dashboard: d, brand, fonts }: PartnerPd
     "Cari dönem sonucu, geçmiş dönem hekim borcu ödemesini geri ekler.",
     "Ödenmemiş giderler hariç; kredi anaparası faaliyet gideri değildir.",
   ];
+  if (financing && (financing.monthly_count > 0 || financing.blocked_count > 0)) {
+    notes.push(
+      `Hasta finansmanı: brüt ${money(financing.gross_cents)} (tahsilatta), kesinti ${money(financing.fee_cents)} (giderde), ` +
+        `blokede net ${money(financing.blocked_net_cents)} (likide eklenmez).`
+    );
+  }
   notes.forEach((n, i) => text(n, left, 94 - i * 13, 8.5, muted));
 
   text(`${brand}  |  Ortaklara özel`, left, 34, 8, muted);

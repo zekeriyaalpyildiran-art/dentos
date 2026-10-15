@@ -1,435 +1,699 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useAuthStore } from "@/lib/store";
-import { createClient } from "@/lib/supabase";
+import { useParams, useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  CallResultDialog,
+  PlanCallDialog,
+  RescheduleCallDialog,
+  resolveMessage,
+  type ReschedulableCall,
+} from "@/components/crm/CallDialogs";
+import { ConvertDialog } from "@/components/crm/ConvertDialog";
+import { HandoffDialog, HandoffSummary, type HandoffMode } from "@/components/crm/HandoffDialog";
+import { LeadFields, formToInput, leadToForm, type LeadFormState } from "@/components/crm/LeadFields";
+import { LeadHistory } from "@/components/crm/LeadHistory";
+import { PhoneMatchWarning, PhoneMatchesList } from "@/components/crm/PhoneMatches";
+import { ReminderDialog } from "@/components/crm/ReminderDialog";
+import { TaskDialog } from "@/components/crm/TaskDialog";
+import { useStaff } from "@/components/crm/useCrmRefs";
+import {
+  Badge,
+  Card,
+  CrmErrorBox,
+  CrmShell,
+  Field,
+  InterestBadge,
+  Loading,
+  Notice,
+  StageBadge,
+  SuccessBox,
+  buttonDanger,
+  buttonPrimary,
+  buttonSecondary,
+  inputClass,
+} from "@/components/crm/ui";
+import {
+  crmLeadDetail,
+  crmRestoreLead,
+  crmSaveLead,
+  crmTrashLead,
+  dayTimeLabel,
+  formatDateTime,
+  istanbulToday,
+  splitIstanbul,
+  telHref,
+  toCrmError,
+  UUID_RE,
+  type CallJson,
+  type CrmError,
+  type HandoffJson,
+  type LeadDetailJson,
+  type PhoneMatchesJson,
+} from "@/lib/crm";
+import {
+  APPOINTMENT_STATUS_LABELS,
+  APPOINTMENT_STATUS_STYLES,
+  CALL_DECISION_LABELS,
+  CALL_ORIGIN_LABELS,
+  CALL_STATUS_LABELS,
+  CALL_STATUS_STYLES,
+  REMINDER_OUTCOME_LABELS,
+  TASK_DISPLAY_LABELS,
+  TASK_DISPLAY_STYLES,
+  sourceLabel,
+} from "@/lib/crm/codes";
 
-type LeadStatus = "new" | "contacted" | "interested" | "qualified" | "converted" | "lost";
+type Dialog =
+  | { kind: "result"; callId: string | null; useDue: boolean }
+  | { kind: "plan" }
+  | { kind: "reschedule"; call: ReschedulableCall }
+  | { kind: "reminder"; appointmentId: string }
+  | { kind: "handoff"; mode: HandoffMode; handoff: HandoffJson | null }
+  | { kind: "task" }
+  | { kind: "convert" };
 
-const STATUS_LABELS: Record<LeadStatus, string> = {
-  new: "Yeni",
-  contacted: "İletişime Geçildi",
-  interested: "İlgilendiği",
-  qualified: "Nitelikli",
-  converted: "Müşteri",
-  lost: "Kaybedildi",
-};
-
-const SOURCE_LABELS: Record<string, string> = {
-  direct: "Doğrudan",
-  referral: "Referans",
-  online: "Online",
-  social_media: "Sosyal Medya",
-  other: "Diğer",
-};
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-interface Lead {
-  id: string;
-  full_name: string;
-  phone: string;
-  email: string | null;
-  address: string | null;
-  source: string | null;
-  status: LeadStatus;
-  assigned_to: string | null;
-  assignee: { full_name: string } | null;
-  notes: string | null;
-  created_at: string;
-  updated_at: string;
-  converted_at: string | null;
-}
-
-interface StaffOption {
-  id: string;
-  full_name: string;
-}
-
-const emptyForm = {
-  full_name: "",
-  phone: "",
-  email: "",
-  address: "",
-  source: "",
-  status: "new" as LeadStatus,
-  assigned_to: "",
-  notes: "",
-};
-
-type FormKey = keyof typeof emptyForm;
-
-const toForm = (lead: Lead) => ({
-  full_name: lead.full_name,
-  phone: lead.phone,
-  email: lead.email ?? "",
-  address: lead.address ?? "",
-  source: lead.source ?? "",
-  status: lead.status,
-  assigned_to: lead.assigned_to ?? "",
-  notes: lead.notes ?? "",
-});
-
-const formatDate = (value: string | null) =>
-  value ? new Date(value).toLocaleDateString("tr-TR") : "-";
-
-export default function LeadDetailPage() {
+export default function LeadCardPage() {
   const params = useParams<{ id: string }>();
   const leadId = params.id;
-  const { user } = useAuthStore();
-  const supabase = createClient();
+  const router = useRouter();
+  const staff = useStaff();
 
-  const [lead, setLead] = useState<Lead | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState(emptyForm);
-  const [staff, setStaff] = useState<StaffOption[]>([]);
+  const [detail, setDetail] = useState<LeadDetailJson | null>(null);
+  const [loadError, setLoadError] = useState<CrmError | null>(null);
+  const [form, setForm] = useState<LeadFormState | null>(null);
+  const [note, setNote] = useState("");
+  const [scheduleReason, setScheduleReason] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<CrmError | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [savedMatches, setSavedMatches] = useState<PhoneMatchesJson | null>(null);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
 
-  useEffect(() => {
-    if (!user?.clinic_id) return;
-
-    const clinicId = user.clinic_id;
-    const client = createClient();
-
-    const fetchStaff = async () => {
-      const { data, error } = await client
-        .from("users")
-        .select("id, full_name, is_active")
-        .eq("clinic_id", clinicId)
-        .order("full_name", { ascending: true });
-
-      if (error) {
-        console.error("Error fetching staff:", error);
+  const load = useCallback(
+    async (resetForm: boolean) => {
+      if (!UUID_RE.test(leadId)) {
+        setLoadError(toCrmError({ message: "Hasta kaydı bulunamadı.", code: "PT404" }));
         return;
       }
-      setStaff((data || []).filter((u) => u.is_active !== false));
-    };
-
-    fetchStaff();
-  }, [user?.clinic_id]);
-
-  useEffect(() => {
-    if (!user?.clinic_id || !leadId) return;
-
-    const fetchLead = async () => {
       try {
-        // A non-uuid id would make Postgres reject the query, so it is treated as not found.
-        if (!UUID_RE.test(leadId)) return;
-
-        const { data, error } = await supabase
-          .from("leads")
-          .select("*, assignee:users(full_name)")
-          .eq("id", leadId)
-          .eq("clinic_id", user.clinic_id)
-          .maybeSingle();
-
-        if (error) throw error;
-        if (data) {
-          setLead(data);
-          setForm(toForm(data));
+        const d = await crmLeadDetail({ p_lead_id: leadId });
+        setDetail(d);
+        setLoadError(null);
+        if (resetForm) {
+          setForm(leadToForm(d.lead));
+          setNote("");
+          setScheduleReason("");
         }
       } catch (err) {
-        console.error("Error fetching lead:", err);
-        setError("Lead yüklenirken hata oluştu.");
-      } finally {
-        setLoading(false);
+        setLoadError(toCrmError(err));
       }
-    };
+    },
+    [leadId]
+  );
 
-    fetchLead();
-  }, [user?.clinic_id, leadId]);
+  useEffect(() => {
+    load(true);
+  }, [load]);
 
-  const setField =
-    (key: FormKey) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
-      setForm((prev) => ({ ...prev, [key]: e.target.value }));
+  const lead = detail?.lead ?? null;
+  const original = useMemo(() => (lead ? leadToForm(lead) : null), [lead]);
+  const dirty = !!form && !!original && (JSON.stringify(form) !== JSON.stringify(original) || note.trim() !== "");
 
-  const handleSave = async (e: React.FormEvent) => {
+  const reloadAll = () => load(true);
+  const reloadKeepForm = () => load(false);
+
+  const done = (text: string, keepForm = false) => {
+    setDialog(null);
+    setMessage(text);
+    if (keepForm && dirty) reloadKeepForm();
+    else reloadAll();
+  };
+
+  if (!detail || !lead || !form || !original) {
+    return (
+      <CrmShell title="Hasta kartı">
+        {loadError ? (
+          <div className="space-y-3">
+            <CrmErrorBox error={loadError} />
+            <Link href="/crm/leads" className={buttonSecondary}>
+              Listeye dön
+            </Link>
+          </div>
+        ) : (
+          <Loading />
+        )}
+      </CrmShell>
+    );
+  }
+
+  const trashed = !!lead.deleted_at;
+  const canManage = detail.can_manage;
+  const today = istanbulToday();
+  const moved =
+    !!original.followup_date &&
+    !!form.followup_date &&
+    original.followup_date !== form.followup_date &&
+    form.followup_state === "open";
+
+  // Client-side hints for the server's mandatory-note rules (RR:53, RR:59, RR:61); the server decides.
+  const closesFollowup =
+    original.followup_state === "open" &&
+    (form.followup_state === "done" || form.do_not_contact || form.stage === "treatment_completed");
+  const noteRule =
+    form.stage === "treatment_completed" && original.stage !== "treatment_completed"
+      ? "Tedaviyi kapatmak için yeni görüşme notuna tamamlanma açıklamasını yazın."
+      : original.stage === "treatment_completed" && form.stage !== "treatment_completed"
+        ? "Hastayı yeniden açma nedenini yeni görüşme notuna yazın."
+        : closesFollowup
+          ? "Takibi tamamlamak için yeni görüşme notuna kapanış nedenini yazın."
+          : null;
+
+  const save = async (e: FormEvent) => {
     e.preventDefault();
-    if (!lead || !user?.clinic_id) return;
-
-    const fullName = form.full_name.trim();
-    const phone = form.phone.trim();
-    if (!fullName || !phone) {
-      setMessage(null);
-      setError("Ad soyad ve telefon zorunludur.");
+    if (saving || trashed) return;
+    const parsed = formToInput(form);
+    if (!parsed.ok) {
+      setLocalError(parsed.error);
       return;
     }
-
+    if (noteRule && !note.trim()) {
+      setLocalError(noteRule);
+      return;
+    }
+    if (moved && !scheduleReason.trim()) {
+      setLocalError("Takip tarihini değiştirme nedenini yazın.");
+      return;
+    }
+    setLocalError(null);
+    setSaveError(null);
     setSaving(true);
-    setMessage(null);
-    setError(null);
-
-    const now = new Date().toISOString();
-    // converted_at is stamped when the lead becomes a customer and cleared when it leaves that status.
-    const convertedAt =
-      form.status === "converted"
-        ? lead.status === "converted"
-          ? lead.converted_at
-          : now
-        : null;
-
-    const changes = {
-      full_name: fullName,
-      phone,
-      email: form.email.trim() || null,
-      address: form.address.trim() || null,
-      source: form.source || null,
-      status: form.status,
-      assigned_to: form.assigned_to || null,
-      notes: form.notes.trim() || null,
-      converted_at: convertedAt,
-      updated_at: now,
-    };
-
     try {
-      const { data, error } = await supabase
-        .from("leads")
-        .update(changes)
-        .eq("id", lead.id)
-        .eq("clinic_id", user.clinic_id)
-        .select("id")
-        .maybeSingle();
-
-      if (error) throw error;
-      if (!data) throw new Error("Lead güncellenemedi");
-
-      const assignee =
-        changes.assigned_to === lead.assigned_to
-          ? lead.assignee
-          : (staff.find((s) => s.id === changes.assigned_to) ?? null);
-      const updated = { ...lead, ...changes, assignee };
-      setLead(updated);
-      setForm(toForm(updated));
-      setMessage("Değişiklikler kaydedildi.");
+      const r = await crmSaveLead({
+        p_id: lead.id,
+        p_version: lead.version,
+        p_lead: parsed.input,
+        p_note: note.trim() || null,
+        p_schedule_reason: moved ? scheduleReason.trim() : null,
+        p_initial_call: null,
+      });
+      setSavedMatches(r.phone_matches);
+      const cancelled = r.cancelled_call_ids?.length ?? 0;
+      setMessage(
+        `Hasta kartı kaydedildi.${cancelled ? ` ${cancelled} bekleyen arama iptal edildi.` : ""}`
+      );
+      await load(true);
     } catch (err) {
-      console.error("Error saving lead:", err);
-      setError("Kaydedilemedi, lütfen tekrar deneyin.");
+      setSaveError(toCrmError(err));
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading) {
-    return <div className="p-8">Yükleniyor...</div>;
-  }
+  const trash = async () => {
+    if (!confirm("Hasta çöp kutusuna taşınsın mı? Aramaları ve geçmişi korunur; listelerde görünmez.")) return;
+    try {
+      await crmTrashLead({ p_lead_id: lead.id, p_version: lead.version });
+      router.push("/crm/leads");
+    } catch (err) {
+      setSaveError(toCrmError(err));
+    }
+  };
 
-  if (!lead) {
-    return (
-      <div className="p-8">
-        <Link
-          href="/crm/leads"
-          className="inline-block mb-6 px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300"
-        >
-          ← Geri Dön
-        </Link>
-        <p className="text-gray-600">{error ?? "Lead bulunamadı"}</p>
-      </div>
-    );
-  }
+  const restore = async () => {
+    try {
+      const r = await crmRestoreLead({ p_lead_id: lead.id, p_version: lead.version });
+      setSavedMatches(r.phone_matches);
+      setMessage("Hasta çöp kutusundan geri getirildi.");
+      await load(true);
+    } catch (err) {
+      setSaveError(toCrmError(err));
+    }
+  };
 
-  const saved = toForm(lead);
-  const unchanged = (Object.keys(emptyForm) as FormKey[]).every((k) => form[k] === saved[k]);
+  const openHandoff = detail.handoffs.find((h) => h.status === "waiting" || h.status === "answered") ?? null;
+  const canRequestHandoff =
+    !trashed && !openHandoff && lead.stage !== "archived" && lead.stage !== "treatment_completed";
+  const toReschedulable = (c: CallJson): ReschedulableCall => ({
+    id: c.id,
+    version: c.version,
+    lead_name: lead.full_name,
+    date: c.date,
+    time: c.time,
+    caller_user_id: c.caller_user_id,
+    caller_name: c.caller_name ?? c.caller_name_legacy ?? null,
+  });
 
   return (
-    <div className="p-8">
-      <Link
-        href="/crm/leads"
-        className="inline-block mb-6 px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300"
-      >
-        ← Geri Dön
-      </Link>
+    <CrmShell
+      title={
+        <span className="flex flex-wrap items-center gap-3">
+          {lead.full_name} <StageBadge stage={lead.stage} /> <InterestBadge interest={lead.interest} />
+        </span>
+      }
+      subtitle={
+        <span className="flex flex-wrap items-center gap-2">
+          <a href={telHref(lead.phone)} className="text-blue-700 underline">
+            {lead.phone}
+          </a>
+          <span>· {sourceLabel(lead.source)}</span>
+          <span>· Sorumlu: {lead.assigned_name ?? "Atanmamış"}</span>
+          <span>· Kayıt: {formatDateTime(lead.created_at)}</span>
+        </span>
+      }
+      actions={
+        <>
+          <Link href="/crm/leads" className={buttonSecondary}>
+            ← Liste
+          </Link>
+          {!trashed &&
+            (lead.patient_id ? (
+              <Link href={`/patients/${lead.patient_id}`} className={buttonSecondary}>
+                Hasta kaydı: {lead.patient_name ?? "aç"}
+              </Link>
+            ) : (
+              <button type="button" className={buttonPrimary} onClick={() => setDialog({ kind: "convert" })}>
+                Hastaya dönüştür
+              </button>
+            ))}
+          {trashed ? (
+            <button type="button" className={buttonPrimary} onClick={restore}>
+              Çöp kutusundan geri getir
+            </button>
+          ) : (
+            <button type="button" className={buttonDanger} onClick={trash}>
+              Çöp kutusuna taşı
+            </button>
+          )}
+        </>
+      }
+    >
+      <div className="space-y-4">
+        {trashed && (
+          <Notice tone="danger">
+            Bu hasta çöp kutusunda ({formatDateTime(lead.deleted_at)}
+            {lead.deleted_by_name ? ` · ${lead.deleted_by_name}` : ""}). Kart salt okunurdur.
+          </Notice>
+        )}
+        {lead.automation_review && (
+          <Notice tone="warn">
+            <b>Takip kararı gerekiyor:</b> {lead.automation_review}
+          </Notice>
+        )}
+        {lead.do_not_contact && <Notice tone="danger">Hasta telefonla aranmak istemiyor.</Notice>}
+        {lead.missing_plan && !lead.automation_review && (
+          <Notice tone="warn">Takip planı eksik: sonraki adımı ve tarihi birlikte belirleyin veya bir arama planlayın.</Notice>
+        )}
+        {lead.treatment_closed_at && lead.stage === "treatment_completed" && (
+          <Notice tone="success">
+            Tedavi tamamlandı · {formatDateTime(lead.treatment_closed_at)}
+            {lead.treatment_closed_by_name ? ` · ${lead.treatment_closed_by_name}` : ""}
+          </Notice>
+        )}
+        <SuccessBox text={message} />
+        <PhoneMatchesList matches={savedMatches} />
 
-      <h1 className="text-3xl font-bold mb-8">{lead.full_name}</h1>
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="lg:col-span-2 space-y-4">
+            <Card title="Hasta kartı">
+              <form onSubmit={save} className="space-y-6">
+                <LeadFields
+                  value={form}
+                  onChange={(patch) => setForm((f) => (f ? { ...f, ...patch } : f))}
+                  staff={staff}
+                  today={today}
+                  originalSource={lead.source}
+                  originalAssignee={lead.assigned_to ? { id: lead.assigned_to, name: lead.assigned_name } : null}
+                  disabled={trashed || saving}
+                />
+                {!trashed && form.phone !== original.phone && (
+                  <PhoneMatchWarning phone={form.phone} excludeLeadId={lead.id} excludePatientId={lead.patient_id} />
+                )}
+                {!trashed && (
+                  <div className="space-y-3">
+                    {moved && (
+                      <Field label="Takip tarihini değiştirme nedeni *">
+                        <input
+                          maxLength={500}
+                          value={scheduleReason}
+                          onChange={(e) => setScheduleReason(e.target.value)}
+                          className={inputClass}
+                          placeholder={`${dayTimeLabel(original.followup_date)} → ${dayTimeLabel(form.followup_date)}`}
+                        />
+                      </Field>
+                    )}
+                    <Field
+                      label={noteRule ? "Yeni görüşme notu *" : "Yeni görüşme notu"}
+                      hint={noteRule ?? "Kaydettiğinde geçmişe not olarak eklenir."}
+                    >
+                      <textarea
+                        rows={3}
+                        maxLength={10000}
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        className={inputClass}
+                      />
+                    </Field>
+                    {localError && (
+                      <div className="p-3 rounded bg-red-50 text-red-700 text-sm" role="alert">
+                        {localError}
+                      </div>
+                    )}
+                    <CrmErrorBox error={saveError} onReload={reloadAll} />
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        className={buttonSecondary}
+                        disabled={!dirty || saving}
+                        onClick={() => {
+                          setForm(original);
+                          setNote("");
+                          setScheduleReason("");
+                          setLocalError(null);
+                        }}
+                      >
+                        Değişiklikleri geri al
+                      </button>
+                      <button type="submit" className={buttonPrimary} disabled={!dirty || saving}>
+                        {saving ? "Kaydediliyor…" : "Kaydet"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </form>
+              {/* The migration copies leads.notes into one 'legacy' history row; show the box only without it. */}
+              {lead.notes_legacy && !detail.activities.some((a) => a.type === "legacy") && (
+                <div className="mt-4 p-3 rounded bg-gray-50 text-sm">
+                  <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Eski not</p>
+                  <p className="whitespace-pre-line">{lead.notes_legacy}</p>
+                </div>
+              )}
+            </Card>
 
-      <div className="grid grid-cols-2 gap-4 mb-8 bg-gray-50 p-4 rounded">
-        <div>
-          <div className="text-sm text-gray-600">Telefon</div>
-          <div className="font-semibold text-gray-900">{lead.phone}</div>
-        </div>
-        <div>
-          <div className="text-sm text-gray-600">E-posta</div>
-          <div className="font-semibold text-gray-900">{lead.email || "-"}</div>
-        </div>
-        <div>
-          <div className="text-sm text-gray-600">Kaynak</div>
-          <div className="font-semibold text-gray-900">
-            {lead.source ? (SOURCE_LABELS[lead.source] ?? lead.source) : "-"}
+            <Card title="Geçmiş">
+              <LeadHistory
+                leadId={lead.id}
+                activities={detail.activities}
+                total={detail.activities_total}
+                canManage={canManage}
+                readOnly={trashed}
+                onChanged={reloadKeepForm}
+              />
+            </Card>
           </div>
-        </div>
-        <div>
-          <div className="text-sm text-gray-600">Atanan Kişi</div>
-          <div className="font-semibold text-gray-900">
-            {lead.assignee?.full_name ?? (lead.assigned_to ? "Atanmış" : "-")}
+
+          <div className="space-y-4">
+            <Card
+              title="Aramalar"
+              actions={
+                !trashed && (
+                  <>
+                    <button
+                      type="button"
+                      className={buttonPrimary}
+                      onClick={() =>
+                        setDialog({ kind: "result", callId: detail.due_call?.id ?? null, useDue: !!detail.due_call })
+                      }
+                    >
+                      Görüşme sonucu
+                    </button>
+                    <button type="button" className={buttonSecondary} onClick={() => setDialog({ kind: "plan" })}>
+                      Arama planla
+                    </button>
+                  </>
+                )
+              }
+            >
+              <div className="space-y-2 text-sm">
+                <p>
+                  <b>Sıradaki arama:</b>{" "}
+                  {lead.next_call
+                    ? `${dayTimeLabel(lead.next_call.date, lead.next_call.time)} · ${lead.next_call.caller_name ?? "Arayan"} · ${CALL_ORIGIN_LABELS[lead.next_call.origin]}`
+                    : "Yok"}
+                </p>
+                <p>
+                  <b>Takip:</b> {lead.followup_state === "done" ? "Tamamlandı" : dayTimeLabel(lead.followup_date)}
+                  {lead.next_action ? ` · ${lead.next_action}` : ""}
+                </p>
+              </div>
+              {detail.calls.length > 0 && (
+                <ul className="mt-3 divide-y border rounded text-sm">
+                  {detail.calls.map((c) => (
+                    <li key={c.id} className="px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium tabular-nums">{dayTimeLabel(c.date, c.time)}</span>
+                        <Badge className={CALL_STATUS_STYLES[c.status]}>{CALL_STATUS_LABELS[c.status]}</Badge>
+                        {c.origin === "automatic" && (
+                          <Badge className="bg-purple-100 text-purple-800">{CALL_ORIGIN_LABELS.automatic}</Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-600">
+                        {c.caller_name ?? c.caller_name_legacy ?? "Arayan bilinmiyor"}
+                        {c.decision ? ` · ${CALL_DECISION_LABELS[c.decision]}` : ""}
+                        {c.auto_cancelled && c.cancel_reason ? ` · Sistem iptali: ${c.cancel_reason}` : ""}
+                      </p>
+                      {c.note && (
+                        <p className="text-xs text-gray-800 mt-1 line-clamp-3 whitespace-pre-line">
+                          {c.note}
+                          {c.note_edited && <span className="text-gray-500"> (düzeltildi)</span>}
+                        </p>
+                      )}
+                      {c.status === "planned" && !trashed && (
+                        <div className="mt-1 flex gap-3 text-xs">
+                          <button
+                            type="button"
+                            className="text-blue-700 underline"
+                            onClick={() => setDialog({ kind: "result", callId: c.id, useDue: false })}
+                          >
+                            Sonucu kaydet
+                          </button>
+                          <button
+                            type="button"
+                            className="text-blue-700 underline"
+                            onClick={() => setDialog({ kind: "reschedule", call: toReschedulable(c) })}
+                          >
+                            Planı değiştir
+                          </button>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+
+            <Card
+              title="Klinik randevuları"
+              actions={
+                lead.patient_id && !trashed ? (
+                  <Link href={`/appointments/new?patient=${lead.patient_id}`} className={buttonSecondary}>
+                    Randevu oluştur
+                  </Link>
+                ) : undefined
+              }
+            >
+              {!lead.patient_id ? (
+                <p className="text-sm text-gray-600">
+                  Hasta kaydı yok. Randevu için “Hastaya dönüştür” veya görüşme sonucunda “Klinik randevusu kesinleşti”
+                  kararını kullanın.
+                </p>
+              ) : detail.appointments.length === 0 ? (
+                <p className="text-sm text-gray-600">Randevu yok.</p>
+              ) : (
+                <ul className="divide-y border rounded text-sm">
+                  {detail.appointments.map((a) => {
+                    const local = splitIstanbul(a.start_time);
+                    const remindable = a.status === "scheduled" && local.date >= today;
+                    return (
+                      <li key={a.id} className="px-3 py-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{formatDateTime(a.start_time)}</span>
+                          <Badge className={APPOINTMENT_STATUS_STYLES[a.status] ?? "bg-gray-100 text-gray-700"}>
+                            {APPOINTMENT_STATUS_LABELS[a.status] ?? a.status}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-gray-600">
+                          {a.doctor_name ?? "Hekim"} · {a.chair_name ?? "Koltuk"}
+                        </p>
+                        {a.reminder_current && a.reminder_outcome && (
+                          <p className="text-xs text-teal-700">
+                            Hatırlatma: {REMINDER_OUTCOME_LABELS[a.reminder_outcome]}
+                          </p>
+                        )}
+                        {remindable && !trashed && (
+                          <button
+                            type="button"
+                            className="mt-1 text-xs text-blue-700 underline"
+                            onClick={() => setDialog({ kind: "reminder", appointmentId: a.id })}
+                          >
+                            Hatırlatma sonucu kaydet
+                          </button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </Card>
+
+            <Card
+              title="Yöneticiye aktarım"
+              actions={
+                canRequestHandoff ? (
+                  <button
+                    type="button"
+                    className={buttonSecondary}
+                    onClick={() => setDialog({ kind: "handoff", mode: "request", handoff: null })}
+                  >
+                    Yöneticiye aktar
+                  </button>
+                ) : undefined
+              }
+            >
+              {detail.handoffs.length === 0 ? (
+                <p className="text-sm text-gray-600">Aktarım yok.</p>
+              ) : (
+                <div className="space-y-3">
+                  {detail.handoffs.map((h) => (
+                    <div key={h.id} className="space-y-2">
+                      <HandoffSummary handoff={h} />
+                      {!trashed && (
+                        <div className="flex flex-wrap gap-3 text-xs">
+                          {canManage && (h.status === "waiting" || h.status === "answered") && (
+                            <button
+                              type="button"
+                              className="text-blue-700 underline"
+                              onClick={() => setDialog({ kind: "handoff", mode: "answer", handoff: h })}
+                            >
+                              {h.status === "answered" ? "Yanıtı düzenle" : "Yanıtla"}
+                            </button>
+                          )}
+                          {h.status === "answered" && (
+                            <button
+                              type="button"
+                              className="text-blue-700 underline"
+                              onClick={() => setDialog({ kind: "handoff", mode: "complete", handoff: h })}
+                            >
+                              Tamamla
+                            </button>
+                          )}
+                          {h.status === "waiting" && (
+                            <button
+                              type="button"
+                              className="text-blue-700 underline"
+                              onClick={() => setDialog({ kind: "handoff", mode: "cancel", handoff: h })}
+                            >
+                              Geri çek
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <Card
+              title="Görevler"
+              actions={
+                !trashed ? (
+                  <button type="button" className={buttonSecondary} onClick={() => setDialog({ kind: "task" })}>
+                    Görev yaz
+                  </button>
+                ) : undefined
+              }
+            >
+              {detail.tasks.length === 0 ? (
+                <p className="text-sm text-gray-600">Açık görev yok.</p>
+              ) : (
+                <ul className="divide-y border rounded text-sm">
+                  {detail.tasks.map((t) => (
+                    <li key={t.id} className="px-3 py-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-medium">{t.title}</span>
+                        <Badge className={TASK_DISPLAY_STYLES[t.display_status]}>
+                          {TASK_DISPLAY_LABELS[t.display_status]}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-gray-600">
+                        {dayTimeLabel(t.due_date)} · {t.assignee_name ?? "Görevli"}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <Link href="/tasks" className="mt-2 inline-block text-xs text-blue-700 underline">
+                Tüm görevler
+              </Link>
+            </Card>
           </div>
-        </div>
-        <div className="col-span-2">
-          <div className="text-sm text-gray-600">Adres</div>
-          <div className="font-semibold text-gray-900 whitespace-pre-line">{lead.address || "-"}</div>
-        </div>
-        <div>
-          <div className="text-sm text-gray-600">Oluşturulma Tarihi</div>
-          <div className="font-semibold text-gray-900">{formatDate(lead.created_at)}</div>
-        </div>
-        <div>
-          <div className="text-sm text-gray-600">Son Güncelleme</div>
-          <div className="font-semibold text-gray-900">{formatDate(lead.updated_at)}</div>
-        </div>
-        <div className="col-span-2">
-          <div className="text-sm text-gray-600">Müşteri Olma Tarihi</div>
-          <div className="font-semibold text-gray-900">{formatDate(lead.converted_at)}</div>
         </div>
       </div>
 
-      <form onSubmit={handleSave} className="bg-white rounded-lg shadow p-6 space-y-6 max-w-2xl">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label htmlFor="full_name" className="block text-sm font-semibold text-gray-900 mb-2">
-              Ad Soyad
-            </label>
-            <input
-              id="full_name"
-              type="text"
-              value={form.full_name}
-              onChange={setField("full_name")}
-              className="w-full px-4 py-2 border rounded text-gray-900"
-              required
-            />
-          </div>
-
-          <div>
-            <label htmlFor="phone" className="block text-sm font-semibold text-gray-900 mb-2">
-              Telefon
-            </label>
-            <input
-              id="phone"
-              type="tel"
-              value={form.phone}
-              onChange={setField("phone")}
-              className="w-full px-4 py-2 border rounded text-gray-900"
-              required
-            />
-          </div>
-
-          <div>
-            <label htmlFor="email" className="block text-sm font-semibold text-gray-900 mb-2">
-              E-posta
-            </label>
-            <input
-              id="email"
-              type="email"
-              value={form.email}
-              onChange={setField("email")}
-              className="w-full px-4 py-2 border rounded text-gray-900"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="source" className="block text-sm font-semibold text-gray-900 mb-2">
-              Kaynak
-            </label>
-            <select
-              id="source"
-              value={form.source}
-              onChange={setField("source")}
-              className="w-full px-4 py-2 border rounded text-gray-900"
-            >
-              <option value="">Seç...</option>
-              {Object.entries(SOURCE_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-              {/* Keep a legacy free-text source selectable so saving does not drop it. */}
-              {lead.source && !(lead.source in SOURCE_LABELS) && (
-                <option value={lead.source}>{lead.source}</option>
-              )}
-            </select>
-          </div>
-        </div>
-
-        <div>
-          <label htmlFor="address" className="block text-sm font-semibold text-gray-900 mb-2">
-            Adres
-          </label>
-          <textarea
-            id="address"
-            rows={2}
-            value={form.address}
-            onChange={setField("address")}
-            className="w-full px-4 py-2 border rounded text-gray-900"
-          />
-        </div>
-
-        <div>
-          <label htmlFor="status" className="block text-sm font-semibold text-gray-900 mb-2">
-            Durum
-          </label>
-          <select
-            id="status"
-            value={form.status}
-            onChange={setField("status")}
-            className="w-full px-4 py-2 border rounded text-gray-900"
-          >
-            {(Object.keys(STATUS_LABELS) as LeadStatus[]).map((s) => (
-              <option key={s} value={s}>
-                {STATUS_LABELS[s]}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label htmlFor="assigned_to" className="block text-sm font-semibold text-gray-900 mb-2">
-            Atanan Kişi
-          </label>
-          <select
-            id="assigned_to"
-            value={form.assigned_to}
-            onChange={setField("assigned_to")}
-            className="w-full px-4 py-2 border rounded text-gray-900"
-          >
-            <option value="">Atanmamış</option>
-            {staff.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.full_name}
-              </option>
-            ))}
-            {/* Keep an inactive or unlisted assignee selectable so saving does not drop it. */}
-            {lead.assigned_to && !staff.some((s) => s.id === lead.assigned_to) && (
-              <option value={lead.assigned_to}>{lead.assignee?.full_name ?? "Atanmış kullanıcı"}</option>
-            )}
-          </select>
-        </div>
-
-        <div>
-          <label htmlFor="notes" className="block text-sm font-semibold text-gray-900 mb-2">
-            Notlar
-          </label>
-          <textarea
-            id="notes"
-            rows={6}
-            value={form.notes}
-            onChange={setField("notes")}
-            className="w-full px-4 py-2 border rounded text-gray-900"
-          />
-        </div>
-
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        {message && <p className="text-sm text-green-700">{message}</p>}
-
-        <button
-          type="submit"
-          disabled={saving || unchanged}
-          className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
-        >
-          {saving ? "Kaydediliyor..." : "Kaydet"}
-        </button>
-      </form>
-    </div>
+      {dialog?.kind === "result" && (
+        <CallResultDialog
+          leadId={lead.id}
+          callId={dialog.callId}
+          useDueCall={dialog.useDue}
+          onClose={() => setDialog(null)}
+          onSaved={(r) => done(resolveMessage(r))}
+        />
+      )}
+      {dialog?.kind === "plan" && (
+        <PlanCallDialog
+          lead={lead}
+          staff={staff}
+          onClose={() => setDialog(null)}
+          onSaved={(c) => done(`Arama planlandı: ${dayTimeLabel(c.date, c.time)}.`)}
+        />
+      )}
+      {dialog?.kind === "reschedule" && (
+        <RescheduleCallDialog
+          call={dialog.call}
+          staff={staff}
+          onClose={() => setDialog(null)}
+          onSaved={(c) => done(`Arama planı güncellendi: ${dayTimeLabel(c.date, c.time)}.`)}
+        />
+      )}
+      {dialog?.kind === "reminder" && (
+        <ReminderDialog
+          appointmentId={dialog.appointmentId}
+          onClose={() => setDialog(null)}
+          onSaved={() => done("Hatırlatma sonucu kaydedildi.", true)}
+        />
+      )}
+      {dialog?.kind === "handoff" && (
+        <HandoffDialog
+          mode={dialog.mode}
+          leadId={lead.id}
+          leadName={lead.full_name}
+          handoff={dialog.handoff}
+          staff={staff}
+          onClose={() => setDialog(null)}
+          onSaved={() => done("Aktarım kaydedildi.", true)}
+        />
+      )}
+      {dialog?.kind === "task" && (
+        <TaskDialog
+          staff={staff}
+          defaults={{ title: `Hasta adayı: ${lead.full_name}`, lead_id: lead.id, lead_name: lead.full_name }}
+          onClose={() => setDialog(null)}
+          onSaved={() => done("Görev oluşturuldu.", true)}
+        />
+      )}
+      {dialog?.kind === "convert" && (
+        <ConvertDialog
+          lead={lead}
+          onClose={() => setDialog(null)}
+          onSaved={(r) => {
+            setSavedMatches(r.phone_matches);
+            done(r.created ? "Hasta kaydı oluşturuldu." : "Hasta kaydına bağlandı.");
+          }}
+        />
+      )}
+    </CrmShell>
   );
 }

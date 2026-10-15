@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { PhoneMatchWarning } from "@/components/crm/PhoneMatches";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -185,6 +186,10 @@ export default function EditPatientPage() {
               className="w-full px-4 py-2 border rounded"
               required
             />
+          </div>
+          {/* Shared numbers are allowed (owner decision): a non-blocking warning with links to the other records. */}
+          <div className="md:col-span-2">
+            <PhoneMatchWarning phone={form.phone} excludePatientId={params.id} />
           </div>
           <div>
             <label className="block text-sm font-semibold mb-2">E-posta</label>

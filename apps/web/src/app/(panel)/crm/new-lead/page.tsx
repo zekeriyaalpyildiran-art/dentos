@@ -1,263 +1,187 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useEffect, useState, type FormEvent } from "react";
+import { LeadFields, emptyLeadForm, formToInput, type LeadFormState } from "@/components/crm/LeadFields";
+import { PhoneMatchWarning } from "@/components/crm/PhoneMatches";
+import { useStaff } from "@/components/crm/useCrmRefs";
+import {
+  Card,
+  CrmErrorBox,
+  CrmShell,
+  Field,
+  buttonPrimary,
+  buttonSecondary,
+  inputClass,
+} from "@/components/crm/ui";
 import { useAuthStore } from "@/lib/store";
-import { createClient } from "@/lib/supabase";
+import { crmSaveLead, istanbulToday, newId, toCrmError, type CrmError } from "@/lib/crm";
 
-const SOURCES = [
-  { value: "direct", label: "Doğrudan" },
-  { value: "referral", label: "Referans" },
-  { value: "online", label: "Online" },
-  { value: "social_media", label: "Sosyal Medya" },
-  { value: "other", label: "Diğer" },
-];
-
-const STATUSES = [
-  { value: "new", label: "Yeni" },
-  { value: "contacted", label: "İletişime Geçildi" },
-  { value: "interested", label: "İlgilendiği" },
-  { value: "qualified", label: "Nitelikli" },
-  { value: "converted", label: "Müşteri" },
-  { value: "lost", label: "Kaybedildi" },
-];
-
+/**
+ * New lead card (crm_save_lead create). The id is created when the form opens and reused for retries, so a
+ * double click or a retry after a network error cannot create a second lead. A duplicate phone only warns.
+ */
 export default function NewLeadPage() {
   const router = useRouter();
-  const { user } = useAuthStore();
-  const supabase = createClient();
-
+  const me = useAuthStore((s) => s.user?.user_id ?? "");
+  const staff = useStaff();
+  const today = istanbulToday();
+  const [ids] = useState(() => ({ lead: newId(), call: newId() }));
+  const [form, setForm] = useState<LeadFormState>(() => emptyLeadForm(me));
+  const [note, setNote] = useState("");
+  const [planCall, setPlanCall] = useState(true);
+  const [call, setCall] = useState({ date: today, time: "10:00", caller: me });
   const [submitting, setSubmitting] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [staff, setStaff] = useState<{ id: string; full_name: string }[]>([]);
-  const [formData, setFormData] = useState({
-    full_name: "",
-    phone: "",
-    email: "",
-    address: "",
-    source: "",
-    status: "new",
-    assigned_to: "",
-    notes: "",
-  });
+  const [error, setError] = useState<CrmError | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
 
+  // The signed-in user arrives after the first render: default the assignee and caller to them (never a fixed name).
   useEffect(() => {
-    if (!user?.clinic_id) return;
+    if (!me) return;
+    setForm((f) => (f.assigned_to ? f : { ...f, assigned_to: me }));
+    setCall((c) => (c.caller ? c : { ...c, caller: me }));
+  }, [me]);
 
-    const clinicId = user.clinic_id;
-    const client = createClient();
+  const closed = form.do_not_contact || form.stage === "treatment_completed";
 
-    const fetchStaff = async () => {
-      const { data, error } = await client
-        .from("users")
-        .select("id, full_name, is_active")
-        .eq("clinic_id", clinicId)
-        .order("full_name", { ascending: true });
-
-      if (error) {
-        console.error("Error fetching staff:", error);
-        return;
-      }
-      setStaff((data || []).filter((u) => u.is_active !== false));
-    };
-
-    fetchStaff();
-  }, [user?.clinic_id]);
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
-
-    const fullName = formData.full_name.trim();
-    const phone = formData.phone.trim();
-
-    if (!user?.clinic_id) {
-      setFormError("Oturum bilgisi bulunamadı. Lütfen tekrar giriş yapın.");
+    if (submitting) return;
+    const parsed = formToInput(form);
+    if (!parsed.ok) {
+      setLocalError(parsed.error);
       return;
     }
-    if (!fullName || !phone) {
-      setFormError("Ad soyad ve telefon zorunludur.");
+    if ((form.followup_state === "done" || closed) && !note.trim()) {
+      setLocalError("Takibi tamamlamak için yeni görüşme notuna kapanış nedenini yazın.");
       return;
     }
-
+    if (form.stage === "treatment_completed" && !note.trim()) {
+      setLocalError("Tedaviyi kapatmak için yeni görüşme notuna tamamlanma açıklamasını yazın.");
+      return;
+    }
+    const withCall = planCall && !closed;
+    setLocalError(null);
+    setError(null);
     setSubmitting(true);
-    setFormError(null);
     try {
-      const { error } = await supabase.from("leads").insert([
-        {
-          clinic_id: user.clinic_id,
-          full_name: fullName,
-          phone,
-          email: formData.email.trim() || null,
-          address: formData.address.trim() || null,
-          source: formData.source || null,
-          status: formData.status,
-          assigned_to: formData.assigned_to || null,
-          notes: formData.notes.trim() || null,
-          // A lead entered directly as a customer gets its conversion date now.
-          converted_at: formData.status === "converted" ? new Date().toISOString() : null,
-        },
-      ]);
-
-      if (error) throw error;
-
-      // The button stays disabled until navigation so a second click cannot create a duplicate.
-      router.push("/crm/leads");
-    } catch (error) {
-      console.error("Error creating lead:", error);
-      setFormError("Lead kaydedilemedi. Lütfen tekrar deneyin.");
+      await crmSaveLead({
+        p_id: ids.lead,
+        p_version: null,
+        p_lead: parsed.input,
+        p_note: note.trim() || null,
+        p_schedule_reason: null,
+        p_initial_call: withCall
+          ? { id: ids.call, date: call.date, time: call.time, caller_user_id: call.caller || null }
+          : null,
+      });
+      // Without a first call, open the call agenda with the plan form for this lead (rules §3).
+      router.push(withCall ? `/crm/leads/${ids.lead}` : `/crm/calls?plan=${ids.lead}`);
+    } catch (err) {
+      setError(toCrmError(err));
       setSubmitting(false);
     }
   };
 
   return (
-    <div className="p-8">
-      <Link
-        href="/crm/leads"
-        className="inline-block mb-6 px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300"
-      >
-        ← Lead Listesine Dön
-      </Link>
-
-      <h1 className="text-3xl font-bold mb-8">Yeni Lead</h1>
-
-      <form
-        onSubmit={handleSubmit}
-        className="max-w-2xl bg-white p-6 rounded-lg shadow text-gray-900"
-      >
-        {formError && <p className="mb-6 text-red-600">{formError}</p>}
-
-        <div className="mb-6">
-          <label htmlFor="full_name" className="block text-sm font-semibold mb-2">
-            Ad Soyad
-          </label>
-          <input
-            id="full_name"
-            type="text"
-            value={formData.full_name}
-            onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-            required
+    <CrmShell
+      title="Yeni hasta adayı"
+      actions={
+        <Link href="/crm/leads" className={buttonSecondary}>
+          ← Listeye dön
+        </Link>
+      }
+    >
+      <form onSubmit={submit} className="max-w-4xl space-y-4">
+        <Card>
+          <LeadFields
+            value={form}
+            onChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
+            staff={staff}
+            today={today}
+            disabled={submitting}
           />
-        </div>
+          <div className="mt-4">
+            <PhoneMatchWarning phone={form.phone} />
+          </div>
+        </Card>
 
-        <div className="mb-6">
-          <label htmlFor="phone" className="block text-sm font-semibold mb-2">
-            Telefon
-          </label>
-          <input
-            id="phone"
-            type="tel"
-            value={formData.phone}
-            onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-            required
-          />
-        </div>
+        <Card title="İlk arama">
+          {closed ? (
+            <p className="text-sm text-gray-600">Takibi kapalı veya aranmak istemeyen adaya arama planlanamaz.</p>
+          ) : (
+            <>
+              <label className="flex items-center gap-2 text-sm mb-3">
+                <input type="checkbox" checked={planCall} onChange={(e) => setPlanCall(e.target.checked)} />
+                İlk aramayı şimdi planla
+              </label>
+              {planCall && (
+                <div className="grid gap-3 md:grid-cols-3">
+                  <Field label="Tarih">
+                    <input
+                      type="date"
+                      required
+                      min={today}
+                      value={call.date}
+                      onChange={(e) => setCall({ ...call, date: e.target.value })}
+                      className={inputClass}
+                    />
+                  </Field>
+                  <Field label="Saat">
+                    <input
+                      type="time"
+                      required
+                      value={call.time}
+                      onChange={(e) => setCall({ ...call, time: e.target.value })}
+                      className={inputClass}
+                    />
+                  </Field>
+                  <Field label="Arayacak kişi">
+                    <select
+                      value={call.caller}
+                      onChange={(e) => setCall({ ...call, caller: e.target.value })}
+                      className={inputClass}
+                    >
+                      <option value="">Sorumlu kişi</option>
+                      {staff.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.full_name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+              )}
+            </>
+          )}
+        </Card>
 
-        <div className="mb-6">
-          <label htmlFor="email" className="block text-sm font-semibold mb-2">
-            E-posta
-          </label>
-          <input
-            id="email"
-            type="email"
-            value={formData.email}
-            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-          />
-        </div>
-
-        <div className="mb-6">
-          <label htmlFor="address" className="block text-sm font-semibold mb-2">
-            Adres
-          </label>
-          <textarea
-            id="address"
-            rows={2}
-            value={formData.address}
-            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-          />
-        </div>
-
-        <div className="mb-6">
-          <label htmlFor="source" className="block text-sm font-semibold mb-2">
-            Kaynak
-          </label>
-          <select
-            id="source"
-            value={formData.source}
-            onChange={(e) => setFormData({ ...formData, source: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-          >
-            <option value="">Seç...</option>
-            {SOURCES.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="mb-6">
-          <label htmlFor="status" className="block text-sm font-semibold mb-2">
-            Durum
-          </label>
-          <select
-            id="status"
-            value={formData.status}
-            onChange={(e) => setFormData({ ...formData, status: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-          >
-            {STATUSES.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="mb-6">
-          <label htmlFor="assigned_to" className="block text-sm font-semibold mb-2">
-            Atanan Kişi
-          </label>
-          <select
-            id="assigned_to"
-            value={formData.assigned_to}
-            onChange={(e) => setFormData({ ...formData, assigned_to: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-          >
-            <option value="">Atanmamış</option>
-            {staff.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.full_name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="mb-6">
-          <label htmlFor="notes" className="block text-sm font-semibold mb-2">
-            Notlar
-          </label>
-          <textarea
-            id="notes"
-            rows={4}
-            value={formData.notes}
-            onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-          />
-        </div>
-
-        <button
-          type="submit"
-          disabled={submitting}
-          className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-500"
-        >
-          {submitting ? "Kaydediliyor..." : "Lead Oluştur"}
-        </button>
+        <Card>
+          <Field label="Yeni görüşme notu" hint="Kaydettiğinde geçmişe not olarak eklenir.">
+            <textarea
+              rows={3}
+              maxLength={10000}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          {localError && (
+            <div className="mt-3 p-3 rounded bg-red-50 text-red-700 text-sm" role="alert">
+              {localError}
+            </div>
+          )}
+          <div className="mt-3">
+            <CrmErrorBox error={error} />
+          </div>
+          <div className="mt-4 flex justify-end">
+            <button type="submit" disabled={submitting} className={buttonPrimary}>
+              {submitting ? "Kaydediliyor…" : "Hasta adayını kaydet"}
+            </button>
+          </div>
+        </Card>
       </form>
-    </div>
+    </CrmShell>
   );
 }

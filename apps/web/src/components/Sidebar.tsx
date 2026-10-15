@@ -7,15 +7,18 @@ import { signOut } from "@/lib/auth";
 import { canSeeFinance } from "@/lib/permissions";
 
 /** Shown only to finance / finance_readonly holders (owner decision 1: role alone gives nothing). */
-const FINANCE_ITEM = { name: "💰 Finans", href: "/finance" };
+const FINANCE_ITEM = { name: "💰 Finans", href: "/finance", match: "/finance" };
 
-const MENU_ITEMS = [
+/** `match` marks the item active for every page under that prefix (CRM sub-pages, finance). */
+const MENU_ITEMS: { name: string; href: string; match?: string; exclude?: string }[] = [
   { name: "📅 Ajanda", href: "/appointments" },
   { name: "👥 Hastalar", href: "/patients" },
   { name: "🦷 Tedavi Planları", href: "/treatment-plans" },
   { name: "🔔 Hatırlatmalar", href: "/reminders" },
   { name: "💬 Mesajlar", href: "/messages" },
-  { name: "📊 CRM", href: "/crm/leads" },
+  { name: "📞 CRM · Bugün", href: "/crm/today" },
+  { name: "📊 CRM", href: "/crm/leads", match: "/crm", exclude: "/crm/today" },
+  { name: "✅ Görevler", href: "/tasks" },
   { name: "🧪 Lab", href: "/lab" },
   { name: "📦 Stok", href: "/inventory" },
   { name: "👔 Ekip", href: "/team" },
@@ -67,9 +70,13 @@ export function Sidebar() {
       <nav className="flex-1 overflow-y-auto py-6">
         <ul className="space-y-2 px-4">
           {items.map((item) => {
+            const prefix = "match" in item ? item.match : undefined;
+            const exclude = "exclude" in item ? item.exclude : undefined;
             const isActive =
               pathname === item.href ||
-              (item.href === FINANCE_ITEM.href && !!pathname?.startsWith(item.href + "/"));
+              (!!prefix &&
+                !!pathname?.startsWith(prefix + "/") &&
+                !(exclude && (pathname === exclude || pathname.startsWith(exclude + "/"))));
             return (
               <li key={item.href}>
                 <Link

@@ -8,6 +8,7 @@ import { Card, ErrorBox, Loading, MoneyRow, buttonPrimary, buttonSecondary } fro
 import { useAuthStore } from "@/lib/store";
 import {
   finDashboard,
+  finFinancingSummary,
   formatMonth,
   formatTL,
   isMonth,
@@ -141,12 +142,14 @@ function Reports() {
       const snapshot = fresh;
       const brandName = brand ?? (await loadBrandName(reference, clinicId));
       if (kind === "partner" || kind === "full") {
+        // Patient-financing block (Phase 4); a missing RPC (migration not applied) just leaves it out.
+        const financing = await finFinancingSummary(snapshot.month).catch(() => null);
         const common = await import("@/lib/finance-pdf/common");
         const fonts = await common.fetchFonts();
         let bytes: Uint8Array;
         if (kind === "partner") {
           const { createPartnerPdf } = await import("@/lib/finance-pdf/partner");
-          bytes = await createPartnerPdf({ dashboard: snapshot, brand: brandName, fonts });
+          bytes = await createPartnerPdf({ dashboard: snapshot, financing, brand: brandName, fonts });
         } else {
           if (!extra) throw new Error("Rapor kayıtları okunamadı.");
           const { createFullPdf } = await import("@/lib/finance-pdf/full");
@@ -154,6 +157,7 @@ function Reports() {
           await nextFrame();
           bytes = await createFullPdf({
             dashboard: snapshot,
+            financing,
             reference,
             extra,
             brand: brandName,
