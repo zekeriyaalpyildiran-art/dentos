@@ -3,7 +3,9 @@
 import { describe, expect, it } from "vitest";
 import {
   BACKUP_STALE_HOURS,
+  BACKUP_STATUS_HREF,
   BACKUP_TEXTS,
+  describeBackupNotice,
   describeBackupStatus,
   fetchBackupStatus,
   formatBackupAge,
@@ -16,7 +18,7 @@ import {
 const HOUR = 60 * 60 * 1000;
 const NOW = "2026-10-16T09:00:00.000Z"; // 12:00 Istanbul
 
-function ok(ranAgoMs: number | null, size = 12_345_678): BackupStatusResult {
+function ok(ranAgoMs: number | null, size = 12_345_678, authIncluded?: boolean | null): BackupStatusResult {
   const now = new Date(NOW).getTime();
   return {
     kind: "ok",
@@ -26,7 +28,12 @@ function ok(ranAgoMs: number | null, size = 12_345_678): BackupStatusResult {
       last:
         ranAgoMs === null
           ? null
-          : { ran_at: new Date(now - ranAgoMs).toISOString(), size_bytes: size, toc_entries: 1234 },
+          : {
+              ran_at: new Date(now - ranAgoMs).toISOString(),
+              size_bytes: size,
+              toc_entries: 1234,
+              ...(authIncluded === undefined ? {} : { auth_included: authIncluded }),
+            },
     },
   };
 }
@@ -105,6 +112,19 @@ describe("describeBackupStatus", () => {
     expect(describeBackupStatus(r, pc)?.tone).toBe("amber");
   });
 
+  it("says so when staff logins were not in the backup, without changing the tone", () => {
+    const fresh = describeBackupStatus(ok(2 * HOUR, 1000, false));
+    expect(fresh?.tone).toBe("green");
+    expect(fresh?.detail).toContain(BACKUP_TEXTS.authMissing);
+    const stale = describeBackupStatus(ok(40 * HOUR, 1000, false));
+    expect(stale?.tone).toBe("amber");
+    expect(stale?.detail).toContain(BACKUP_TEXTS.staleDetail);
+    expect(stale?.detail).toContain(BACKUP_TEXTS.authMissing);
+    for (const auth of [true, null, undefined]) {
+      expect(describeBackupStatus(ok(2 * HOUR, 1000, auth))?.detail).not.toContain(BACKUP_TEXTS.authMissing);
+    }
+  });
+
   it("missing RPC, errors and forbidden", () => {
     expect(describeBackupStatus({ kind: "missing" })).toEqual({ tone: "gray", title: BACKUP_TEXTS.missing, detail: null });
     expect(describeBackupStatus({ kind: "error", message: "x" })).toEqual({
@@ -113,6 +133,40 @@ describe("describeBackupStatus", () => {
       detail: "x",
     });
     expect(describeBackupStatus({ kind: "forbidden" })).toBeNull();
+  });
+});
+
+describe("describeBackupNotice (every panel page)", () => {
+  it("is shown only when overdue or never run", () => {
+    expect(describeBackupNotice(ok(2 * HOUR))).toBeNull();
+    expect(describeBackupNotice(ok(BACKUP_STALE_HOURS * HOUR))).toBeNull();
+    expect(describeBackupNotice(ok(3 * 24 * HOUR))).toEqual({
+      text: "Otomatik yedek gecikti: son yedek 3 gün önce.",
+      linkText: BACKUP_TEXTS.noticeLink,
+      href: BACKUP_STATUS_HREF,
+    });
+    expect(describeBackupNotice(ok(BACKUP_STALE_HOURS * HOUR + 60_000))?.text).toBe(
+      "Otomatik yedek gecikti: son yedek 36 saat önce."
+    );
+    expect(describeBackupNotice(ok(null))).toEqual({
+      text: BACKUP_TEXTS.noticeNone,
+      linkText: BACKUP_TEXTS.noticeLink,
+      href: "/settings/export",
+    });
+  });
+
+  it("never nags without a reason: missing RPC, errors, non-owner, bad data", () => {
+    expect(describeBackupNotice({ kind: "missing" })).toBeNull();
+    expect(describeBackupNotice({ kind: "error", message: "x" })).toBeNull();
+    expect(describeBackupNotice({ kind: "forbidden" })).toBeNull();
+    const bad = ok(2 * HOUR);
+    if (bad.kind !== "ok" || !bad.data.last) throw new Error("setup");
+    bad.data.last.ran_at = "not a date";
+    expect(describeBackupNotice(bad)).toBeNull();
+  });
+
+  it("uses the server clock, not the PC clock", () => {
+    expect(describeBackupNotice(ok(2 * HOUR), new Date("2030-01-01T00:00:00Z"))).toBeNull();
   });
 });
 
@@ -158,5 +212,9 @@ describe("fetchBackupStatus", () => {
       false
     );
     expect(isBackupStatusResponse(null)).toBe(false);
+    const last = { ran_at: NOW, size_bytes: 10, toc_entries: 1 };
+    expect(isBackupStatusResponse({ ok: true, now: NOW, last: { ...last, auth_included: false } })).toBe(true);
+    expect(isBackupStatusResponse({ ok: true, now: NOW, last: { ...last, auth_included: null } })).toBe(true);
+    expect(isBackupStatusResponse({ ok: true, now: NOW, last: { ...last, auth_included: "false" } })).toBe(false);
   });
 });
