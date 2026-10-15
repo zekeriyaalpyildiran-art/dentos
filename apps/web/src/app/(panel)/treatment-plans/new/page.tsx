@@ -14,11 +14,7 @@ import {
 } from "@/lib/payments";
 import { QuoteCurrencyFields } from "../_components/QuoteCurrencyFields";
 import { useFxRates, useRateField } from "../_components/payment-ui";
-
-interface Patient {
-  id: string;
-  full_name: string;
-}
+import { PatientPicker, fetchActivePatient, type PatientRef } from "@/components/patients/PatientPicker";
 
 interface Doctor {
   id: string;
@@ -40,14 +36,14 @@ export default function NewTreatmentPlanPage() {
   const { user } = useAuthStore();
   const supabase = createClient();
 
-  const [patients, setPatients] = useState<Patient[]>([]);
+  // The patient is searched on the server (PatientPicker); no patient list is loaded.
+  const [patient, setPatient] = useState<PatientRef | null>(null);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
-    patient_id: "",
     doctor_id: "",
     title: "",
     total_cost: "",
@@ -71,33 +67,24 @@ export default function NewTreatmentPlanPage() {
 
     const fetchData = async () => {
       try {
-        const [ptsRes, docsRes] = await Promise.all([
-          supabase
-            .from("patients")
-            .select("id,full_name")
-            .eq("clinic_id", user.clinic_id)
-            .eq("is_active", true)
-            .order("full_name"),
+        // The patient page links here with ?patient_id=, read directly so the page needs no Suspense boundary for useSearchParams.
+        const presetId = new URLSearchParams(window.location.search).get("patient_id");
+        const [docsRes, preset] = await Promise.all([
           supabase
             .from("doctors")
             .select("id,specialty,users(full_name)")
             .eq("clinic_id", user.clinic_id),
+          fetchActivePatient(user.clinic_id, presetId),
         ]);
 
-        if (ptsRes.error) throw ptsRes.error;
         if (docsRes.error) throw docsRes.error;
 
-        setPatients(ptsRes.data || []);
-        // The patient page links here with ?patient_id=, read directly so the page needs no Suspense boundary for useSearchParams.
-        const presetPatient = new URLSearchParams(window.location.search).get("patient_id");
-        if (presetPatient && (ptsRes.data || []).some((p) => p.id === presetPatient)) {
-          setFormData((prev) => ({ ...prev, patient_id: prev.patient_id || presetPatient }));
-        }
+        if (preset) setPatient((prev) => prev ?? preset);
         // users(full_name) is a many-to-one join, so it arrives as one object that the inferred type does not reflect.
         setDoctors((docsRes.data || []) as unknown as Doctor[]);
       } catch (err) {
         console.error("Error loading treatment plan form data:", err);
-        setErrorMessage("Hasta ve hekim listesi yüklenemedi.");
+        setErrorMessage("Hekim listesi yüklenemedi.");
       } finally {
         setLoading(false);
       }
@@ -111,6 +98,10 @@ export default function NewTreatmentPlanPage() {
     if (!user?.clinic_id) return;
     setErrorMessage(null);
 
+    if (!patient) {
+      setErrorMessage("Hasta seçin.");
+      return;
+    }
     const title = formData.title.trim();
     if (!title) {
       setErrorMessage("Plan başlığı boş olamaz.");
@@ -140,7 +131,7 @@ export default function NewTreatmentPlanPage() {
         .insert([
           {
             clinic_id: user.clinic_id,
-            patient_id: formData.patient_id,
+            patient_id: patient.id,
             doctor_id: formData.doctor_id,
             title,
             total_cost: totalCost,
@@ -195,19 +186,12 @@ export default function NewTreatmentPlanPage() {
 
         <div className="mb-6">
           <label className="block text-sm font-semibold mb-2">Hasta</label>
-          <select
-            value={formData.patient_id}
-            onChange={(e) => setFormData({ ...formData, patient_id: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-            required
-          >
-            <option value="">Seç...</option>
-            {patients.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.full_name}
-              </option>
-            ))}
-          </select>
+          <PatientPicker
+            value={patient}
+            onChange={setPatient}
+            disabled={submitting}
+            inputClassName="w-full px-4 py-2 border rounded"
+          />
         </div>
 
         <div className="mb-6">

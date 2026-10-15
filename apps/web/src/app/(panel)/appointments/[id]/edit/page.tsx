@@ -6,6 +6,8 @@ import { useParams, useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { reschedulePendingReminders } from "../../reminder-utils";
+import { appointmentWriteErrorText, SLOT_ERROR_TEXTS } from "@/lib/appointments/errors";
+import { istanbulDayOf } from "@/lib/clinical/dates";
 
 // Postgres rejects non-uuid ids, so such routes are treated as not found.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -133,10 +135,11 @@ export default function EditAppointmentPage() {
       const endIso = new Date(formData.end_time).toISOString();
 
       if (new Date(endIso).getTime() <= new Date(startIso).getTime()) {
-        alert("Bitiş saati başlangıç saatinden sonra olmalı.");
+        alert(SLOT_ERROR_TEXTS.E_SLOT_ORDER);
         return;
       }
 
+      // Early, friendly check; the database guard (0028 appt_slot_guard) decides for concurrent bookings too.
       const { data: overlaps, error: overlapError } = await supabase
         .from("appointments")
         .select("id, doctor_id, chair_id")
@@ -153,12 +156,12 @@ export default function EditAppointmentPage() {
       }
 
       if ((overlaps || []).some((a) => a.doctor_id === formData.doctor_id)) {
-        alert("Seçilen hekimin bu saatte başka bir randevusu var.");
+        alert(SLOT_ERROR_TEXTS.E_SLOT_DOCTOR);
         return;
       }
 
       if ((overlaps || []).some((a) => a.chair_id === formData.chair_id)) {
-        alert("Seçilen koltuk bu saatte dolu.");
+        alert(SLOT_ERROR_TEXTS.E_SLOT_CHAIR);
         return;
       }
 
@@ -179,7 +182,11 @@ export default function EditAppointmentPage() {
         .eq("status", "scheduled")
         .select("id");
 
-      if (error) throw error;
+      if (error) {
+        console.error("Error updating appointment:", error);
+        alert(appointmentWriteErrorText(error, "Randevu güncellenirken hata oluştu"));
+        return;
+      }
       if (!updated || updated.length === 0) {
         alert("Randevu güncellenemedi. Randevu iptal edilmiş ya da kapatılmış olabilir.");
         return;
@@ -191,10 +198,10 @@ export default function EditAppointmentPage() {
         if (!moved) alert("Randevu güncellendi ancak hatırlatmalar yeni saate taşınamadı.");
       }
 
-      router.push("/appointments");
+      router.push(`/appointments?date=${istanbulDayOf(startIso) ?? ""}`);
     } catch (error) {
       console.error("Error updating appointment:", error);
-      alert("Randevu güncellenirken hata oluştu");
+      alert(appointmentWriteErrorText(error, "Randevu güncellenirken hata oluştu"));
     } finally {
       setSubmitting(false);
     }
@@ -318,7 +325,7 @@ export default function EditAppointmentPage() {
           </button>
           <button
             type="button"
-            onClick={() => router.push("/appointments")}
+            onClick={() => router.push(`/appointments?date=${istanbulDayOf(originalStart) ?? ""}`)}
             className="px-6 py-2 bg-gray-300 text-gray-800 rounded hover:bg-gray-400"
           >
             Vazgeç

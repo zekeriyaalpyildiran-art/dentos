@@ -19,6 +19,10 @@ import { PatientArchiveDialog } from "../_components/PatientArchiveDialog";
 import { InlineMessage } from "@/components/staff/Modal";
 import { PatientImplantsTab } from "@/components/clinical/PatientImplantsTab";
 import { PatientMaterialsTab } from "@/components/clinical/PatientMaterialsTab";
+import { ReminderDialog } from "@/components/crm/ReminderDialog";
+import { WhatsAppReminderLink, useClinicContact } from "@/components/appointments/WhatsAppReminderLink";
+import { reminderDoctorName } from "@/lib/appointments/whatsapp";
+import { SmsNotActiveNotice } from "@/components/appointments/SmsNotActiveNotice";
 
 const GENDER_LABELS: Record<string, string> = {
   male: "Erkek",
@@ -160,6 +164,9 @@ export default function Page() {
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [archiveNotice, setArchiveNotice] = useState<string | null>(null);
   const canArchive = user?.role === "owner" || user?.role === "admin";
+  // Free WhatsApp reminder on upcoming appointments; the outcome is recorded with the CRM reminder dialog.
+  const clinic = useClinicContact();
+  const [reminderFor, setReminderFor] = useState<string | null>(null);
 
   // ?tab=account (link from Finans > Teklifler ve tahsilat); read directly so no Suspense boundary is needed.
   useEffect(() => {
@@ -432,6 +439,17 @@ export default function Page() {
                       <Link href={`/appointments/${apt.id}`} className="text-sm text-blue-600 hover:underline">
                         Detay
                       </Link>
+                      {apt.status === "scheduled" && new Date(apt.start_time).getTime() > Date.now() && (
+                        <WhatsAppReminderLink
+                          patientName={patient.full_name}
+                          phone={patient.phone}
+                          startTime={apt.start_time}
+                          doctorName={reminderDoctorName(apt.doctors)}
+                          clinic={clinic}
+                          onOpen={() => setReminderFor(apt.id)}
+                          className="text-sm text-green-700 hover:underline whitespace-nowrap"
+                        />
+                      )}
                     </div>
                   </div>
                 </div>
@@ -545,6 +563,7 @@ export default function Page() {
       {activeTab === "messages" && (
         <div>
           <h2 className="text-xl font-semibold mb-4">Mesajlar</h2>
+          <SmsNotActiveNotice className="mb-4" />
           <div className="bg-white rounded-lg shadow overflow-x-auto">
             <table className="w-full">
               <thead className="bg-gray-100 border-b">
@@ -593,6 +612,16 @@ export default function Page() {
             </table>
           </div>
         </div>
+      )}
+
+      {reminderFor && (
+        <ReminderDialog
+          key={reminderFor}
+          appointmentId={reminderFor}
+          fromWhatsApp
+          onClose={() => setReminderFor(null)}
+          onSaved={() => setReminderFor(null)}
+        />
       )}
     </div>
   );
