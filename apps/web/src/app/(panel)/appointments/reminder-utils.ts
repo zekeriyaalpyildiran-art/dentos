@@ -1,10 +1,13 @@
 import type { createClient } from "@/lib/supabase";
+import { REMINDER_CANCELLED_REASON } from "@/lib/appointments/reminders";
 
 type SupabaseClient = ReturnType<typeof createClient>;
 
 // reminder_status has no "cancelled" value and reminders have no DELETE policy, so a reminder of an
 // appointment that is no longer scheduled is closed as "failed" with this reason; the reminders page shows it as "İptal".
-export const REMINDER_CANCELLED_REASON = "Hatırlatma iptal edildi";
+// The app no longer creates reminder rows (no SMS is sent, see lib/appointments/reminders.ts); these helpers only close
+// or move rows that were queued before migration 0028.
+export { REMINDER_CANCELLED_REASON, REMINDER_NOT_SENT_REASON } from "@/lib/appointments/reminders";
 
 const REMINDER_LEAD_MS = 24 * 60 * 60 * 1000;
 
@@ -43,7 +46,7 @@ export const cancelPendingReminders = (supabase: SupabaseClient, clinicId: strin
     error_message: REMINDER_CANCELLED_REASON,
   });
 
-// Moves pending reminders to 24h before the new start, matching how appointments/new schedules them.
+// Moves pending reminders to 24h before the new start, matching how appointments/new used to schedule them.
 export const reschedulePendingReminders = (
   supabase: SupabaseClient,
   clinicId: string,

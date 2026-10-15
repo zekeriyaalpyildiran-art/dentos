@@ -16,6 +16,11 @@ import {
 } from "@/lib/crm";
 import { REMINDER_OUTCOMES, REMINDER_OUTCOME_LABELS, type ReminderOutcome } from "@/lib/crm/codes";
 import { CrmErrorBox, CrmModal, Field, Loading, Notice, buttonPrimary, buttonSecondary, inputClass } from "./ui";
+import {
+  WHATSAPP_REMINDER_NOTE,
+  WhatsAppReminderLink,
+  useClinicContact,
+} from "@/components/appointments/WhatsAppReminderLink";
 
 interface AppointmentRow {
   id: string;
@@ -41,16 +46,19 @@ interface LogRow {
 }
 
 /**
- * Manual appointment reminder (owner decision 2: no SMS is sent). Reception phones the patient and records
- * "Hatırlatıldı" or "Ulaşılamadı" with a note. The outcome is bound to the start time and doctor shown here
- * (the legacy visitKey), so a changed appointment is refused with E_REMINDER_STALE.
+ * Manual appointment reminder (owner decision 2: no SMS is sent). Reception phones the patient or opens a ready
+ * WhatsApp message, then records "Hatırlatıldı" or "Ulaşılamadı" with a note. The outcome is bound to the start time
+ * and doctor shown here (the legacy visitKey), so a changed appointment is refused with E_REMINDER_STALE.
+ * initialNote prefills the note (e.g. after the agenda's WhatsApp link was used).
  */
 export function ReminderDialog({
   appointmentId,
+  initialNote,
   onClose,
   onSaved,
 }: {
   appointmentId: string;
+  initialNote?: string;
   onClose: () => void;
   onSaved: (result: ReminderResult) => void;
 }) {
@@ -59,9 +67,10 @@ export function ReminderDialog({
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<ReminderOutcome>("reminded");
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState(initialNote ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<CrmError | null>(null);
+  const clinic = useClinicContact();
 
   const load = useCallback(async () => {
     const supabase = createClient();
@@ -119,6 +128,7 @@ export function ReminderDialog({
   const doctorName = row?.doctor?.users?.full_name || row?.doctor?.specialty || "Hekim";
   const editable = !!row && row.status === "scheduled" && !!local && local.date >= istanbulToday();
   const current = row ? isReminderCurrent(row) : false;
+  const upcoming = editable && !!row && new Date(row.start_time).getTime() > Date.now();
 
   return (
     <CrmModal title="Randevu hatırlatması" onClose={onClose} busy={busy}>
@@ -129,9 +139,22 @@ export function ReminderDialog({
           <div className="p-3 rounded bg-gray-50 text-sm space-y-1">
             <p className="font-semibold">{row.patient?.full_name ?? "Hasta"}</p>
             {row.patient?.phone && (
-              <a href={telHref(row.patient.phone)} className="text-blue-700 underline">
-                {row.patient.phone}
-              </a>
+              <p className="flex flex-wrap gap-x-4 gap-y-1">
+                <a href={telHref(row.patient.phone)} className="text-blue-700 underline">
+                  {row.patient.phone}
+                </a>
+                {upcoming && (
+                  <WhatsAppReminderLink
+                    patientName={row.patient.full_name}
+                    phone={row.patient.phone}
+                    startTime={row.start_time}
+                    doctorName={row.doctor?.users?.full_name || row.doctor?.specialty || null}
+                    clinic={clinic}
+                    onOpen={() => setNote((prev) => prev || WHATSAPP_REMINDER_NOTE)}
+                    className="text-green-700 underline"
+                  />
+                )}
+              </p>
             )}
             <p>
               {formatDateTime(row.start_time)} · {doctorName}
@@ -144,8 +167,9 @@ export function ReminderDialog({
             )}
           </div>
           <p className="text-xs text-gray-600">
-            Hastaya mesaj gönderilmez. Hastayı arayıp hatırlattıktan sonra sonucu buraya kaydedin. Randevunun tarihi,
-            saati veya hekimi değişirse kayıtlı sonuç geçersiz olur.
+            Program hastaya kendiliğinden SMS veya mesaj göndermez. Hastayı arayıp ya da WhatsApp&apos;tan yazıp
+            hatırlattıktan sonra sonucu buraya kaydedin. Randevunun tarihi, saati veya hekimi değişirse kayıtlı sonuç
+            geçersiz olur.
           </p>
           {!editable ? (
             <Notice tone="warn">

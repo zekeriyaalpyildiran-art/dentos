@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { patientSearchFilter } from "@/lib/patients/search";
 import { InlineMessage } from "@/components/staff/Modal";
 import { PatientArchiveDialog } from "./_components/PatientArchiveDialog";
 
@@ -12,7 +13,6 @@ interface Patient {
   full_name: string;
   phone: string;
   email?: string;
-  gender?: string;
   kvkk_consent: boolean;
   created_at: string;
 }
@@ -24,60 +24,90 @@ interface Message {
   text: string;
 }
 
+// Search and paging run on the server: PostgREST answers at most 1000 rows, so a browser-side filter over "all"
+// patients silently missed everyone beyond the first 1000.
+const PAGE_SIZE = 50;
+
 export default function Page() {
   const { user } = useAuthStore();
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
+  const [term, setTerm] = useState("");
   const [view, setView] = useState<View>("active");
   const [loading, setLoading] = useState(true);
   const [loadFailed, setLoadFailed] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
   const [dialog, setDialog] = useState<{ patient: Patient; mode: "archive" | "restore" } | null>(null);
   const supabase = useMemo(() => createClient(), []);
+  const requestId = useRef(0);
+
+  // The search box is applied 300 ms after the last keystroke, from the first page.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setTerm(search);
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
   useEffect(() => {
     if (!user?.clinic_id) return;
     const clinicId = user.clinic_id;
-    let cancelled = false;
+    const req = ++requestId.current;
 
     const fetchPatients = async () => {
       setLoading(true);
       setLoadFailed(false);
       try {
-        let query = supabase.from("patients").select("*").eq("clinic_id", clinicId);
+        let query = supabase
+          .from("patients")
+          .select("id,full_name,phone,email,kvkk_consent,created_at", { count: "exact" })
+          .eq("clinic_id", clinicId);
         // NULL counts as active (spec p10 §1.4).
-        query = view === "archive" ? query.eq("is_active", false) : query.or("is_active.is.null,is_active.eq.true");
-        const { data, error } = await query.order("created_at", { ascending: false });
+        query = view === "archive" ? query.eq("is_active", false) : query.not("is_active", "is", false);
+        const filter = patientSearchFilter(term);
+        if (filter) query = query.or(filter);
+        const from = page * PAGE_SIZE;
+        const { data, error, count } = await query
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
         if (error) throw error;
-        if (!cancelled) setPatients(data || []);
+        if (req !== requestId.current) return;
+        setPatients((data || []) as Patient[]);
+        setTotal(count ?? 0);
       } catch (err) {
         console.error("Error fetching patients:", err);
-        if (!cancelled) {
+        if (req === requestId.current) {
           setPatients([]);
+          setTotal(0);
           setLoadFailed(true);
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (req === requestId.current) setLoading(false);
       }
     };
 
     fetchPatients();
-    return () => {
-      cancelled = true;
-    };
-  }, [supabase, user?.clinic_id, view]);
+  }, [supabase, user?.clinic_id, view, term, page]);
 
   const canArchive = user?.role === "owner" || user?.role === "admin";
-
-  const searchTerm = search.toLocaleLowerCase("tr-TR");
-  const filtered = patients.filter(
-    (p) => (p.full_name ?? "").toLocaleLowerCase("tr-TR").includes(searchTerm) || (p.phone ?? "").includes(search)
-  );
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const firstShown = total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const lastShown = page * PAGE_SIZE + patients.length;
 
   const tabClass = (v: View) =>
     `px-4 py-2 min-h-[44px] text-sm font-medium ${
       view === v ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
     }`;
+
+  const switchView = (v: View) => {
+    setMessage(null);
+    setView(v);
+    setPage(0);
+  };
 
   return (
     <div className="p-8">
@@ -94,10 +124,7 @@ export default function Page() {
           role="tab"
           aria-selected={view === "active"}
           className={tabClass("active")}
-          onClick={() => {
-            setMessage(null);
-            setView("active");
-          }}
+          onClick={() => switchView("active")}
         >
           Aktif hastalar
         </button>
@@ -106,10 +133,7 @@ export default function Page() {
           role="tab"
           aria-selected={view === "archive"}
           className={`${tabClass("archive")} border-l border-gray-300`}
-          onClick={() => {
-            setMessage(null);
-            setView("archive");
-          }}
+          onClick={() => switchView("archive")}
         >
           Arşiv
         </button>
@@ -128,9 +152,10 @@ export default function Page() {
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         className="w-full px-4 py-2 border rounded mb-6"
+        aria-label="Hasta ara"
       />
 
-      {loading ? (
+      {loading && patients.length === 0 ? (
         <div className="py-4">Yükleniyor...</div>
       ) : loadFailed ? (
         <div className="bg-white rounded-lg shadow p-6 text-red-600">
@@ -138,7 +163,7 @@ export default function Page() {
         </div>
       ) : (
         <>
-          <div className="overflow-x-auto">
+          <div className={`overflow-x-auto ${loading ? "opacity-60" : ""}`} aria-busy={loading}>
             <table className="w-full">
               <thead className="bg-gray-100">
                 <tr>
@@ -150,14 +175,14 @@ export default function Page() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.length === 0 ? (
+                {patients.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-8 text-center text-gray-500">
                       {view === "archive" ? "Arşivde hasta yok" : "Hasta bulunamadı"}
                     </td>
                   </tr>
                 ) : (
-                  filtered.map((p) => (
+                  patients.map((p) => (
                     <tr key={p.id} className="border-b hover:bg-gray-50">
                       <td className="px-4 py-2">
                         <Link href={`/patients/${p.id}`} className="text-blue-600 hover:underline">
@@ -209,8 +234,34 @@ export default function Page() {
             </table>
           </div>
 
-          <div className="mt-4 text-sm text-gray-600">
-            Toplam: {filtered.length} hasta{view === "archive" ? " (arşiv)" : ""}
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-gray-600">
+            <span>
+              Toplam: {total} hasta{view === "archive" ? " (arşiv)" : ""}
+              {total > 0 && ` · ${firstShown}–${lastShown} arası gösteriliyor`}
+            </span>
+            {pageCount > 1 && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0 || loading}
+                  className="px-3 py-2 min-h-[44px] rounded bg-gray-200 text-gray-800 hover:bg-gray-300 disabled:opacity-50"
+                >
+                  ← Önceki
+                </button>
+                <span>
+                  Sayfa {page + 1} / {pageCount}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                  disabled={page >= pageCount - 1 || loading}
+                  className="px-3 py-2 min-h-[44px] rounded bg-gray-200 text-gray-800 hover:bg-gray-300 disabled:opacity-50"
+                >
+                  Sonraki →
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -224,6 +275,7 @@ export default function Page() {
             const id = dialog.patient.id;
             setDialog(null);
             setPatients((prev) => prev.filter((x) => x.id !== id));
+            setTotal((prev) => Math.max(0, prev - 1));
             setMessage({ type: "success", text });
           }}
         />

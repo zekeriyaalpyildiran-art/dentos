@@ -3,21 +3,29 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
-import { REMINDER_CANCELLED_REASON } from "../appointments/reminder-utils";
+import {
+  REMINDER_CANCELLED_REASON,
+  REMINDER_NOT_SENT_REASON,
+  reminderDisplayStatus,
+  type ReminderDisplayStatus,
+} from "@/lib/appointments/reminders";
+import { SmsNotActiveNotice } from "@/components/appointments/SmsNotActiveNotice";
 
 const PAGE_SIZE = 50;
 
-// "cancelled" is not a reminder_status value: it is a failed reminder closed because its appointment was cancelled.
-type DisplayStatus = "pending" | "sent" | "failed" | "cancelled";
+// "cancelled" and "not_sent" are not reminder_status values: they are failed reminders closed because the appointment
+// was cancelled, or because no SMS is ever sent (migration 0028).
+type DisplayStatus = ReminderDisplayStatus;
 type Filter = "all" | DisplayStatus;
 
-const FILTERS: Filter[] = ["all", "pending", "sent", "failed", "cancelled"];
+const FILTERS: Filter[] = ["all", "pending", "sent", "failed", "cancelled", "not_sent"];
 
 const STATUS_LABELS: Record<DisplayStatus, string> = {
   pending: "Bekleniyor",
   sent: "Gönderildi",
   failed: "Başarısız",
   cancelled: "İptal",
+  not_sent: "Gönderilmedi",
 };
 
 const STATUS_STYLES: Record<DisplayStatus, string> = {
@@ -25,6 +33,7 @@ const STATUS_STYLES: Record<DisplayStatus, string> = {
   sent: "bg-green-100 text-green-800",
   failed: "bg-red-100 text-red-800",
   cancelled: "bg-gray-100 text-gray-800",
+  not_sent: "bg-amber-100 text-amber-800",
 };
 
 interface Reminder {
@@ -92,13 +101,14 @@ export default function RemindersPage() {
         countQuery().eq("status", "sent"),
         countQuery().eq("status", "failed"),
         countQuery().eq("status", "failed").eq("error_message", REMINDER_CANCELLED_REASON),
+        countQuery().eq("status", "failed").eq("error_message", REMINDER_NOT_SENT_REASON),
       ]);
 
       const failedQuery = results.find((r) => r.error);
       if (failedQuery) throw failedQuery.error;
 
-      const [total, pending, sent, failed, cancelled] = results.map((r) => r.count ?? 0);
-      setStats({ total, pending, sent, failed: failed - cancelled, cancelled });
+      const [total, pending, sent, failed, cancelled, notSent] = results.map((r) => r.count ?? 0);
+      setStats({ total, pending, sent, failed: failed - cancelled - notSent, cancelled, not_sent: notSent });
     } catch (error) {
       console.error("Error fetching reminder stats:", error);
       setStats(null);
@@ -132,10 +142,14 @@ export default function RemindersPage() {
         query = query.eq("status", filter);
       } else if (filter === "cancelled") {
         query = query.eq("status", "failed").eq("error_message", REMINDER_CANCELLED_REASON);
+      } else if (filter === "not_sent") {
+        query = query.eq("status", "failed").eq("error_message", REMINDER_NOT_SENT_REASON);
       } else if (filter === "failed") {
         query = query
           .eq("status", "failed")
-          .or(`error_message.is.null,error_message.neq."${REMINDER_CANCELLED_REASON}"`);
+          .or(
+            `error_message.is.null,and(error_message.neq."${REMINDER_CANCELLED_REASON}",error_message.neq."${REMINDER_NOT_SENT_REASON}")`
+          );
       }
 
       const { data, error } = await query
@@ -155,8 +169,7 @@ export default function RemindersPage() {
         appointment_time: r.appointments?.start_time ?? null,
         reminder_type: r.reminder_type,
         scheduled_at: r.scheduled_at,
-        status:
-          r.status === "failed" && r.error_message === REMINDER_CANCELLED_REASON ? "cancelled" : r.status,
+        status: reminderDisplayStatus(r.status, r.error_message),
         error_message: r.error_message,
       }));
 
@@ -183,7 +196,9 @@ export default function RemindersPage() {
   const getStatusBadge = (reminder: Reminder) => (
     <span
       className={`px-3 py-1 rounded text-sm font-semibold ${STATUS_STYLES[reminder.status]}`}
-      title={reminder.status === "failed" ? reminder.error_message ?? undefined : undefined}
+      title={
+        reminder.status === "failed" || reminder.status === "not_sent" ? reminder.error_message ?? undefined : undefined
+      }
     >
       {STATUS_LABELS[reminder.status]}
     </span>
@@ -213,10 +228,12 @@ export default function RemindersPage() {
 
   return (
     <div className="p-8">
-      <h1 className="text-3xl font-bold mb-8">Randevu Hatırlatmaları</h1>
+      <h1 className="text-3xl font-bold mb-6">Randevu Hatırlatmaları</h1>
+
+      <SmsNotActiveNotice className="mb-8" />
 
       {/* Statistics */}
-      <div className="grid grid-cols-5 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
         <div className="bg-white p-6 rounded-lg shadow">
           <div className="text-gray-500 text-sm mb-2">Toplam</div>
           <div className="text-3xl font-bold text-gray-800">{formatCount("total")}</div>
@@ -237,10 +254,14 @@ export default function RemindersPage() {
           <div className="text-gray-500 text-sm mb-2">İptal</div>
           <div className="text-3xl font-bold text-gray-600">{formatCount("cancelled")}</div>
         </div>
+        <div className="bg-white p-6 rounded-lg shadow">
+          <div className="text-amber-700 text-sm mb-2">Gönderilmedi</div>
+          <div className="text-3xl font-bold text-amber-600">{formatCount("not_sent")}</div>
+        </div>
       </div>
 
       {/* Filters */}
-      <div className="mb-6 flex gap-2">
+      <div className="mb-6 flex flex-wrap gap-2">
         {FILTERS.map((f) => (
           <button
             key={f}
@@ -274,7 +295,7 @@ export default function RemindersPage() {
                 Hatırlatma Türü
               </th>
               <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
-                Gönderme Zamanı
+                Planlanan Zaman
               </th>
               <th className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
                 Durum

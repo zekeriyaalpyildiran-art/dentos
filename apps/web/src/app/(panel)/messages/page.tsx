@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { SmsNotActiveNotice } from "@/components/appointments/SmsNotActiveNotice";
 
 interface Message {
   id: string;
@@ -94,7 +95,9 @@ export default function MessagesPage() {
 
   return (
     <div className="p-8">
-      <h1 className="text-3xl font-bold mb-8">Mesajlar</h1>
+      <h1 className="text-3xl font-bold mb-6">Mesajlar</h1>
+
+      <SmsNotActiveNotice className="mb-8" />
 
       {/* Filters */}
       <div className="mb-6 flex gap-2">

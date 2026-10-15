@@ -4,11 +4,9 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
-
-interface Patient {
-  id: string;
-  full_name: string;
-}
+import { PatientPicker, fetchActivePatient, type PatientRef } from "@/components/patients/PatientPicker";
+import { appointmentWriteErrorText, SLOT_ERROR_TEXTS } from "@/lib/appointments/errors";
+import { istanbulDayOf } from "@/lib/clinical/dates";
 
 interface Doctor {
   id: string;
@@ -32,7 +30,8 @@ export default function Page() {
   const { user } = useAuthStore();
   const supabase = createClient();
 
-  const [patients, setPatients] = useState<Patient[]>([]);
+  // The patient is searched on the server (PatientPicker); no patient list is loaded.
+  const [patient, setPatient] = useState<PatientRef | null>(null);
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [chairs, setChairs] = useState<Chair[]>([]);
   const [procedures, setProcedures] = useState<Procedure[]>([]);
@@ -40,7 +39,6 @@ export default function Page() {
   const [submitting, setSubmitting] = useState(false);
 
   const [formData, setFormData] = useState({
-    patient_id: "",
     doctor_id: "",
     chair_id: "",
     procedure_id: "",
@@ -51,22 +49,20 @@ export default function Page() {
 
   useEffect(() => {
     if (!user?.clinic_id) return;
+    const clinicId = user.clinic_id;
 
     const fetchData = async () => {
       try {
-        const [ptsRes, docsRes, chrsRes, procRes] = await Promise.all([
-          supabase.from("patients").select("id,full_name").eq("clinic_id", user.clinic_id).eq("is_active", true),
-          supabase.from("doctors").select("id,user_id,specialty,users(full_name)").eq("clinic_id", user.clinic_id),
-          supabase.from("chairs").select("id,name").eq("clinic_id", user.clinic_id).eq("is_active", true).order("sort_order"),
-          supabase.from("procedures_catalog").select("id,name").eq("clinic_id", user.clinic_id).eq("is_active", true).order("name"),
+        // The CRM lead card links here with ?patient=; read directly so the page needs no Suspense boundary.
+        const presetId = new URLSearchParams(window.location.search).get("patient");
+        const [docsRes, chrsRes, procRes, preset] = await Promise.all([
+          supabase.from("doctors").select("id,user_id,specialty,users(full_name)").eq("clinic_id", clinicId),
+          supabase.from("chairs").select("id,name").eq("clinic_id", clinicId).eq("is_active", true).order("sort_order"),
+          supabase.from("procedures_catalog").select("id,name").eq("clinic_id", clinicId).eq("is_active", true).order("name"),
+          fetchActivePatient(clinicId, presetId),
         ]);
 
-        setPatients(ptsRes.data || []);
-        // The CRM lead card links here with ?patient=; read directly so the page needs no Suspense boundary.
-        const presetPatient = new URLSearchParams(window.location.search).get("patient");
-        if (presetPatient && (ptsRes.data || []).some((p) => p.id === presetPatient)) {
-          setFormData((prev) => ({ ...prev, patient_id: prev.patient_id || presetPatient }));
-        }
+        if (preset) setPatient((prev) => prev ?? preset);
         // users(full_name) is a single object at runtime (many-to-one), which supabase's inferred type does not reflect.
         setDoctors((docsRes.data || []) as any[]);
         setChairs(chrsRes.data || []);
@@ -82,6 +78,10 @@ export default function Page() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user?.clinic_id) return;
+    if (!patient) {
+      alert("Hasta seçin.");
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -90,10 +90,11 @@ export default function Page() {
       const endIso = new Date(formData.end_time).toISOString();
 
       if (new Date(endIso).getTime() <= new Date(startIso).getTime()) {
-        alert("Bitiş saati başlangıç saatinden sonra olmalı.");
+        alert(SLOT_ERROR_TEXTS.E_SLOT_ORDER);
         return;
       }
 
+      // Early, friendly check; the database guard (0028 appt_slot_guard) decides for concurrent bookings too.
       const { data: overlaps, error: overlapError } = await supabase
         .from("appointments")
         .select("id, doctor_id, chair_id")
@@ -109,58 +110,41 @@ export default function Page() {
       }
 
       if ((overlaps || []).some((a) => a.doctor_id === formData.doctor_id)) {
-        alert("Seçilen hekimin bu saatte başka bir randevusu var.");
+        alert(SLOT_ERROR_TEXTS.E_SLOT_DOCTOR);
         return;
       }
 
       if ((overlaps || []).some((a) => a.chair_id === formData.chair_id)) {
-        alert("Seçilen koltuk bu saatte dolu.");
+        alert(SLOT_ERROR_TEXTS.E_SLOT_CHAIR);
         return;
       }
 
-      const { data: appointment, error } = await supabase
-        .from("appointments")
-        .insert([
-          {
-            clinic_id: user.clinic_id,
-            patient_id: formData.patient_id,
-            doctor_id: formData.doctor_id,
-            chair_id: formData.chair_id,
-            procedure_id: formData.procedure_id || null,
-            start_time: startIso,
-            end_time: endIso,
-            notes: formData.notes || null,
-            status: "scheduled",
-          },
-        ])
-        .select("id")
-        .single();
+      // No reminder row is queued: the clinic has no SMS sending (reminders are done by phone / WhatsApp and
+      // recorded in CRM "Bugün" or on the agenda).
+      const { error } = await supabase.from("appointments").insert([
+        {
+          clinic_id: user.clinic_id,
+          patient_id: patient.id,
+          doctor_id: formData.doctor_id,
+          chair_id: formData.chair_id,
+          procedure_id: formData.procedure_id || null,
+          start_time: startIso,
+          end_time: endIso,
+          notes: formData.notes || null,
+          status: "scheduled",
+        },
+      ]);
 
-      if (error) throw error;
-
-      // Create reminder 24h before appointment
-      const appointmentDate = new Date(startIso);
-      const reminderDate = new Date(appointmentDate.getTime() - 24 * 60 * 60 * 1000);
-
-      const patient = patients.find((p) => p.id === formData.patient_id);
-      if (patient) {
-        const { error: reminderError } = await supabase.from("reminders").insert([
-          {
-            clinic_id: user.clinic_id,
-            appointment_id: appointment.id,
-            reminder_type: "sms",
-            scheduled_at: reminderDate.toISOString(),
-            status: "pending",
-          },
-        ]);
-        // The appointment is already saved, so log a reminder failure instead of reporting a booking error that would invite a duplicate.
-        if (reminderError) console.error("Error creating reminder:", reminderError);
+      if (error) {
+        console.error("Error creating appointment:", error);
+        alert(appointmentWriteErrorText(error, "Randevu oluşturulurken hata oluştu"));
+        return;
       }
 
-      router.push("/appointments");
+      router.push(`/appointments?date=${istanbulDayOf(startIso) ?? ""}`);
     } catch (error) {
       console.error("Error creating appointment:", error);
-      alert("Randevu oluşturulurken hata oluştu");
+      alert(appointmentWriteErrorText(error, "Randevu oluşturulurken hata oluştu"));
     } finally {
       setSubmitting(false);
     }
@@ -175,19 +159,12 @@ export default function Page() {
       <form onSubmit={handleSubmit} className="max-w-2xl bg-white p-6 rounded-lg shadow">
         <div className="mb-6">
           <label className="block text-sm font-semibold mb-2">Hasta</label>
-          <select
-            value={formData.patient_id}
-            onChange={(e) => setFormData({ ...formData, patient_id: e.target.value })}
-            className="w-full px-4 py-2 border rounded"
-            required
-          >
-            <option value="">Seç...</option>
-            {patients.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.full_name}
-              </option>
-            ))}
-          </select>
+          <PatientPicker
+            value={patient}
+            onChange={setPatient}
+            disabled={submitting}
+            inputClassName="w-full px-4 py-2 border rounded"
+          />
         </div>
 
         <div className="mb-6">
