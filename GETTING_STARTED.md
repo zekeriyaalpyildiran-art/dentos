@@ -26,17 +26,10 @@ pnpm -F web dev
 # Opens at http://localhost:3000
 ```
 
-### 3️⃣ Visit Setup Page
+### 3️⃣ Log In
 
-Open browser to: **http://localhost:3000/setup**
-
-This interactive wizard guides you through:
-1. Creating database tables (Supabase or Docker)
-2. Seeding test data
-3. Testing authentication
-4. Exploring dashboard
-
-That's it! ✅
+Open browser to: **http://localhost:3000** (redirects to the login page, or to the panel when you are signed in).
+The database tables must exist first (see below).
 
 ---
 
@@ -78,9 +71,8 @@ NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...your_key...
 EOF
 
-# 3. Go to http://localhost:3000/setup
-# - Follow Step 1: Copy each migration to Supabase SQL Editor
-# - Copy each SQL file from packages/db/migrations/
+# 3. Create the tables
+# - Copy each SQL file from packages/db/migrations/ (in order)
 # - Paste into Supabase SQL Editor and click RUN
 
 # 4. Seed data: curl -X POST http://localhost:3000/api/seed
@@ -107,7 +99,6 @@ EOF
 |-----|---------|--------|
 | http://localhost:3000 | Home (redirects to login) | ✅ |
 | http://localhost:3000/login | Login page | ✅ |
-| http://localhost:3000/setup | Setup wizard | ✅ |
 | http://localhost:3000/dashboard | Admin dashboard | ✅ |
 | http://localhost:3000/api/seed | Load test data | ✅ |
 
@@ -257,8 +248,7 @@ pnpm -F mobile start
 
 ### "Seed data didn't load"
 ```bash
-# Check migrations exist first
-curl http://localhost:3000/test-connection
+# Check migrations exist first (Supabase SQL Editor or docker-compose logs postgres)
 
 # Then try seed again
 curl -X POST http://localhost:3000/api/seed
@@ -305,7 +295,7 @@ npm install -g pnpm@latest
 ## 🎓 Learning Path
 
 1. **Start here:** This file (GETTING_STARTED.md)
-2. **Setup:** Run through http://localhost:3000/setup
+2. **Setup:** Create the database tables (see above), then log in at http://localhost:3000/login
 3. **Explore:** Test features in dashboard
 4. **Read:** [README.md](./README.md) for technical details
 5. **Deploy:** [DEPLOYMENT.md](./DEPLOYMENT.md) for production
@@ -349,8 +339,6 @@ After setup, you can:
 ## 🆘 Need Help?
 
 - **Issues:** https://github.com/zekeriyaalpyildiran-art/dentos/issues
-- **Setup Page:** http://localhost:3000/setup
-- **Test Connection:** http://localhost:3000/test-connection
 - **Documentation:** Read README.md, DATABASE_SETUP.md, DEPLOYMENT.md
 
 ---

@@ -209,18 +209,8 @@ export default function LoginPage() {
 
           {/* Footer */}
           <div className="text-center pt-4 border-t border-gray-200">
-            <p className="text-gray-600 text-sm">
-              Sorununuz mu var?{" "}
-              <a href="/" className="text-blue-600 font-semibold hover:underline">
-                Ana sayfaya dön
-              </a>
-            </p>
+            <p className="text-gray-600 text-sm">Giriş yapamıyorsanız klinik yöneticinizle iletişime geçin.</p>
           </div>
-        </div>
-
-        {/* Info Card */}
-        <div className="mt-6 bg-white rounded-lg shadow p-4 text-center text-gray-600 text-sm">
-          ✨ 100% Türkçe • KVKK Uyumlu • Üretim Hazır
         </div>
       </div>
     </div>

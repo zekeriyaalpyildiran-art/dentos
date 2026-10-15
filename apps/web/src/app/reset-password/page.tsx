@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
+import { PASSWORD_TEXTS, newPasswordError, passwordUpdateErrorMessage } from "@/lib/password";
 
 const inputClass =
   "w-full px-3 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500";
@@ -204,12 +205,9 @@ export default function ResetPasswordPage() {
     e.preventDefault();
     setError(null);
 
-    if (password.length < 8) {
-      setError("Şifre en az 8 karakter olmalı.");
-      return;
-    }
-    if (password !== confirm) {
-      setError("Şifreler eşleşmiyor.");
+    const invalid = newPasswordError(password, confirm);
+    if (invalid) {
+      setError(invalid);
       return;
     }
 
@@ -221,7 +219,7 @@ export default function ResetPasswordPage() {
       router.push("/dashboard");
     } catch (err) {
       console.error("Error updating password:", err);
-      setError("Şifre güncellenemedi. Bağlantı geçersiz olabilir, yeni bir bağlantı isteyin.");
+      setError(passwordUpdateErrorMessage(err));
       setSaving(false);
     }
   };
@@ -337,7 +335,7 @@ export default function ResetPasswordPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="new-password"
               />
-              <p className="text-xs text-gray-500 mt-1">En az 8 karakter.</p>
+              <p className="text-xs text-gray-500 mt-1">{PASSWORD_TEXTS.hint}</p>
             </div>
 
             <div>

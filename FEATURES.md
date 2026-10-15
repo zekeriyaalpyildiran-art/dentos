@@ -204,7 +204,6 @@ Harici hizmetlerle entegrasyon ve API'lar.
 POST   /api/seed                    - Test verilerini yükle
 GET    /api/health                  - Sistem sağlığı
 GET    /api/health/db               - Veritabanı bağlantısı
-GET    /test-connection             - Supabase test
 ```
 
 ---
@@ -276,7 +275,7 @@ GET    /test-connection             - Supabase test
 ### 1. Demo Modu (0 saniye setup)
 ```bash
 pnpm -F web dev
-# Tarayıcıda: http://localhost:3000/setup
+# Tarayıcıda: http://localhost:3000/login
 ```
 
 ### 2. Docker (Tam özellikli)
@@ -288,10 +287,8 @@ curl -X POST http://localhost:3000/api/seed
 
 ### 3. Supabase (Production)
 ```
-Web: http://localhost:3000/setup
-→ Supabase sekmesi
-→ Migrasyonları SQL Editor'a yapıştır
-→ Seed API çağrısı
+→ packages/db/migrations/*.sql dosyalarını sırayla SQL Editor'a yapıştır
+→ http://localhost:3000/login ile giriş yap
 ```
 
 ---

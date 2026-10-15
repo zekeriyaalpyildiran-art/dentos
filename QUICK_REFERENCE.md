@@ -41,10 +41,8 @@ pnpm -F mobile start                    # Expo başlat
 
 | Sayfa | URL | Açıklama |
 |-------|-----|----------|
-| Setup | `http://localhost:3000/setup` | Kurulum sihirbazı |
 | Dashboard | `http://localhost:3000/dashboard` | Ana panel |
 | Login | `http://localhost:3000/login` | Giriş sayfası |
-| Features | `http://localhost:3000/features` | Özellikleri gör |
 | Appointments | `http://localhost:3000/appointments` | Randevular |
 | Patients | `http://localhost:3000/patients` | Hastalar |
 | Treatment Plans | `http://localhost:3000/treatment-plans` | Tedavi planları |
@@ -62,7 +60,6 @@ pnpm -F mobile start                    # Expo başlat
 curl -X POST http://localhost:3000/api/seed          # Test verilerini yükle
 curl http://localhost:3000/api/health                # Sağlık kontrolü
 curl http://localhost:3000/api/health/db             # DB bağlantısı
-curl http://localhost:3000/test-connection           # Supabase test
 ```
 
 ---
