@@ -1,10 +1,20 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { useParams } from "next/navigation";
+import { toFinanceError, type FinanceError } from "@/lib/finance";
+import {
+  amountToCents,
+  asCurrency,
+  formatMoney,
+  ppPatientAccount,
+  type Currency,
+  type PatientAccountJson,
+} from "@/lib/payments";
+import { PatientAccountTab } from "../_components/PatientAccountTab";
 
 const GENDER_LABELS: Record<string, string> = {
   male: "Erkek",
@@ -66,6 +76,7 @@ const TABS = [
   { key: "overview", label: "Özet" },
   { key: "appointments", label: "Randevular" },
   { key: "treatment-plan", label: "Tedavi Planları" },
+  { key: "account", label: "Hesap" },
   { key: "messages", label: "Mesajlar" },
 ] as const;
 
@@ -73,7 +84,7 @@ type Tab = (typeof TABS)[number]["key"];
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const formatMoney = (value: number) => `₺${value.toLocaleString("tr-TR")}`;
+const isTab = (value: string | null): value is Tab => TABS.some((t) => t.key === value);
 
 interface Patient {
   id: string;
@@ -103,7 +114,7 @@ interface TreatmentPlan {
   title: string;
   status: string;
   total_cost: number;
-  paid: number;
+  currency: Currency;
   created_at: string;
 }
 
@@ -129,6 +140,43 @@ export default function Page() {
   const [loadErrors, setLoadErrors] = useState({ appointments: false, plans: false, messages: false });
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [loading, setLoading] = useState(true);
+  // Payment figures come only from pp_patient_account (loaded when the plans or Hesap tab is first opened).
+  const [account, setAccount] = useState<PatientAccountJson | null>(null);
+  const [accountError, setAccountError] = useState<FinanceError | null>(null);
+  const [accountLoading, setAccountLoading] = useState(false);
+  const [includeVoided, setIncludeVoided] = useState(false);
+  const [accountWanted, setAccountWanted] = useState(false);
+  const accountReq = useRef(0);
+
+  // ?tab=account (link from Finans > Teklifler ve tahsilat); read directly so no Suspense boundary is needed.
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (isTab(tab)) setActiveTab(tab);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "account" || activeTab === "treatment-plan") setAccountWanted(true);
+  }, [activeTab]);
+
+  const loadAccount = useCallback(async () => {
+    if (!patientId || !UUID_RE.test(patientId)) return;
+    const req = ++accountReq.current;
+    setAccountLoading(true);
+    try {
+      const acc = await ppPatientAccount(patientId, includeVoided);
+      if (req !== accountReq.current) return;
+      setAccount(acc);
+      setAccountError(null);
+    } catch (err) {
+      if (req === accountReq.current) setAccountError(toFinanceError(err));
+    } finally {
+      if (req === accountReq.current) setAccountLoading(false);
+    }
+  }, [patientId, includeVoided]);
+
+  useEffect(() => {
+    if (accountWanted && user?.clinic_id) void loadAccount();
+  }, [accountWanted, loadAccount, user?.clinic_id]);
 
   useEffect(() => {
     const clinicId = user?.clinic_id;
@@ -144,7 +192,7 @@ export default function Page() {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const [ptRes, aptRes, planRes, payRes, msgRes] = await Promise.all([
+        const [ptRes, aptRes, planRes, msgRes] = await Promise.all([
           supabase.from("patients").select("*").eq("id", patientId).eq("clinic_id", clinicId).maybeSingle(),
           supabase
             .from("appointments")
@@ -154,16 +202,10 @@ export default function Page() {
             .order("start_time", { ascending: false }),
           supabase
             .from("treatment_plans")
-            .select("id,title,status,total_cost,created_at")
+            .select("id,title,status,total_cost,currency,created_at")
             .eq("patient_id", patientId)
             .eq("clinic_id", clinicId)
             .order("created_at", { ascending: false }),
-          supabase
-            .from("payments")
-            .select("treatment_plan_id,amount")
-            .eq("patient_id", patientId)
-            .eq("clinic_id", clinicId)
-            .eq("status", "paid"),
           supabase
             .from("notifications")
             .select("id,created_at,notification_type,recipient,message,status")
@@ -176,7 +218,6 @@ export default function Page() {
         if (ptRes.error) console.error("Error fetching patient:", ptRes.error);
         if (aptRes.error) console.error("Error fetching appointments:", aptRes.error);
         if (planRes.error) console.error("Error fetching treatment plans:", planRes.error);
-        if (payRes.error) console.error("Error fetching payments:", payRes.error);
         if (msgRes.error) console.error("Error fetching messages:", msgRes.error);
 
         setPatientError(!!ptRes.error);
@@ -184,17 +225,13 @@ export default function Page() {
         // doctors/procedures_catalog are many-to-one, so each arrives as one object that the inferred type does not reflect.
         setAppointments((aptRes.data || []) as unknown as Appointment[]);
 
-        const paidByPlan = new Map<string, number>();
-        for (const p of payRes.data || []) {
-          paidByPlan.set(p.treatment_plan_id, (paidByPlan.get(p.treatment_plan_id) || 0) + Number(p.amount));
-        }
         setPlans(
           (planRes.data || []).map((p) => ({
             id: p.id,
             title: p.title,
             status: p.status,
             total_cost: Number(p.total_cost),
-            paid: paidByPlan.get(p.id) || 0,
+            currency: asCurrency((p as { currency?: unknown }).currency),
             created_at: p.created_at,
           }))
         );
@@ -202,7 +239,7 @@ export default function Page() {
 
         setLoadErrors({
           appointments: !!aptRes.error,
-          plans: !!planRes.error || !!payRes.error,
+          plans: !!planRes.error,
           messages: !!msgRes.error,
         });
       } catch (err) {
@@ -364,7 +401,7 @@ export default function Page() {
             <table className="w-full">
               <thead className="bg-gray-100 border-b">
                 <tr>
-                  {["Plan", "Durum", "Tutar", "Ödenen", "Oluşturulma", ""].map((h, i) => (
+                  {["Plan", "Durum", "Tutar", "Tahsil edilen", "Oluşturulma", ""].map((h, i) => (
                     <th key={i} className="px-6 py-4 text-left text-sm font-semibold text-gray-800">
                       {h}
                     </th>
@@ -400,8 +437,16 @@ export default function Page() {
                           {PLAN_STATUS_LABELS[plan.status] ?? plan.status}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-800 font-semibold">{formatMoney(plan.total_cost)}</td>
-                      <td className="px-6 py-4 text-sm text-green-700 font-semibold">{formatMoney(plan.paid)}</td>
+                      <td className="px-6 py-4 text-sm text-gray-800 font-semibold">
+                        {formatMoney(amountToCents(plan.total_cost), plan.currency)}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-green-700 font-semibold">
+                        {(() => {
+                          const applied = account?.plans.find((a) => a.id === plan.id)?.applied_cents;
+                          if (applied !== undefined) return formatMoney(applied, plan.currency);
+                          return accountLoading ? "…" : "—";
+                        })()}
+                      </td>
                       <td className="px-6 py-4 text-sm text-gray-600">
                         {new Date(plan.created_at).toLocaleDateString("tr-TR")}
                       </td>
@@ -417,6 +462,17 @@ export default function Page() {
             </table>
           </div>
         </div>
+      )}
+
+      {activeTab === "account" && (
+        <PatientAccountTab
+          account={account}
+          loading={accountLoading}
+          error={accountError}
+          includeVoided={includeVoided}
+          onIncludeVoided={setIncludeVoided}
+          onReload={() => void loadAccount()}
+        />
       )}
 
       {activeTab === "messages" && (

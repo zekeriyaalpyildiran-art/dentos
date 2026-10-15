@@ -4,6 +4,16 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import {
+  CURRENCY_SYMBOLS,
+  centsToAmount,
+  microToText,
+  parseMoney,
+  serverErrorText,
+  type Currency,
+} from "@/lib/payments";
+import { QuoteCurrencyFields } from "../_components/QuoteCurrencyFields";
+import { useFxRates, useRateField } from "../_components/payment-ui";
 
 interface Patient {
   id: string;
@@ -44,6 +54,14 @@ export default function NewTreatmentPlanPage() {
     status: "draft",
     notes: "",
   });
+  const [currency, setCurrency] = useState<Currency>("TRY");
+  const [rateChecked, setRateChecked] = useState(false);
+  const foreign = currency !== "TRY";
+  const rates = useFxRates(null, foreign);
+  const rateField = useRateField(foreign ? rates.of(currency) : null);
+  const totalParse =
+    formData.total_cost.trim() === "" ? null : parseMoney(formData.total_cost, currency, { allowZero: true });
+  const totalCents = totalParse === null ? 0 : totalParse.ok ? totalParse.cents : null;
 
   useEffect(() => {
     if (!user?.clinic_id) {
@@ -99,10 +117,20 @@ export default function NewTreatmentPlanPage() {
       return;
     }
     // The total may be left empty; adding items on the detail page recalculates it.
-    const totalCost = formData.total_cost.trim() === "" ? 0 : Number(formData.total_cost);
-    if (!Number.isFinite(totalCost) || totalCost < 0) {
-      setErrorMessage("Geçerli bir tutar girin.");
+    if (totalParse && !totalParse.ok) {
+      setErrorMessage(totalParse.error);
       return;
+    }
+    const totalCost = centsToAmount(totalCents ?? 0);
+    if (foreign) {
+      if (!rateField.parsed.ok) {
+        setErrorMessage(rateField.parsed.error);
+        return;
+      }
+      if (rateField.farOff && !rateChecked) {
+        setErrorMessage("Önerilenden farklı teklif kurunu kontrol edip onaylayın.");
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -115,7 +143,15 @@ export default function NewTreatmentPlanPage() {
             patient_id: formData.patient_id,
             doctor_id: formData.doctor_id,
             title,
-            total_cost: Math.round(totalCost * 100) / 100,
+            total_cost: totalCost,
+            currency,
+            // The trigger forces rate 1 for TRY and resolves the source / day of a suggested rate from its id.
+            ...(foreign && rateField.micro !== null
+              ? {
+                  quote_fx_rate: Number(microToText(rateField.micro)),
+                  quote_fx_rate_id: rateField.suggestion?.id ?? null,
+                }
+              : {}),
             status: formData.status,
             description: formData.notes.trim() || null,
             completed_at: formData.status === "completed" ? new Date().toISOString() : null,
@@ -131,7 +167,7 @@ export default function NewTreatmentPlanPage() {
       router.replace(`/treatment-plans/${data.id}`);
     } catch (err) {
       console.error("Error creating treatment plan:", err);
-      setErrorMessage("Tedavi planı kaydedilemedi. Lütfen tekrar deneyin.");
+      setErrorMessage(serverErrorText(err) ?? "Tedavi planı kaydedilemedi. Lütfen tekrar deneyin.");
       setSubmitting(false);
     }
   };
@@ -205,16 +241,17 @@ export default function NewTreatmentPlanPage() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
           <div>
-            <label className="block text-sm font-semibold mb-2">Toplam Tutar (₺)</label>
+            <label className="block text-sm font-semibold mb-2">Toplam Tutar ({CURRENCY_SYMBOLS[currency]})</label>
             <input
-              type="number"
-              min="0"
-              step="0.01"
+              type="text"
+              inputMode="decimal"
               value={formData.total_cost}
               onChange={(e) => setFormData({ ...formData, total_cost: e.target.value })}
               className="w-full px-4 py-2 border rounded"
-              placeholder="0.00"
+              placeholder="0,00"
+              autoComplete="off"
             />
+            {totalParse && !totalParse.ok && <p className="mt-1 text-xs text-red-600">{totalParse.error}</p>}
             <p className="mt-1 text-xs text-gray-500">
               Plana işlem eklendiğinde toplam, işlem fiyatlarından otomatik hesaplanır.
             </p>
@@ -233,6 +270,25 @@ export default function NewTreatmentPlanPage() {
               ))}
             </select>
           </div>
+        </div>
+
+        <div className="mb-6">
+          <QuoteCurrencyFields
+            currency={currency}
+            onCurrency={(c) => {
+              setCurrency(c);
+              rateField.reset();
+              setRateChecked(false);
+            }}
+            field={rateField}
+            ratesLoading={rates.loading}
+            ratesError={rates.error?.message ?? null}
+            today={rates.data?.today ?? ""}
+            totalCents={totalCents}
+            rateChecked={rateChecked}
+            onRateChecked={setRateChecked}
+            disabled={submitting}
+          />
         </div>
 
         <div className="mb-6">

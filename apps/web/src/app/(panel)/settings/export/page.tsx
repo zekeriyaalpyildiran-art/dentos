@@ -37,6 +37,7 @@ const CLINIC_TABLES = [
   "treatment_plans",
   "treatment_items",
   "payments",
+  "fx_rates",
   "leads",
   "lead_activities",
   "crm_calls",

@@ -4,6 +4,23 @@ import { useState, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { centsToInput } from "@/lib/finance";
+import {
+  CURRENCY_SYMBOLS,
+  amountToCents,
+  asCurrency,
+  centsToAmount,
+  formatMoney,
+  microToInput,
+  microToText,
+  parseMoney,
+  ppPlanAccount,
+  rateMicro,
+  serverErrorText,
+  type Currency,
+} from "@/lib/payments";
+import { QuoteCurrencyFields } from "../../_components/QuoteCurrencyFields";
+import { useFxRates, useRateField } from "../../_components/payment-ui";
 
 type TreatmentStatus = "draft" | "proposed" | "approved" | "in_progress" | "completed" | "cancelled";
 
@@ -37,11 +54,23 @@ export default function EditTreatmentPlanPage() {
   const [totalCost, setTotalCost] = useState("");
   // Sum of the plan's items, or null when it has none and the total is entered by hand.
   const [itemsTotal, setItemsTotal] = useState<number | null>(null);
+  // total_cost as stored (cents): with items it is written only when the item sum differs from it.
+  const [storedTotalCents, setStoredTotalCents] = useState<number | null>(null);
   const [status, setStatus] = useState<TreatmentStatus>("draft");
   const [completedAt, setCompletedAt] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  // Quote currency and rate as stored, to send them only when the user changes them (the trigger re-resolves them).
+  const [currency, setCurrency] = useState<Currency>("TRY");
+  const [stored, setStored] = useState<{ currency: Currency; rate: bigint | null } | null>(null);
+  const [rateChecked, setRateChecked] = useState(false);
+  // From pp_plan_account: payments that count lock the currency; the total may not drop below the applied sum.
+  const [paymentInfo, setPaymentInfo] = useState<{ locked: boolean; applied: number } | null>(null);
+  const foreign = currency !== "TRY";
+  const rates = useFxRates(null, foreign);
+  const rateField = useRateField(foreign ? rates.of(currency) : null);
+  const setRateText = rateField.setText;
 
   useEffect(() => {
     if (!user?.clinic_id || !id) return;
@@ -53,7 +82,7 @@ export default function EditTreatmentPlanPage() {
         const { data, error } = await supabase
           .from("treatment_plans")
           .select(
-            "title, description, total_cost, status, completed_at, patients(full_name), doctors(users(full_name)), treatment_items(total_price)"
+            "title, description, total_cost, currency, quote_fx_rate, status, completed_at, patients(full_name), doctors(users(full_name)), treatment_items(total_price)"
           )
           .eq("id", id)
           .eq("clinic_id", user.clinic_id)
@@ -65,6 +94,8 @@ export default function EditTreatmentPlanPage() {
           patients: { full_name: string } | null;
           doctors: { users: { full_name: string } | null } | null;
           treatment_items: { total_price: number }[] | null;
+          currency?: unknown;
+          quote_fx_rate?: number | string | null;
         };
         const items = embeds.treatment_items || [];
 
@@ -72,7 +103,13 @@ export default function EditTreatmentPlanPage() {
         setPatientName(embeds.patients?.full_name || "-");
         setDoctorName(embeds.doctors?.users?.full_name || "-");
         setTitle(data.title);
-        setTotalCost(String(data.total_cost));
+        setTotalCost(centsToInput(amountToCents(data.total_cost)));
+        setStoredTotalCents(amountToCents(data.total_cost));
+        const cur = asCurrency(embeds.currency);
+        const rate = cur === "TRY" ? null : rateMicro(embeds.quote_fx_rate ?? null);
+        setCurrency(cur);
+        setStored({ currency: cur, rate });
+        if (rate !== null) setRateText(microToInput(rate));
         setItemsTotal(
           items.length > 0
             ? roundMoney(items.reduce((sum, item) => sum + Number(item.total_price), 0))
@@ -90,6 +127,17 @@ export default function EditTreatmentPlanPage() {
     };
 
     fetchPlan();
+    if (UUID_RE.test(id)) {
+      ppPlanAccount(id)
+        .then((acc) =>
+          setPaymentInfo({
+            locked: acc.totals.by_currency.some((c) => c.count > 0) || acc.payments.some((p) => p.counts),
+            applied: acc.totals.applied_cents,
+          })
+        )
+        .catch((err) => console.error("Error fetching plan payments:", err));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.clinic_id, id]);
 
   const handleSave = async (e: React.FormEvent) => {
@@ -113,12 +161,43 @@ export default function EditTreatmentPlanPage() {
 
     // With items, total_cost follows their sum (as the detail page keeps it), so only a plan without items takes a typed total.
     if (itemsTotal === null) {
-      const cost = Number(totalCost);
-      if (totalCost.trim() === "" || !Number.isFinite(cost) || cost < 0) {
-        setSaveError("Geçerli bir tutar girin");
+      const cost = parseMoney(totalCost, currency, { allowZero: true });
+      if (!cost.ok) {
+        setSaveError(cost.error);
         return;
       }
-      values.total_cost = roundMoney(cost);
+      if (paymentInfo && cost.cents < paymentInfo.applied) {
+        setSaveError(
+          `Plan toplamı, plana yansıyan tahsilatın (${formatMoney(paymentInfo.applied, currency)}) altına inemez.`
+        );
+        return;
+      }
+      values.total_cost = centsToAmount(cost.cents);
+    }
+
+    // Quote currency / rate: sent only when changed, so an untouched plan keeps its stored quote.
+    if (stored) {
+      const currencyChanged = currency !== stored.currency;
+      if (foreign) {
+        if (!rateField.parsed.ok) {
+          setSaveError(rateField.parsed.error);
+          return;
+        }
+        const rateChanged = rateField.parsed.micro !== stored.rate;
+        if (currencyChanged || rateChanged) {
+          if (rateField.farOff && !rateChecked) {
+            setSaveError("Önerilenden farklı teklif kurunu kontrol edip onaylayın.");
+            return;
+          }
+          values.currency = currency;
+          values.quote_fx_rate = Number(microToText(rateField.parsed.micro));
+          values.quote_fx_rate_id = rateField.suggestion?.id ?? null;
+          // A new rate is dated by the trigger (the suggested rate's day, else today).
+          values.quote_fx_on = null;
+        }
+      } else if (currencyChanged) {
+        values.currency = "TRY";
+      }
     }
 
     setSaving(true);
@@ -132,9 +211,12 @@ export default function EditTreatmentPlanPage() {
           .eq("clinic_id", user.clinic_id);
 
         if (itemsError) throw itemsError;
-        values.total_cost = roundMoney(
-          (rows || []).reduce((sum, row) => sum + Number(row.total_price), 0)
-        );
+        const sumCents = (rows || []).reduce((sum, row) => sum + amountToCents(row.total_price), 0);
+        // Written only when it differs, and never below what payments credited to the plan (the guard would refuse
+        // the whole update, so an unrelated edit such as the status would be blocked by a stale total).
+        if (sumCents !== storedTotalCents && !(paymentInfo && sumCents < paymentInfo.applied)) {
+          values.total_cost = centsToAmount(sumCents);
+        }
       }
 
       const { data, error } = await supabase
@@ -154,7 +236,7 @@ export default function EditTreatmentPlanPage() {
       router.replace(`/treatment-plans/${id}`);
     } catch (err) {
       console.error("Error saving plan:", err);
-      setSaveError("Plan kaydedilemedi, lütfen tekrar deneyin.");
+      setSaveError(serverErrorText(err) ?? "Plan kaydedilemedi, lütfen tekrar deneyin.");
     } finally {
       setSaving(false);
     }
@@ -204,26 +286,67 @@ export default function EditTreatmentPlanPage() {
           </div>
 
           <div>
-            <label className="block text-sm font-semibold mb-2">Toplam Tutar (₺)</label>
+            <label className="block text-sm font-semibold mb-2">Toplam Tutar ({CURRENCY_SYMBOLS[currency]})</label>
             {itemsTotal === null ? (
               <input
-                type="number"
-                min="0"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 value={totalCost}
                 onChange={(e) => setTotalCost(e.target.value)}
                 className="w-full px-4 py-2 border rounded"
+                placeholder="0,00"
+                autoComplete="off"
                 required
               />
             ) : (
               <>
-                <div className="text-lg font-semibold">₺{itemsTotal.toLocaleString("tr-TR")}</div>
+                <div className="text-lg font-semibold">{formatMoney(amountToCents(itemsTotal), currency)}</div>
                 <p className="mt-1 text-xs text-gray-500">
                   Toplam tutar plandaki işlemlerden hesaplanır. Değiştirmek için plan detayından işlem ekleyin veya kaldırın.
                 </p>
               </>
             )}
           </div>
+
+          {paymentInfo && paymentInfo.applied > 0 && (
+            <p className="text-xs text-gray-500 -mt-4">
+              Plana yansıyan tahsilat: {formatMoney(paymentInfo.applied, currency)}. Toplam bunun altına inemez.
+            </p>
+          )}
+
+          <QuoteCurrencyFields
+            currency={currency}
+            onCurrency={(c) => {
+              setCurrency(c);
+              setRateChecked(false);
+              if (stored && c === stored.currency && stored.rate !== null) setRateText(microToInput(stored.rate));
+              else rateField.reset();
+            }}
+            field={rateField}
+            ratesLoading={rates.loading}
+            ratesError={rates.error?.message ?? null}
+            today={rates.data?.today ?? ""}
+            totalCents={
+              itemsTotal !== null
+                ? amountToCents(itemsTotal)
+                : (() => {
+                    const p = parseMoney(totalCost, currency, { allowZero: true });
+                    return p.ok ? p.cents : null;
+                  })()
+            }
+            currencyLocked={!!paymentInfo?.locked || itemsTotal !== null}
+            lockReason={
+              paymentInfo?.locked
+                ? "Ödeme alınmış planın para birimi değiştirilemez."
+                : "Kalemi olan planın para birimi değiştirilemez; kalem fiyatları bu para biriminde girildi."
+            }
+            totalReinterpreted={
+              !!stored && currency !== stored.currency && itemsTotal === null && (storedTotalCents ?? 0) > 0
+            }
+            rateChecked={rateChecked}
+            onRateChecked={setRateChecked}
+            disabled={saving}
+          />
 
           <div>
             <label className="block text-sm font-semibold mb-2">Durum</label>

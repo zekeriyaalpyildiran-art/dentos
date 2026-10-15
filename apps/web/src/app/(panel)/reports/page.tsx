@@ -4,32 +4,37 @@ import { useState, useEffect } from "react";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { canSeeFinance } from "@/lib/permissions";
+import { finPatientReceiptsCompare, formatMoney } from "@/lib/payments";
 
 interface Stats {
   activePatients: number;
   monthAppointments: number;
-  /** null when the user may not see finance figures; payments are then not queried at all. */
+  /**
+   * TL cents of this Istanbul month's counted patient payments (paid_on, voided rows excluded, foreign payments at
+   * their payment-day rate), summed in SQL by fin_patient_receipts_compare. null when the user may not see finance
+   * figures; the RPC is then not called at all.
+   */
   monthRevenue: number | null;
   openPlans: number;
   lowStock: number;
 }
 
-const formatTRY = (value: number) =>
-  `₺${value.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
 function StatCard({
   label,
   value,
   valueClass = "text-gray-900",
+  caption,
 }: {
   label: string;
   value: string | number;
   valueClass?: string;
+  caption?: string;
 }) {
   return (
     <div className="bg-white p-6 rounded-lg shadow">
       <div className="text-gray-500 text-sm mb-2">{label}</div>
       <div className={`text-3xl font-bold ${valueClass}`}>{value}</div>
+      {caption && <div className="mt-1 text-xs text-gray-500">{caption}</div>}
     </div>
   );
 }
@@ -78,18 +83,16 @@ export default function Page() {
             .from("stock_items")
             .select("quantity_on_hand, quantity_minimum")
             .eq("clinic_id", clinicId),
+          // Current clinic month (clinic_today()), summed in SQL: no browser-local month, no 1000-row cap.
           showFinance
-            ? supabase
-                .from("payments")
-                .select("amount")
-                .eq("clinic_id", clinicId)
-                .eq("status", "paid")
-                .gte("paid_at", monthStart)
-                .lt("paid_at", monthEnd)
+            ? finPatientReceiptsCompare(null).then(
+                (res) => ({ cents: res.totals.dentos_try_cents, failed: false }),
+                () => ({ cents: 0, failed: true })
+              )
             : null,
         ]);
 
-        if ([patients, appointments, plans, stock].some((r) => r.error) || payments?.error) {
+        if ([patients, appointments, plans, stock].some((r) => r.error) || payments?.failed) {
           setError(true);
           return;
         }
@@ -97,9 +100,7 @@ export default function Page() {
         setStats({
           activePatients: patients.count ?? 0,
           monthAppointments: appointments.count ?? 0,
-          monthRevenue: payments
-            ? (payments.data ?? []).reduce((sum, p) => sum + Number(p.amount), 0)
-            : null,
+          monthRevenue: payments ? payments.cents : null,
           openPlans: plans.count ?? 0,
           lowStock: (stock.data ?? []).filter(
             (s) => s.quantity_on_hand <= s.quantity_minimum
@@ -132,8 +133,9 @@ export default function Page() {
           {showFinance && stats.monthRevenue !== null && (
             <StatCard
               label="Bu Ay Tahsilat"
-              value={formatTRY(stats.monthRevenue)}
+              value={formatMoney(stats.monthRevenue, "TRY")}
               valueClass="text-green-600"
+              caption="TL karşılığı, ödeme tarihine göre"
             />
           )}
           <StatCard label="Açık Tedavi Planı" value={stats.openPlans} />

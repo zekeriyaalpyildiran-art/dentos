@@ -29,6 +29,49 @@ export function workbookRates(book: SheetBook, layout: WorkbookLayout): Rates {
   return { EUR: rate("EUR"), USD: rate("USD"), GBP: rate("GBP") };
 }
 
+/** Reference rates read from the fx sheet, to be saved as clinic fx_rates (spec p5 §7). `rate` is TL per 1 unit. */
+export type WorkbookFxRates = { on: string; file: string; items: { currency: FxCode; rate: string }[] };
+
+const FX_CODES: readonly FxCode[] = ["EUR", "USD", "GBP"];
+const MAX_RATE_MICRO = 1_000_000_000; // 1000 TL per unit
+
+/** Micro units (rate × 1e6) printed with exactly 6 decimals, e.g. 49876543 → '49.876543' (no float formatting). */
+const microText = (micro: number): string => {
+  const s = String(micro).padStart(7, "0");
+  return `${s.slice(0, -6)}.${s.slice(-6)}`;
+};
+
+/**
+ * Rates of the fx sheet (same reading as workbookRates: the first row with the code wins), dated on the last day
+ * sheet with activity (`activeDays` from workbookCashBalance), so a month imported later is dated by its own last
+ * working day. null when the month has no active day, or when no rate is positive and ≤ 1000. Zero, negative and
+ * larger values are dropped. A day sheet without activity is never used: the last sheet of a template month may lie
+ * in the future, and a future rate date is refused by the database. Pure: never changes parseWorkbook's rows.
+ */
+export function workbookFxRates(
+  book: SheetBook,
+  layout: WorkbookLayout,
+  month: string,
+  activeDays: readonly string[],
+  file: string,
+): WorkbookFxRates | null {
+  if (!monthOk(month)) return null;
+  const day = activeDays[activeDays.length - 1];
+  if (!day) return null;
+  const on = month + "-" + day;
+  if (!financeDayOk(on)) return null;
+  const rates = workbookRates(book, layout);
+  const items: WorkbookFxRates["items"] = [];
+  for (const currency of FX_CODES) {
+    const r = rates[currency];
+    if (!Number.isFinite(r) || !(r > 0) || r > 1000) continue;
+    const micro = Math.round(r * 1e6);
+    if (micro < 1 || micro > MAX_RATE_MICRO) continue;
+    items.push({ currency, rate: microText(micro) });
+  }
+  return items.length ? { on, file: file.slice(0, 200), items } : null;
+}
+
 /** Valid day sheets of the month, in book order: [sheet name, 'YYYY-MM-DD']. */
 export function daySheets(book: SheetBook, layout: WorkbookLayout, month: string): [string, string][] {
   const re = new RegExp(layout.day_sheet_pattern);

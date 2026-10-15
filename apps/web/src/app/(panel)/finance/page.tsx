@@ -6,6 +6,7 @@ import { FinanceShell, useCanWriteFinance } from "@/components/finance/FinanceSh
 import { Card, ErrorBox, Loading, MoneyRow, buttonPrimary, buttonSecondary } from "@/components/finance/ui";
 import { CategoryReportCard, ResultFigure } from "@/components/finance/ReportBlocks";
 import { FinancingSummaryCard } from "@/components/finance/import/FinancingSummaryCard";
+import { PatientReceiptsCompareCard } from "@/components/finance/PatientReceiptsCompareCard";
 import {
   finDashboard,
   formatDay,
@@ -201,6 +202,8 @@ function Dashboard() {
       )}
 
       <FinancingSummaryCard month={month} compact />
+
+      <PatientReceiptsCompareCard month={data.month} />
 
       {data.exclusions.entry_count > 0 && (
         <div className="p-4 rounded bg-orange-50 text-orange-800 text-sm">{exclusionWarning(data, monthTitle)}</div>

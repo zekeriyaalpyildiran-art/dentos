@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { FinanceShell, useCanWriteFinance } from "@/components/finance/FinanceShell";
 import { CounterpartyDialog } from "@/components/finance/CounterpartyDialog";
+import { FxRatesSettingsCard } from "@/components/finance/FxRatesSettingsCard";
 import { AccountDialog, CategoryDialog, ReportGroupDialog } from "@/components/finance/MasterDialogs";
 import { useReferenceData } from "@/components/finance/useReferenceData";
 import {
@@ -177,6 +178,9 @@ function Settings() {
           empty="Kayıtlı kişi / kurum yok."
         />
       </Card>
+
+      {/* pp_fx_save_rates: owner or 'finance' (pp_can_void); the server enforces it as well. */}
+      <FxRatesSettingsCard canWrite={canWrite || isOwner} />
 
       {isOwner && (
         <Card title="Veri yedeği">

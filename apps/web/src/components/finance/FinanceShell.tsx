@@ -13,6 +13,7 @@ const READ_PERMISSIONS: readonly Permission[] = ["finance", "finance_readonly"];
 const TABS: { href: string; label: string; writeOnly?: boolean }[] = [
   { href: "/finance", label: "Özet" },
   { href: "/finance/entries", label: "Ödeme ve tahsilatlar" },
+  { href: "/finance/offers", label: "Teklifler ve tahsilat" },
   { href: "/finance/plan", label: "Yaklaşan plan" },
   { href: "/finance/counterparties", label: "Cariler" },
   { href: "/finance/balances", label: "Bakiyeler" },

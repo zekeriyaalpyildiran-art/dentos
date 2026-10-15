@@ -53,8 +53,10 @@ import {
   type RowCheck,
 } from "@/lib/finance-import/review";
 import type { BalanceSource, ParsedRow } from "@/lib/finance-import/types";
+import type { WorkbookFxRates } from "@/lib/finance-import/workbook";
 import { BalancePreviewCard } from "./BalancePreviewCard";
 import { BankMapperCard, type AcceptedBankRows, type CardState } from "./BankMapperCard";
+import { FxRatesCard, mergeFxRates, saveWorkbookFxRates, type PendingFxRate } from "./FxRatesCard";
 import { ReviewTable, type ReviewItem, type RowPatch } from "./ReviewTable";
 import { compileSetupRules } from "./rules";
 import { resolveAccount, rowCategory, rowWarnings, toRowCategory, wizardBlockers, type WizardRow } from "./review";
@@ -113,7 +115,11 @@ function Wizard({
   const [saveError, setSaveError] = useState<FinanceError | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
-  const busy = progress !== null || saving;
+  // Workbook 'GÜNCEL DÖVİZ' rates, saved as clinic fx_rates with the import (spec p5 §7); never part of the rows.
+  const [fxRates, setFxRates] = useState<PendingFxRate[]>([]);
+  const [fxSaving, setFxSaving] = useState(false);
+  const [fxStatus, setFxStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  const busy = progress !== null || saving || fxSaving;
   // Latest list for async readers (several files are appended inside one handler).
   const rowsRef = useRef<WizardRow[]>(rows);
   rowsRef.current = rows;
@@ -279,6 +285,7 @@ function Wizard({
     const failures: string[] = [];
     const newNotes: string[] = [];
     let newBalances: BalanceSource[] = [];
+    const newFx: WorkbookFxRates[] = [];
     let added = 0;
     try {
       for (const [index, file] of files.entries()) {
@@ -321,6 +328,7 @@ function Wizard({
               }));
               added += n;
               if (out.cash.source) newBalances = mergeSessionBalances(newBalances, [out.cash.source]);
+              if (out.rates) newFx.push(out.rates);
               newNotes.push(...out.notes, ...out.result.notes);
               for (const issue of out.result.issues) newNotes.push(`${fileName}${issue.sheet ? ` · ${issue.sheet}` : ""}: ${issue.reason}`);
             } else {
@@ -339,6 +347,10 @@ function Wizard({
       }
     } finally {
       setBalances((old) => mergeSessionBalances(old, newBalances));
+      if (newFx.length) {
+        setFxRates((old) => newFx.reduce(mergeFxRates, old));
+        setFxStatus(null);
+      }
       setNotes((old) => [...old, ...newNotes]);
       setFileErrors(failures);
       setProgress(null);
@@ -395,7 +407,22 @@ function Wizard({
     setMessage(null);
     setSaveError(null);
     setHighlight(null);
+    setFxRates([]);
+    setFxStatus(null);
     dirty.current = new Set();
+  };
+
+  /** Saves the file's rates as clinic fx_rates. Independent of the ledger rows: a failure is only reported. */
+  const saveFxRates = async (): Promise<{ ok: boolean; text: string } | null> => {
+    if (!fxRates.length) return null;
+    setFxSaving(true);
+    try {
+      const res = await saveWorkbookFxRates(fxRates);
+      setFxStatus(res);
+      return res;
+    } finally {
+      setFxSaving(false);
+    }
   };
 
   // --- derived ---------------------------------------------------------------------------------------
@@ -494,6 +521,9 @@ function Wizard({
         );
       }
       parts.push("Hareket aktarımı bakiyeyi değiştirmez; dosyalardan okunan bakiyeleri ayrıca onaylayıp güncelleyin.");
+      // After the rows are saved: the rates go to fx_rates (suggestions for patient payments); a failure only adds a note.
+      const fx = await saveFxRates();
+      if (fx?.text) parts.push(fx.text);
       setMessage(parts.join(" "));
       setRows((old) => old.map((r) => (savedKeys.has(r.key) ? { ...r, selected: false, match: null } : r)));
       recheck(Array.from(savedKeys));
@@ -625,6 +655,8 @@ function Wizard({
         disabled={busy}
         onSetupChanged={reloadAll}
       />
+
+      <FxRatesCard rates={fxRates} disabled={busy} saving={fxSaving} status={fxStatus} onSaveOnly={() => void saveFxRates()} />
 
       {notes.length > 0 && (
         <details open={!rows.length} className="text-sm text-gray-700">

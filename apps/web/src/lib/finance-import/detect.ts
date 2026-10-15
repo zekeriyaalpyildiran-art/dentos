@@ -9,7 +9,7 @@ import { detectTebSheet, parseTebSheet } from "./bank-xlsx";
 import type { CompiledRules } from "./classify";
 import { FINANCING_FILE_REFUSED, hasFinancingMarker } from "./financing";
 import type { WorkbookLayout } from "./layout";
-import { isClinicWorkbook, parseWorkbook } from "./workbook";
+import { isClinicWorkbook, parseWorkbook, workbookFxRates, type WorkbookFxRates } from "./workbook";
 import type { BalanceSource, ParseResult, ParsedRow, PdfCell, SheetBook } from "./types";
 
 /** A bank card (BM:6): generic tables plus an optional ready reading of a known format. */
@@ -28,7 +28,15 @@ export type SavedWorkbookLayout = { id: string; layout: WorkbookLayout };
 
 export type SpreadsheetOutcome =
   | { kind: "financing_refused"; message: string }
-  | { kind: "workbook"; layoutId: string; result: ParseResult; cash: CashBalanceResult; notes: string[] }
+  | {
+      kind: "workbook";
+      layoutId: string;
+      result: ParseResult;
+      cash: CashBalanceResult;
+      notes: string[];
+      /** The fx sheet's rates, offered for saving as clinic fx_rates (spec p5 §7); null when none. */
+      rates: WorkbookFxRates | null;
+    }
   | { kind: "bank"; card: BankCard; balance: BalanceSource | null; notes: string[] };
 
 const SHEET_NOTICE = "Başlık satırı ve sütunlar otomatik önerildi. Doğru değilse aşağıdan değiştirebilirsiniz.";
@@ -52,7 +60,8 @@ export function intakeSpreadsheet(
     const result = parseWorkbook(book, { file, month: opts.month, layout: saved.layout, rules: opts.rules });
     const cash = workbookCashBalance(book, saved.layout, opts.month, file);
     const notes = cash.error ? [`${file}: ${cash.error}`] : cash.source ? [] : [noBalance(file)];
-    return { kind: "workbook", layoutId: saved.id, result, cash, notes };
+    const rates = workbookFxRates(book, saved.layout, opts.month, cash.activeDays, file);
+    return { kind: "workbook", layoutId: saved.id, result, cash, notes, rates };
   }
   const tables: BankTable[] = book.names.filter((n) => Object.prototype.hasOwnProperty.call(book.sheets, n)).map((name) => ({ name, rows: book.sheets[name] }));
   const card: BankCard = { file, tables, notice: SHEET_NOTICE };

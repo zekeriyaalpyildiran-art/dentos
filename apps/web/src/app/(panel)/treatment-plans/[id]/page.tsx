@@ -1,9 +1,22 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import {
+  CURRENCY_LABELS,
+  CURRENCY_SYMBOLS,
+  amountToCents,
+  asCurrency,
+  centsToAmount,
+  formatMoney,
+  serverErrorText,
+  type Currency,
+  type PlanAccountJson,
+} from "@/lib/payments";
+import { PlanPaymentPanel } from "../_components/PlanPaymentPanel";
 
 interface TreatmentItem {
   id: string;
@@ -28,19 +41,11 @@ interface TreatmentPlan {
   title: string;
   description: string;
   total_cost: number;
+  currency: Currency;
   status: string;
   items: TreatmentItem[];
   created_at: string;
 }
-
-interface Payment {
-  id: string;
-  amount: number;
-  status: string;
-  paid_at: string;
-}
-
-type PaymentMethod = "cash" | "card" | "transfer";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -74,12 +79,11 @@ export default function TreatmentPlanPage() {
   const supabase = createClient();
 
   const [plan, setPlan] = useState<TreatmentPlan | null>(null);
-  const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
-  const [processingPayment, setProcessingPayment] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("cash");
-  const [successMessage, setSuccessMessage] = useState("");
+  // Payment figures come only from pp_plan_account (reception cannot read the payments table).
+  const [account, setAccount] = useState<PlanAccountJson | null>(null);
+  const [panelRefresh, setPanelRefresh] = useState(0);
+  const onAccount = useCallback((acc: PlanAccountJson | null) => setAccount(acc), []);
   const [procedures, setProcedures] = useState<Procedure[]>([]);
   const [itemProcedureId, setItemProcedureId] = useState("");
   const [itemQuantity, setItemQuantity] = useState("1");
@@ -91,7 +95,6 @@ export default function TreatmentPlanPage() {
   useEffect(() => {
     if (!user?.clinic_id || !params.id) return;
     fetchPlan();
-    fetchPayments();
     fetchProcedures();
   }, [user?.clinic_id, params.id]);
 
@@ -112,6 +115,7 @@ export default function TreatmentPlanPage() {
           title,
           description,
           total_cost,
+          currency,
           status,
           created_at,
           patients(full_name),
@@ -138,6 +142,7 @@ export default function TreatmentPlanPage() {
         title: data.title,
         description: data.description,
         total_cost: Number(data.total_cost),
+        currency: asCurrency((data as { currency?: unknown }).currency),
         status: data.status,
         items: ((data.treatment_items || []) as TreatmentItem[])
           .slice()
@@ -148,22 +153,6 @@ export default function TreatmentPlanPage() {
       console.error("Error fetching plan:", error);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const fetchPayments = async () => {
-    try {
-      const { data, error } = await supabase
-        .from("payments")
-        .select("*")
-        .eq("treatment_plan_id", params.id)
-        .eq("clinic_id", user?.clinic_id)
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-      setPayments(data || []);
-    } catch (error) {
-      console.error("Error fetching payments:", error);
     }
   };
 
@@ -183,21 +172,27 @@ export default function TreatmentPlanPage() {
     setProcedures(data || []);
   };
 
-  const syncPlanTotal = async () => {
+  // The plan's items as stored now (id + line total in cents), read right before a change.
+  const readItems = async () => {
     const { data: rows, error } = await supabase
       .from("treatment_items")
-      .select("total_price")
+      .select("id,total_price")
       .eq("treatment_plan_id", params.id)
       .eq("clinic_id", user?.clinic_id);
 
     if (error) throw error;
-    const total = roundMoney(
-      (rows || []).reduce((sum, row) => sum + Number(row.total_price), 0)
-    );
+    return ((rows || []) as { id: string; total_price: number | string }[]).map((row) => ({
+      id: row.id,
+      cents: amountToCents(row.total_price),
+    }));
+  };
 
+  // The database guard (pp_plan_money) refuses a total below what payments credited to the plan, so the total is
+  // written BEFORE the item change: a refusal then leaves items and total untouched.
+  const updatePlanTotal = async (cents: number) => {
     const { data: updated, error: updateError } = await supabase
       .from("treatment_plans")
-      .update({ total_cost: total, updated_at: new Date().toISOString() })
+      .update({ total_cost: centsToAmount(cents), updated_at: new Date().toISOString() })
       .eq("id", params.id)
       .eq("clinic_id", user?.clinic_id)
       .select("id");
@@ -205,6 +200,17 @@ export default function TreatmentPlanPage() {
     if (updateError) throw updateError;
     if (!updated || updated.length === 0) {
       throw new Error("Treatment plan total was not updated");
+    }
+  };
+
+  const sumCents = (rows: { cents: number }[]) => rows.reduce((sum, row) => sum + row.cents, 0);
+
+  // Re-align the total with the stored items after an item write failed (best effort; the error shown is the first one).
+  const resyncPlanTotal = async () => {
+    try {
+      await updatePlanTotal(sumCents(await readItems()));
+    } catch (err) {
+      console.error("Error re-syncing plan total:", err);
     }
   };
 
@@ -218,6 +224,8 @@ export default function TreatmentPlanPage() {
       (previous?.default_price != null && currentPrice === Number(previous.default_price));
 
     setItemProcedureId(procedureId);
+    // Catalog prices are TL; a plan in another currency is priced by hand (the option shows the TL price as a hint).
+    if (plan && plan.currency !== "TRY") return;
     if (untouched) {
       setItemUnitPrice(next?.default_price != null ? String(next.default_price) : "");
     }
@@ -246,8 +254,20 @@ export default function TreatmentPlanPage() {
     }
 
     setAddingItem(true);
+    const lineTotal = roundMoney(quantity * unitPrice);
+    let totalWritten = false;
     let inserted = false;
     try {
+      // New total = stored items + the new line. It can be lower than a hand-typed total of a plan without items;
+      // the guard refuses that when payments already cover more, before anything is inserted.
+      const after = sumCents(await readItems()) + amountToCents(lineTotal);
+      if (account && after < account.totals.applied_cents) {
+        setItemError("Plan toplamı, plana yansıyan tahsilatın altına inemez.");
+        return;
+      }
+      await updatePlanTotal(after);
+      totalWritten = true;
+
       const { error } = await supabase.from("treatment_items").insert([
         {
           clinic_id: user.clinic_id,
@@ -256,7 +276,7 @@ export default function TreatmentPlanPage() {
           procedure_name: procedure.name,
           quantity,
           unit_price: unitPrice,
-          total_price: roundMoney(quantity * unitPrice),
+          total_price: lineTotal,
         },
       ]);
 
@@ -265,28 +285,44 @@ export default function TreatmentPlanPage() {
       setItemProcedureId("");
       setItemQuantity("1");
       setItemUnitPrice("");
-      await syncPlanTotal();
     } catch (error) {
       console.error("Error adding treatment item:", error);
-      setItemError(
-        inserted
-          ? "İşlem eklendi ancak plan toplamı güncellenemedi."
-          : "İşlem eklenirken hata oluştu."
-      );
+      if (totalWritten && !inserted) await resyncPlanTotal();
+      setItemError(serverErrorText(error) ?? "İşlem eklenirken hata oluştu.");
     } finally {
-      if (inserted) await fetchPlan();
+      if (totalWritten) {
+        await fetchPlan();
+        setPanelRefresh((k) => k + 1);
+      }
       setAddingItem(false);
     }
   };
 
   const handleRemoveItem = async (itemId: string) => {
-    if (!user?.clinic_id) return;
-    if (!confirm("Bu işlem plandan kaldırılsın mı?")) return;
+    if (!user?.clinic_id || !plan) return;
     setItemError("");
+    // The plan total may not fall below what payments already credited to it (quick check on the loaded figures;
+    // the database guard refuses it as well, before the item is touched, see updatePlanTotal).
+    const item = plan.items.find((i) => i.id === itemId);
+    if (item && account) {
+      const after = amountToCents(plan.total_cost) - amountToCents(item.total_price);
+      if (after < account.totals.applied_cents) {
+        setItemError("Plan toplamı, plana yansıyan tahsilatın altına inemez.");
+        return;
+      }
+    }
+    if (!confirm("Bu işlem plandan kaldırılsın mı?")) return;
     setRemovingItemId(itemId);
 
+    let totalWritten = false;
     let removed = false;
     try {
+      const rows = await readItems();
+      if (!rows.some((row) => row.id === itemId)) throw new Error("Treatment item not found");
+      // Lower the total first: if payments recorded meanwhile cover more, the guard refuses and nothing is lost.
+      await updatePlanTotal(sumCents(rows.filter((row) => row.id !== itemId)));
+      totalWritten = true;
+
       const { data, error } = await supabase
         .from("treatment_items")
         .delete()
@@ -299,65 +335,18 @@ export default function TreatmentPlanPage() {
         throw new Error("Treatment item was not deleted");
       }
       removed = true;
-      await syncPlanTotal();
     } catch (error) {
       console.error("Error removing treatment item:", error);
-      setItemError(
-        removed
-          ? "İşlem kaldırıldı ancak plan toplamı güncellenemedi."
-          : "İşlem kaldırılırken hata oluştu."
-      );
+      if (totalWritten && !removed) await resyncPlanTotal();
+      setItemError(serverErrorText(error) ?? "İşlem kaldırılırken hata oluştu.");
     } finally {
-      if (removed) await fetchPlan();
+      if (totalWritten) {
+        await fetchPlan();
+        setPanelRefresh((k) => k + 1);
+      }
       setRemovingItemId(null);
     }
   };
-
-  const handleProcessPayment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setProcessingPayment(true);
-    setSuccessMessage("");
-
-    try {
-      const amount = roundMoney(Number(paymentAmount));
-      if (!Number.isFinite(amount) || amount <= 0) {
-        alert("Geçerli bir tutar girin");
-        return;
-      }
-
-      const { error } = await supabase.from("payments").insert([
-        {
-          clinic_id: user?.clinic_id,
-          treatment_plan_id: params.id,
-          patient_id: plan?.patient_id,
-          amount,
-          status: "paid",
-          payment_method: paymentMethod,
-          notes: "Manuel kayıt",
-          paid_at: new Date().toISOString(),
-        },
-      ]);
-
-      if (error) throw error;
-
-      setSuccessMessage("Ödeme başarıyla kaydedildi.");
-      setPaymentAmount("");
-      await fetchPayments();
-    } catch (error) {
-      alert("Ödeme işlenirken hata oluştu");
-      console.error("Payment error:", error);
-    } finally {
-      setProcessingPayment(false);
-    }
-  };
-
-  const totalPaid = roundMoney(
-    payments
-      .filter((p) => p.status === "paid")
-      .reduce((sum, p) => sum + Number(p.amount), 0)
-  );
-
-  const remaining = plan ? roundMoney(plan.total_cost - totalPaid) : 0;
 
   const itemBusy = addingItem || removingItemId !== null;
   const draftQuantity = parseQuantity(itemQuantity);
@@ -407,6 +396,15 @@ export default function TreatmentPlanPage() {
                 <div className="text-gray-500 text-sm">Hekim</div>
                 <div className="text-lg font-semibold">{plan.doctor_name}</div>
               </div>
+              <div>
+                <div className="text-gray-500 text-sm">Para birimi</div>
+                <div className="text-lg font-semibold">{CURRENCY_LABELS[plan.currency]}</div>
+              </div>
+              <div className="flex items-end justify-end">
+                <Link href={`/treatment-plans/${plan.id}/edit`} className="text-sm text-blue-600 hover:underline">
+                  Planı düzenle
+                </Link>
+              </div>
             </div>
 
             {plan.description && (
@@ -453,10 +451,10 @@ export default function TreatmentPlanPage() {
                       <td className="px-6 py-4 text-sm">{item.procedure_name}</td>
                       <td className="px-6 py-4 text-sm">{item.quantity}</td>
                       <td className="px-6 py-4 text-sm text-right">
-                        ₺{Number(item.unit_price).toLocaleString("tr-TR")}
+                        {formatMoney(amountToCents(item.unit_price), plan.currency)}
                       </td>
                       <td className="px-6 py-4 text-sm text-right font-semibold">
-                        ₺{Number(item.total_price).toLocaleString("tr-TR")}
+                        {formatMoney(amountToCents(item.total_price), plan.currency)}
                       </td>
                       <td className="px-6 py-4 text-sm text-right">
                         <button
@@ -490,7 +488,9 @@ export default function TreatmentPlanPage() {
                     {procedures.map((procedure) => (
                       <option key={procedure.id} value={procedure.id}>
                         {procedure.default_price != null
-                          ? `${procedure.name} (₺${Number(procedure.default_price).toLocaleString("tr-TR")})`
+                          ? plan.currency === "TRY"
+                            ? `${procedure.name} (₺${Number(procedure.default_price).toLocaleString("tr-TR")})`
+                            : `${procedure.name} (katalog ₺${Number(procedure.default_price).toLocaleString("tr-TR")})`
                           : procedure.name}
                       </option>
                     ))}
@@ -517,7 +517,7 @@ export default function TreatmentPlanPage() {
                 </div>
                 <div>
                   <label className="block text-sm font-semibold mb-2">
-                    Birim Fiyat
+                    Birim Fiyat ({CURRENCY_SYMBOLS[plan.currency]})
                   </label>
                   <input
                     type="number"
@@ -536,7 +536,7 @@ export default function TreatmentPlanPage() {
                 <div className="text-sm text-gray-600">
                   Satır Toplamı:{" "}
                   <span className="font-semibold text-gray-900">
-                    ₺{draftLineTotal.toLocaleString("tr-TR")}
+                    {formatMoney(amountToCents(draftLineTotal), plan.currency)}
                   </span>
                 </div>
                 <button
@@ -555,114 +555,9 @@ export default function TreatmentPlanPage() {
           </div>
         </div>
 
-        {/* Payment Summary */}
+        {/* Payments (pp_plan_account) */}
         <div>
-          <div className="bg-white rounded-lg shadow p-6 mb-6">
-            <h3 className="text-xl font-bold mb-4">Ödeme Özeti</h3>
-
-            <div className="mb-4 pb-4 border-b">
-              <div className="flex justify-between mb-2">
-                <span className="text-gray-600">Toplam Tutar:</span>
-                <span className="font-semibold">
-                  ₺{plan.total_cost.toLocaleString("tr-TR")}
-                </span>
-              </div>
-              <div className="flex justify-between mb-2">
-                <span className="text-gray-600">Ödenen:</span>
-                <span className="font-semibold text-green-700">
-                  ₺{totalPaid.toLocaleString("tr-TR")}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Kalan:</span>
-                <span className="text-lg font-bold text-red-600">
-                  ₺{remaining.toLocaleString("tr-TR")}
-                </span>
-              </div>
-            </div>
-
-            {successMessage && (
-              <p className="mb-4 text-sm text-green-700">{successMessage}</p>
-            )}
-
-            {remaining > 0 && (
-              <form onSubmit={handleProcessPayment}>
-                <div className="mb-4">
-                  <label className="block text-sm font-semibold mb-2">
-                    Ödeme Tutarı
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    max={remaining}
-                    step="0.01"
-                    value={paymentAmount}
-                    onChange={(e) => setPaymentAmount(e.target.value)}
-                    className="w-full px-4 py-2 border rounded"
-                    placeholder="0.00"
-                    required
-                  />
-                </div>
-
-                <div className="mb-6">
-                  <label className="block text-sm font-semibold mb-2">
-                    Ödeme Yöntemi
-                  </label>
-                  <select
-                    value={paymentMethod}
-                    onChange={(e) =>
-                      setPaymentMethod(e.target.value as PaymentMethod)
-                    }
-                    className="w-full px-4 py-2 border rounded"
-                  >
-                    <option value="cash">Nakit</option>
-                    <option value="card">Kart (POS)</option>
-                    <option value="transfer">Havale</option>
-                  </select>
-                  {paymentMethod === "card" && (
-                    <p className="mt-2 text-xs text-gray-500">
-                      Kart ödemesi POS cihazında alındıktan sonra kaydedilir.
-                    </p>
-                  )}
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={processingPayment}
-                  className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-500"
-                >
-                  {processingPayment ? "İşleniyor..." : "Ödeme Yap"}
-                </button>
-              </form>
-            )}
-          </div>
-
-          {/* Payment History */}
-          {payments.length > 0 && (
-            <div className="bg-white rounded-lg shadow p-6">
-              <h3 className="text-lg font-bold mb-4">Ödeme Geçmişi</h3>
-              <div className="space-y-3">
-                {payments.map((payment) => (
-                  <div
-                    key={payment.id}
-                    className="flex justify-between items-center pb-3 border-b"
-                  >
-                    <div>
-                      <div className="font-semibold">
-                        ₺{Number(payment.amount).toLocaleString("tr-TR")}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {new Date(payment.paid_at).toLocaleDateString("tr-TR")}
-                      </div>
-                    </div>
-                    <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded">
-                      Ödendi
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          <PlanPaymentPanel planId={plan.id} onAccount={onAccount} refreshKey={panelRefresh} />
         </div>
       </div>
     </div>

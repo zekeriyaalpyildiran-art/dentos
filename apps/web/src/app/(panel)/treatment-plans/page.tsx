@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
+import { amountToCents, asCurrency, formatMoney, type Currency } from "@/lib/payments";
 
 const PAGE_SIZE = 50;
 
@@ -13,6 +14,7 @@ interface TreatmentPlan {
   doctor_name: string;
   title: string;
   total_cost: number;
+  currency: Currency;
   status: "draft" | "proposed" | "approved" | "in_progress" | "completed" | "cancelled";
   created_at: string;
 }
@@ -46,6 +48,7 @@ export default function TreatmentPlansPage() {
           id,
           title,
           total_cost,
+          currency,
           status,
           created_at,
           patients(full_name),
@@ -70,6 +73,7 @@ export default function TreatmentPlansPage() {
         doctor_name: p.doctors?.users?.full_name || "-",
         title: p.title,
         total_cost: Number(p.total_cost),
+        currency: asCurrency(p.currency),
         status: p.status,
         created_at: p.created_at,
       }));
@@ -198,7 +202,7 @@ export default function TreatmentPlansPage() {
                     {plan.title}
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-800 font-semibold">
-                    ₺{plan.total_cost.toLocaleString("tr-TR")}
+                    {formatMoney(amountToCents(plan.total_cost), plan.currency)}
                   </td>
                   <td className="px-6 py-4 text-sm">
                     <span className={`px-3 py-1 rounded text-sm font-semibold ${getStatusColor(plan.status)}`}>
