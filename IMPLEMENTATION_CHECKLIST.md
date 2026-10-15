@@ -71,16 +71,6 @@ Complete checklist for setting up and verifying DentOS implementation.
 - [ ] No errors in response
 - [ ] Database now has sample data
 
-## 📱 Setup Wizard (5 min)
-
-- [ ] Opened: http://localhost:3000/setup
-- [ ] Page loads correctly
-- [ ] 4-step wizard visible
-- [ ] Step 1: Database instructions clear
-- [ ] Step 2: Seed API option visible
-- [ ] Step 3: Authentication testing available
-- [ ] Step 4: Dashboard preview available
-
 ## 🔐 Authentication Test (2 min)
 
 - [ ] Navigated to: http://localhost:3000/login
@@ -134,14 +124,6 @@ After seeding data and authentication:
 - [ ] Order numbers displayed
 - [ ] Status tracking visible
 - [ ] Material information shown
-
-## 🧪 Connection Test (Optional)
-
-- [ ] Opened: http://localhost:3000/test-connection
-- [ ] Connection test page loads
-- [ ] Test runs automatically
-- [ ] Shows connection status
-- [ ] No error messages
 
 ## 📚 Documentation Review
 

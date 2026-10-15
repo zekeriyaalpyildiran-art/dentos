@@ -21,21 +21,14 @@ curl -X POST http://localhost:3000/api/seed
 ```
 
 **Then visit:**
-- Setup Wizard: http://localhost:3000/setup
 - Login: http://localhost:3000/login
 - Dashboard: http://localhost:3000/dashboard
 
 ### Option 2: Supabase Cloud
 
 ```bash
-# 1. Go to setup page
-http://localhost:3000/setup
-
-# 2. Follow 4-step wizard:
-#    - Copy/paste 10 migrations to Supabase SQL Editor
-#    - Run seed API
-#    - Test connection
-#    - Login and explore
+# 1. Apply packages/db/migrations/*.sql in order in the Supabase SQL Editor
+# 2. Log in at http://localhost:3000/login
 ```
 
 ## 🐳 Docker Deployment
@@ -340,9 +333,6 @@ curl http://localhost:3000/api/health
 
 # Check database connection
 curl http://localhost:3000/api/health/db
-
-# Check Supabase connection
-curl http://localhost:3000/test-connection
 ```
 
 ### Database Health

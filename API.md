@@ -63,9 +63,6 @@ Database connection check
 }
 ```
 
-#### GET `/test-connection`
-Supabase connection test page (UI)
-
 ---
 
 ### Initialization & Seed Data
