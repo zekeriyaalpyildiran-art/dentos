@@ -14,7 +14,7 @@ export default function manifest(): MetadataRoute.Manifest {
     scope: "/",
     display: "standalone",
     // Splash screen = the light canvas; title bar = the navy of the sidebar / mobile top bar.
-    background_color: "#f4f6f8",
+    background_color: "#e9eef2",
     theme_color: "#102e3b",
     icons: [
       { src: "/icons/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },

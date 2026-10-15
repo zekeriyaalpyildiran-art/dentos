@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { THEME_INIT_SCRIPT, THEME_OPTIONS, THEME_STORAGE_KEY, parseThemePreference, resolveTheme } from "../theme";
 import { THEMED_FAMILIES, THEME_SHADES } from "../theme-colors";
+import tailwindConfig from "../../../tailwind.config";
 
 const SRC_DIR = fileURLToPath(new URL("../..", import.meta.url));
 const CSS = readFileSync(join(SRC_DIR, "app/globals.css"), "utf8");
@@ -105,7 +106,7 @@ describe("globals.css palette", () => {
         if (shade >= 400) expect(DARK.has(`--c-${family}-${shade}-ink`), `dark ink ${family}-${shade}`).toBe(true);
       }
     }
-    for (const token of ["background", "foreground", "surface", "border", "input", "sidebar", "sidebar-foreground"]) {
+    for (const token of ["background", "foreground", "surface", "border", "input", "brand-panel", "sidebar", "sidebar-foreground"]) {
       expect(LIGHT.has(`--${token}`), token).toBe(true);
     }
   });
@@ -164,7 +165,34 @@ describe("globals.css palette", () => {
         .filter(([, ratio]) => ratio < 4.5);
       expect(failing).toEqual([]);
     });
+
+    // The one documented exception: text-gray-400 is the de-emphasised tone ('—' placeholders, voided or inactive rows,
+    // which also keep their line-through), lighter than gray-500 on purpose but still readable.
+    it(`${theme}: text-gray-400 stays readable (>= 3.5:1) and lighter than text-gray-500`, () => {
+      for (const [label, bg] of [
+        ["card", card],
+        ["canvas", canvas],
+        ["bg-gray-50", fill("gray", 50)],
+      ] as const) {
+        expect(contrast(ink("gray", 400), bg), `text-gray-400 on ${label}`).toBeGreaterThanOrEqual(3.5);
+        expect(contrast(ink("gray", 400), bg), `text-gray-400 vs -500 on ${label}`).toBeLessThan(
+          contrast(ink("gray", 500), bg)
+        );
+      }
+    });
   }
+
+  it("light: the canvas is visibly darker than the white cards (the owner found the near-white page tiring)", () => {
+    expect(contrast(rgb(LIGHT, "--background"), rgb(LIGHT, "--surface"))).toBeGreaterThanOrEqual(1.15);
+    expect(rgb(LIGHT, "--surface")).toEqual(WHITE);
+  });
+
+  it("the logo panel keeps the dark lettering crisp and is not a pure white block in dark", () => {
+    const lettering = [29, 29, 27]; // #1d1d1b in public/brand/klinik-prime-logo.svg
+    expect(rgb(LIGHT, "--brand-panel")).toEqual(WHITE);
+    expect(rgb(DARK, "--brand-panel")).not.toEqual(WHITE);
+    expect(contrast(lettering, rgb(DARK, "--brand-panel"))).toBeGreaterThanOrEqual(7);
+  });
 
   it("dark cards, subtle rows and borders stay distinguishable from the canvas", () => {
     const card = rgb(DARK, "--surface");
@@ -175,6 +203,19 @@ describe("globals.css palette", () => {
 });
 
 describe("colour classes", () => {
+  // Tailwind only generates classes it finds in `content`: a folder missing there loses its classes in the build
+  // (lib/crm/codes.ts and lib/stock/*.ts hold badge classes such as bg-sky-100 / text-violet-800).
+  it("tailwind `content` scans every source folder", () => {
+    const content = (tailwindConfig.content as string[]).map((glob) => glob.replace(/^\.\//, ""));
+    for (const name of readdirSync(SRC_DIR)) {
+      if (!statSync(join(SRC_DIR, name)).isDirectory()) continue;
+      expect(
+        content.some((glob) => glob.startsWith(`src/${name}/`)),
+        `src/${name} in tailwind content`
+      ).toBe(true);
+    }
+  });
+
   // A family missing from THEMED_FAMILIES would keep Tailwind's fixed colours and break dark mode.
   const FAMILY_RE =
     /\b(?:bg|text|border|ring|divide|from|via|to|placeholder|accent|outline|fill|stroke|decoration|caret|shadow)-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/g;

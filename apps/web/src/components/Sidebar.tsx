@@ -37,8 +37,21 @@ function NavList({
   roomy?: boolean;
   onNavigate?: () => void;
 }) {
+  // The current page's link is scrolled into view inside the menu (Finans, Stok, Ayarlar sit low in a long list).
+  // Only the nav scrolls; scrollIntoView would also move the page or the drawer's backdrop.
+  const activeRef = useRef<HTMLAnchorElement>(null);
+  useEffect(() => {
+    const link = activeRef.current;
+    const nav = link?.closest("nav");
+    if (!link || !nav) return;
+    const l = link.getBoundingClientRect();
+    const n = nav.getBoundingClientRect();
+    if (l.top < n.top) nav.scrollTop -= n.top - l.top + 8;
+    else if (l.bottom > n.bottom) nav.scrollTop += l.bottom - n.bottom + 8;
+  }, [pathname]);
+
   return (
-    <ul className="space-y-1 px-3">
+    <ul className="space-y-0.5 px-3">
       {items.map((item) => {
         const isActive = isMenuItemActive(item, pathname);
         const n = item.badge ? badges[item.badge] : undefined;
@@ -47,10 +60,11 @@ function NavList({
         return (
           <li key={item.href}>
             <Link
+              ref={isActive ? activeRef : undefined}
               href={item.href}
               onClick={onNavigate}
               aria-current={isActive ? "page" : undefined}
-              className={`flex items-center gap-2 px-3 ${roomy ? "py-3" : "py-2"} rounded-lg transition-colors ${FOCUS} ${
+              className={`flex items-center gap-2 px-3 ${roomy ? "py-2.5" : "py-2"} rounded-lg transition-colors ${FOCUS} ${
                 isActive
                   ? "bg-sidebar-accent font-semibold text-white shadow-[inset_3px_0_0_0_rgb(var(--sidebar-highlight))]"
                   : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-white"
@@ -94,39 +108,42 @@ function MenuPanel({
   onNavigate?: () => void;
   onLogout: () => void;
 }) {
+  // Header and footer stay compact so a 1366x768 laptop still shows most of the 13 menu items without scrolling.
   return (
     <>
-      {/* Header: the clinic logo on its white panel (as in the legacy apps), DentOS under it */}
-      <div className="px-4 pt-4 pb-4 border-b border-sidebar-border">
+      {/* Header: the clinic logo on its light panel (as in the legacy apps), then the user with 'DentOS' on the role line */}
+      <div className="px-4 py-3 border-b border-sidebar-border">
         <div className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
-            <ClinicLogo priority />
-            <p className="mt-2 text-center text-[11px] font-semibold uppercase tracking-[0.3em] text-sidebar-muted">
-              DentOS
-            </p>
+            <ClinicLogo priority compact className="max-w-[156px]" />
           </div>
           {headerAction}
         </div>
-        {user && (
-          <div className="mt-3 text-sm min-w-0">
-            <p className="font-medium break-all text-sidebar-foreground">{user.email}</p>
-            <p className="text-sidebar-muted">{ROLE_LABELS[user.role] || user.role}</p>
-          </div>
-        )}
+        <div className="mt-2 text-sm min-w-0">
+          {user && (
+            <p className="truncate font-medium text-sidebar-foreground" title={user.email}>
+              {user.email}
+            </p>
+          )}
+          <p className="flex items-baseline justify-between gap-2 text-sidebar-muted">
+            <span className="min-w-0 truncate">{user ? ROLE_LABELS[user.role] || user.role : ""}</span>
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.25em]">DentOS</span>
+          </p>
+        </div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto overscroll-contain py-4" aria-label="Ana menü">
+      <nav className="flex-1 overflow-y-auto overscroll-contain py-2" aria-label="Ana menü">
         <NavList items={items} pathname={pathname} badges={badges} roomy={roomy} onNavigate={onNavigate} />
       </nav>
 
       {/* Footer */}
-      <div className="p-4 space-y-3 border-t border-sidebar-border">
+      <div className="px-3 py-2.5 space-y-2 border-t border-sidebar-border">
         <ThemeSwitch roomy={roomy} />
         <button
           type="button"
           onClick={onLogout}
-          className={`w-full px-4 ${roomy ? "py-3" : "py-2"} text-sm text-sidebar-foreground border border-sidebar-border rounded-lg hover:bg-sidebar-accent hover:text-white transition-colors ${FOCUS}`}
+          className={`w-full px-4 ${roomy ? "py-2.5" : "py-1.5"} text-sm text-sidebar-foreground border border-sidebar-border rounded-lg hover:bg-sidebar-accent hover:text-white transition-colors ${FOCUS}`}
         >
           Çıkış Yap
         </button>
@@ -239,8 +256,8 @@ export function SidebarView({
 
   return (
     <>
-      {/* Mobile top bar (below md) */}
-      <header className="md:hidden flex h-14 shrink-0 items-center gap-2 border-b border-sidebar-border bg-sidebar px-2 text-sidebar-foreground">
+      {/* Mobile top bar (below md). Navigation is not printed: the navy colours would print as pale text on paper. */}
+      <header className="md:hidden print:hidden flex h-14 shrink-0 items-center gap-2 border-b border-sidebar-border bg-sidebar px-2 text-sidebar-foreground">
         <button
           ref={menuButtonRef}
           type="button"
@@ -275,7 +292,7 @@ export function SidebarView({
       </header>
 
       {/* Desktop sidebar (md and up) */}
-      <aside className="hidden md:flex w-64 shrink-0 flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border">
+      <aside className="hidden md:flex print:hidden w-64 shrink-0 flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border">
         <MenuPanel user={user} items={items} pathname={pathname} badges={badges} onLogout={onLogout} />
       </aside>
 

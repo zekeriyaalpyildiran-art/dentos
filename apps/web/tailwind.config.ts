@@ -6,10 +6,13 @@ const ink = themedPalette("ink")
 
 const config = {
   darkMode: ["class"],
+  // Every source folder that holds class names: lib/ too (badge classes in lib/crm/codes.ts, lib/stock/*.ts), checked
+  // by lib/__tests__/theme.test.ts.
   content: [
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
     './src/app/**/*.{js,ts,jsx,tsx,mdx}',
+    './src/lib/**/*.{js,ts,jsx,tsx}',
   ],
   theme: {
     extend: {
@@ -36,8 +39,8 @@ const config = {
           highlight: token("sidebar-highlight"),
         },
         brand: {
-          // The clinic logo's own background: white in both themes.
-          panel: "rgb(255 255 255 / <alpha-value>)",
+          // The clinic logo's own background: white in light, a soft off-white in dark (the lettering is dark).
+          panel: token("brand-panel"),
         },
       },
       textColor: ink,

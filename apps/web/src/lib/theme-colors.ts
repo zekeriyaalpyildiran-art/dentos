@@ -9,7 +9,7 @@
 // white text), and the ink of 400-950 turns light (text-blue-600 / text-red-700 stay readable on dark surfaces).
 //
 // `white` stays a real white for text, borders and rings (text-white on coloured buttons); only bg-white is mapped to
-// the card surface (white in light, dark slate in dark). Use bg-brand-panel for something that must stay white.
+// the card surface (white in light, dark slate in dark). bg-brand-panel is the logo's light panel in both themes.
 //
 // Imported by tailwind.config.ts (relative import, no "@/" alias) and by the theme tests.
 

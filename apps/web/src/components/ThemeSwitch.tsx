@@ -15,14 +15,20 @@ function useThemePreference(): ThemePreference {
   return useSyncExternalStore(subscribeThemePreference, getThemePreference, () => "light");
 }
 
-/** 'Görünüm: Açık / Koyu / Sistem' for the navy sidebar and the mobile drawer. Native radios: arrow keys work. */
+/**
+ * 'Görünüm: Açık / Koyu / Sistem' for the navy sidebar and the mobile drawer, on one compact row so the menu keeps its
+ * room. Native radios: arrow keys work. `roomy`: taller segments for touch (drawer).
+ */
 export function ThemeSwitch({ roomy }: { roomy?: boolean }) {
   const name = `theme-${useId()}`;
   const preference = useThemePreference();
   return (
-    <fieldset className="min-w-0">
-      <legend className="mb-1.5 text-xs font-medium text-sidebar-muted">Görünüm</legend>
-      <div className="grid grid-cols-3 gap-1 rounded-lg border border-sidebar-border p-1">
+    <fieldset className="flex min-w-0 items-center gap-2">
+      <legend className="sr-only">Görünüm</legend>
+      <span aria-hidden="true" className="shrink-0 text-xs font-medium text-sidebar-muted">
+        Görünüm
+      </span>
+      <div className="grid min-w-0 flex-1 grid-cols-3 gap-0.5 rounded-lg border border-sidebar-border p-0.5">
         {THEME_OPTIONS.map((option) => (
           <label key={option.value} className="relative cursor-pointer">
             <input
@@ -35,7 +41,7 @@ export function ThemeSwitch({ roomy }: { roomy?: boolean }) {
             />
             <span
               className={`block rounded-md px-1 text-center text-xs ${
-                roomy ? "py-2.5" : "py-1.5"
+                roomy ? "py-2" : "py-1"
               } text-sidebar-foreground transition-colors hover:bg-sidebar-accent/60 peer-checked:bg-sidebar-accent peer-checked:font-semibold peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-white`}
             >
               {option.label}

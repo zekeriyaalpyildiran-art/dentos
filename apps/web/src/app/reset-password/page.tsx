@@ -294,7 +294,7 @@ export default function ResetPasswordPage() {
               Bu sayfa yalnız e-postadaki bağlantıyla açılabilir. Şifrenizi unuttuysanız giriş sayfasındaki “Şifremi
               unuttum” bağlantısıyla yeni bir bağlantı isteyin.
             </p>
-            <Link href="/login" className="text-blue-600 hover:underline">
+            <Link href="/login" className="inline-block text-blue-600 hover:underline">
               Giriş sayfasına dön
             </Link>
           </div>
@@ -309,7 +309,7 @@ export default function ResetPasswordPage() {
                   ? "Bu davet bağlantısı geçersiz veya süresi dolmuş. Klinik yöneticinizden daveti yeniden göndermesini isteyin."
                   : "Bu bağlantı geçersiz veya süresi dolmuş. Lütfen yeni bir şifre sıfırlama bağlantısı isteyin."}
             </p>
-            <Link href="/login" className="text-blue-600 hover:underline">
+            <Link href="/login" className="inline-block text-blue-600 hover:underline">
               Giriş sayfasına dön
             </Link>
           </div>
