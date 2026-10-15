@@ -61,6 +61,18 @@ const CLINIC_TABLES = [
   "stock_counts",
   "stock_correction_requests",
   "stock_product_requests",
+  // Phase 9 (0026_clinical_implants_lab): clinical directories, implants and lab history. lab_order_costs is keyed below (RLS shows it to
+  // cost viewers, the owner included).
+  "implant_brands",
+  "labs",
+  "patient_implants",
+  "lab_order_events",
+  // Phase 8 (0025): purchasing and room requests. Order prices live only in purchase_order_item_costs (keyed below);
+  // stock_po_counters has no client access and is left out.
+  "stock_settings",
+  "purchase_orders",
+  "purchase_order_items",
+  "stock_room_requests",
   "einvoices",
   "enabiz_logs",
   "consent_logs",
@@ -72,6 +84,9 @@ const CLINIC_TABLES = [
 const KEYED_TABLES: { table: string; key: string }[] = [
   { table: "crm_handoff_private_notes", key: "handoff_id" },
   { table: "stock_batch_costs", key: "batch_id" },
+  { table: "lab_order_costs", key: "lab_order_id" },
+  { table: "clinical_settings", key: "clinic_id" },
+  { table: "purchase_order_item_costs", key: "po_item_id" },
 ];
 
 /** Rows hidden by RLS (trashed leads and what belongs to them), fetched through crm_export_trashed. */

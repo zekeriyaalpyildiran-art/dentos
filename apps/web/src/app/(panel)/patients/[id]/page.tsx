@@ -15,6 +15,8 @@ import {
   type PatientAccountJson,
 } from "@/lib/payments";
 import { PatientAccountTab } from "../_components/PatientAccountTab";
+import { PatientImplantsTab } from "@/components/clinical/PatientImplantsTab";
+import { PatientMaterialsTab } from "@/components/clinical/PatientMaterialsTab";
 
 const GENDER_LABELS: Record<string, string> = {
   male: "Erkek",
@@ -76,6 +78,8 @@ const TABS = [
   { key: "overview", label: "Özet" },
   { key: "appointments", label: "Randevular" },
   { key: "treatment-plan", label: "Tedavi Planları" },
+  { key: "implants", label: "İmplantlar" },
+  { key: "materials", label: "Sarf" },
   { key: "account", label: "Hesap" },
   { key: "messages", label: "Mesajlar" },
 ] as const;
@@ -147,6 +151,8 @@ export default function Page() {
   const [includeVoided, setIncludeVoided] = useState(false);
   const [accountWanted, setAccountWanted] = useState(false);
   const accountReq = useRef(0);
+  // Phase 9 tabs load lazily on first open and stay mounted afterwards (like Hesap).
+  const [openedTabs, setOpenedTabs] = useState<Set<Tab>>(() => new Set());
 
   // ?tab=account (link from Finans > Teklifler ve tahsilat); read directly so no Suspense boundary is needed.
   useEffect(() => {
@@ -156,6 +162,7 @@ export default function Page() {
 
   useEffect(() => {
     if (activeTab === "account" || activeTab === "treatment-plan") setAccountWanted(true);
+    setOpenedTabs((prev) => (prev.has(activeTab) ? prev : new Set(prev).add(activeTab)));
   }, [activeTab]);
 
   const loadAccount = useCallback(async () => {
@@ -315,12 +322,12 @@ export default function Page() {
 
       {/* Tabs */}
       <div className="border-b mb-6">
-        <div className="flex gap-4">
+        <div className="flex gap-4 overflow-x-auto">
           {TABS.map((tab) => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
-              className={`px-4 py-2 border-b-2 ${
+              className={`px-4 py-2 border-b-2 whitespace-nowrap ${
                 activeTab === tab.key ? "border-blue-600 text-blue-600 font-semibold" : "border-transparent text-gray-600"
               }`}
             >
@@ -371,13 +378,18 @@ export default function Page() {
                       </div>
                       {apt.notes && <div className="text-sm text-gray-500">{apt.notes}</div>}
                     </div>
-                    <span
-                      className={`px-3 py-1 rounded text-sm self-start ${
-                        APPOINTMENT_STATUS_STYLES[apt.status] ?? "bg-gray-100 text-gray-800"
-                      }`}
-                    >
-                      {APPOINTMENT_STATUS_LABELS[apt.status] ?? apt.status}
-                    </span>
+                    <div className="flex flex-col items-end gap-2">
+                      <span
+                        className={`px-3 py-1 rounded text-sm ${
+                          APPOINTMENT_STATUS_STYLES[apt.status] ?? "bg-gray-100 text-gray-800"
+                        }`}
+                      >
+                        {APPOINTMENT_STATUS_LABELS[apt.status] ?? apt.status}
+                      </span>
+                      <Link href={`/appointments/${apt.id}`} className="text-sm text-blue-600 hover:underline">
+                        Detay
+                      </Link>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -461,6 +473,18 @@ export default function Page() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {openedTabs.has("implants") && (
+        <div hidden={activeTab !== "implants"}>
+          <PatientImplantsTab patientId={patient.id} patientName={patient.full_name} />
+        </div>
+      )}
+
+      {openedTabs.has("materials") && (
+        <div hidden={activeTab !== "materials"}>
+          <PatientMaterialsTab patientId={patient.id} />
         </div>
       )}
 

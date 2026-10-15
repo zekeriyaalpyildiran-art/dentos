@@ -399,7 +399,7 @@ export default function ItemDetailPage() {
               ))}
               {detail.product_requests.map((r) => (
                 <li key={r.id}>
-                  <Link href="/inventory/requests" className="text-blue-700 hover:underline">
+                  <Link href="/inventory/requests?tab=products" className="text-blue-700 hover:underline">
                     Tanımlama talebi
                   </Link>{" "}
                   · {r.name} · {r.status}

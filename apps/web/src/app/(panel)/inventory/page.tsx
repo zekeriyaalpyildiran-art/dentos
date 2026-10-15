@@ -209,7 +209,7 @@ export default function StockHomePage() {
               </Link>
             )}
             {d.pending.product_requests > 0 && (
-              <Link href="/inventory/requests" className="underline">
+              <Link href="/inventory/requests?tab=products" className="underline">
                 {d.pending.product_requests} ürün tanımlama talebi bekliyor
               </Link>
             )}

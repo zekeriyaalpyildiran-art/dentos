@@ -863,7 +863,7 @@ export function QuickMovementSheet({ options, onClose }: { options: SheetOpenOpt
                   ) : unknown.pending && unknown.pending.status === "pending" ? (
                     <div className="space-y-2">
                       <p className="text-sm">{reqResult ?? "Tanımlama talebi stok sorumlusunda bekliyor."}</p>
-                      <Link href="/inventory/requests" onClick={onClose} className="text-sm text-blue-700 hover:underline">
+                      <Link href="/inventory/requests?tab=products" onClick={onClose} className="text-sm text-blue-700 hover:underline">
                         Talebin durumunu gör
                       </Link>
                     </div>

@@ -14,6 +14,7 @@ import type {
   TrackingLevel,
 } from "./codes";
 import type { QuantityUnit } from "./units";
+import type { PayableState, PoPayload, PoStatus, RoomRequestStatus } from "./purchasing";
 
 // ---------------------------------------------------------------------------
 // Errors (contract §1.1: 42501 → 403, PT404 → 404, PT409 → 409, P0001 → 400; HINT = key)
@@ -842,4 +843,454 @@ export function istanbulToday(): string {
 /** "Düzeltme #12" style short reference. */
 export function refLabel(refNo: number | null | undefined): string {
   return refNo === null || refNo === undefined ? "" : `#${refNo}`;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8: purchasing, room requests, consumption report (spec p8_purchasing §5, §6, §10)
+// Cost keys are optional: they are absent (never 0) for callers without cost view. Write results never carry
+// cost keys (stored replay results); pages re-read the detail after a save.
+// ---------------------------------------------------------------------------
+
+export interface PoActions {
+  can_edit: boolean;
+  can_approve: boolean;
+  /** 'self' when only the "creator cannot approve" rule blocks the caller. */
+  approve_blocked: "self" | null;
+  can_mark_ordered: boolean;
+  can_cancel: boolean;
+  can_close: boolean;
+  can_receive: boolean;
+}
+
+export interface PoListRow {
+  id: string;
+  order_number: string;
+  status: PoStatus;
+  version: number;
+  supplier_id: string;
+  supplier_name: string | null;
+  expected_date: string | null;
+  overdue: boolean;
+  created_at: string;
+  created_by_name: string | null;
+  approved_by_name: string | null;
+  ordered_at: string | null;
+  closed_short?: boolean;
+  line_count: number;
+  lines_complete: number;
+  summary: string;
+  payable_state: PayableState;
+  actions: PoActions;
+  total_cents?: number;
+  unpriced_lines?: number;
+}
+
+export type PoStatusFilter = PoStatus | "open" | "all";
+
+export interface PoFilters {
+  status?: PoStatusFilter;
+  supplier_id?: string;
+  stock_item_id?: string;
+  q?: string;
+  overdue?: boolean;
+}
+
+export interface PoList extends PermissionFlags {
+  total: number;
+  counts: Partial<Record<PoStatus | "overdue", number>>;
+  rows: PoListRow[];
+}
+
+export interface PoReceiptJson {
+  movement_id: string;
+  ref_no: number;
+  quantity: number;
+  lot_number: string;
+  serial_number: string | null;
+  expiry_date: string | null;
+  to_location_id: string | null;
+  to_location_name: string | null;
+  effective_at: string;
+  actor_name: string | null;
+  document_no: string;
+  operation_key?: string | null;
+  batch_id?: string;
+  created_at?: string;
+  unit_cost_cents?: number | null;
+}
+
+export interface PoLineJson {
+  id: string;
+  line_no: number;
+  stock_item_id: string;
+  item_code: string;
+  item_name: string;
+  brand: string;
+  tracking_level: TrackingLevel;
+  usage_unit: string;
+  purchase_unit: string;
+  /** The card factor when the line was saved. */
+  units_per_purchase: number;
+  /** The card factor now (sent back as units_per_purchase when receiving in purchase units). */
+  card_units_per_purchase: number;
+  /** Card is active and not a draft. */
+  card_ready?: boolean;
+  /** The card's preferred location (receipt rows start there when it is active). */
+  preferred_location_id?: string | null;
+  qty_ordered: number;
+  qty_received: number;
+  qty_remaining: number;
+  note: string;
+  receipts: PoReceiptJson[];
+  unit_price_cents?: number | null;
+  line_total_cents?: number | null;
+  received_value_cents?: number | null;
+}
+
+export interface PoDetailOrder {
+  id: string;
+  order_number: string;
+  status: PoStatus;
+  version: number;
+  supplier: { id: string; name: string; phone: string; email: string; is_active: boolean };
+  expected_date: string | null;
+  overdue: boolean;
+  note: string;
+  created_at: string;
+  created_by: string;
+  created_by_name: string | null;
+  content_edited_by_name: string | null;
+  approved_at: string | null;
+  approved_by_name: string | null;
+  ordered_at: string | null;
+  ordered_by_name: string | null;
+  received_at: string | null;
+  closed_short: boolean;
+  close_reason: string | null;
+  closed_by_name: string | null;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+  cancelled_by_name: string | null;
+  payable_state: PayableState;
+  actions: PoActions;
+  lines: PoLineJson[];
+  total_cents?: number;
+  unpriced_lines?: number;
+  received_value_cents?: number | null;
+  /** finance / finance_readonly holders only. */
+  fin_entry_id?: string | null;
+}
+
+export interface PoDetail extends PermissionFlags {
+  order: PoDetailOrder;
+  settings: { po_creator_cannot_approve: boolean; po_payable_enabled: boolean };
+  today: string;
+}
+
+export interface PoWriteOrder {
+  id: string;
+  order_number: string;
+  status: PoStatus;
+  version: number;
+  payable_state: PayableState;
+  lines: { id: string; stock_item_id: string; qty_ordered: number; qty_received: number; qty_remaining: number }[];
+}
+
+export interface PoWriteResult {
+  ok: true;
+  already_saved?: boolean;
+  order: PoWriteOrder;
+}
+
+export type PoAction = "approve" | "mark_ordered" | "cancel" | "close";
+
+export interface PoReceiveRow {
+  po_item_id: string;
+  to_location_id: string;
+  quantity: number;
+  quantity_unit?: QuantityUnit;
+  units_per_purchase?: number;
+  lot_number?: string | null;
+  serial_number?: string | null;
+  expiry_date?: string | null;
+  /** Cost viewers only (E_COST_FORBIDDEN otherwise). */
+  unit_cost_cents?: number | null;
+  cost_unit?: QuantityUnit;
+  use_order_price?: boolean;
+}
+
+export type SuggestionScope = "critical" | "below_max";
+
+export interface SuggestionFilters {
+  scope?: SuggestionScope;
+  /** A supplier id, or 'none' for cards without a supplier. */
+  supplier_id?: string;
+  category?: string;
+  tracking_level?: TrackingLevel;
+  q?: string;
+}
+
+export interface SuggestionRow {
+  stock_item_id: string;
+  item_code: string;
+  item_name: string;
+  brand: string;
+  category: string;
+  tracking_level: TrackingLevel;
+  usage_unit: string;
+  purchase_unit: string;
+  units_per_purchase: number;
+  usable_qty: number;
+  min_qty: number;
+  max_qty: number;
+  open_po_qty: number;
+  open_po_count: number;
+  need_qty: number;
+  need_packs: number;
+  state: "out" | "critical" | "below_max";
+  supplier_id: string | null;
+  supplier_name: string | null;
+  supplier_active: boolean | null;
+  last_unit_cost_cents?: number | null;
+  est_cost_cents?: number | null;
+}
+
+export interface SuggestionGroup {
+  supplier_id: string | null;
+  supplier_name: string | null;
+  items: number;
+  est_cost_cents?: number | null;
+  uncosted_items?: number;
+}
+
+export interface SuggestionList extends PermissionFlags {
+  today: string;
+  scope: SuggestionScope;
+  total: number;
+  rows: SuggestionRow[];
+  by_supplier: SuggestionGroup[];
+}
+
+export interface RoomRequestActions {
+  can_approve: boolean;
+  can_reject: boolean;
+  can_deliver: boolean;
+  can_cancel: boolean;
+}
+
+export interface RoomRequestJson {
+  id: string;
+  ref_no: number;
+  status: RoomRequestStatus;
+  version: number;
+  stock_item_id: string;
+  item_code: string;
+  item_name: string;
+  tracking_level: TrackingLevel;
+  usage_unit: string;
+  purchase_unit: string;
+  units_per_purchase: number;
+  quantity: number;
+  delivered_qty: number | null;
+  location_id: string;
+  location_name: string;
+  note: string;
+  requested_by: string;
+  requested_by_name: string | null;
+  created_at: string;
+  approved_by_name: string | null;
+  approved_at: string | null;
+  delivered_by_name: string | null;
+  delivered_at: string | null;
+  source_location_name: string | null;
+  delivery_operation_key: string | null;
+  rejected_by_name: string | null;
+  rejected_at: string | null;
+  reject_reason: string | null;
+  cancelled_at: string | null;
+  /** Managers only. */
+  warehouse_usable_qty?: number;
+  open_duplicates: number;
+  actions: RoomRequestActions;
+}
+
+export type RoomRequestStatusFilter = RoomRequestStatus | "open" | "all";
+
+export interface RoomRequestFilters {
+  status?: RoomRequestStatusFilter;
+  location_id?: string;
+  stock_item_id?: string;
+  mine?: boolean;
+}
+
+export interface RoomRequestList extends PermissionFlags {
+  total: number;
+  counts: Partial<Record<RoomRequestStatus, number>>;
+  rows: RoomRequestJson[];
+}
+
+export type RoomRequestAction = "approve" | "reject" | "deliver" | "cancel";
+
+export interface WorkCounts extends PermissionFlags {
+  room_requests: { pending: number; approved: number };
+  /** PO readers only. */
+  purchase_orders?: {
+    pending: number;
+    approved: number;
+    ordered: number;
+    partially_received: number;
+    overdue: number;
+  };
+}
+
+export interface StockSettingsJson extends PermissionFlags {
+  po_creator_cannot_approve: boolean;
+  po_payable_enabled: boolean;
+  po_payable_due_days: number;
+  version: number;
+  can_edit_approval_rule: boolean;
+  can_edit_payable: boolean;
+  /** finance / finance_readonly holders only. */
+  po_payable_category_id?: string | null;
+  po_payable_category_name?: string | null;
+}
+
+export interface StockSettingsInput {
+  po_creator_cannot_approve?: boolean;
+  po_payable_enabled?: boolean;
+  po_payable_due_days?: number;
+  po_payable_category_id?: string | null;
+}
+
+export interface ConsumptionRow {
+  stock_item_id: string;
+  item_code: string;
+  item_name: string;
+  category: string;
+  tracking_level: TrackingLevel;
+  usage_unit: string;
+  purchase_unit: string;
+  units_per_purchase: number;
+  opening_qty: number;
+  received_qty: number;
+  received_po_qty: number;
+  used_qty: number;
+  returned_qty: number;
+  net_used_qty: number;
+  waste_qty: number;
+  adjust_in_qty: number;
+  adjust_out_qty: number;
+  adjust_net_qty: number;
+  room_delivery_qty: number;
+  received_cost_cents?: number;
+  net_used_cost_cents?: number;
+  waste_cost_cents?: number;
+  adjust_net_cost_cents?: number;
+  uncosted_rows?: number;
+}
+
+export interface ConsumptionFilters {
+  category?: string;
+  tracking_level?: TrackingLevel;
+  location_id?: string;
+  stock_item_id?: string;
+}
+
+export interface ConsumptionReport extends PermissionFlags {
+  from: string;
+  to: string;
+  rows: ConsumptionRow[];
+  by_category: { category: string; items: number; net_used_cost_cents?: number; waste_cost_cents?: number }[];
+  totals: {
+    items: number;
+    received_cost_cents?: number;
+    net_used_cost_cents?: number;
+    waste_cost_cents?: number;
+    adjust_net_cost_cents?: number;
+    uncosted_rows?: number;
+  };
+}
+
+export const stockPoList = (filters: PoFilters, page: PageArg) =>
+  rpc<PoList>("stock_po_list", { p_filters: compact(filters), p_page: page });
+
+export const stockPoDetail = (orderId: string) => rpc<PoDetail>("stock_po_detail", { p_order_id: orderId });
+
+export const stockReorderSuggestions = (filters: SuggestionFilters, page: PageArg) =>
+  rpc<SuggestionList>("stock_reorder_suggestions", { p_filters: compact(filters), p_page: page });
+
+export const stockRoomRequestList = (filters: RoomRequestFilters, page: PageArg) =>
+  rpc<RoomRequestList>("stock_room_request_list", { p_filters: compact(filters), p_page: page });
+
+export const stockWorkCounts = () => rpc<WorkCounts>("stock_work_counts");
+
+export const stockSettingsGet = () => rpc<StockSettingsJson>("stock_settings_get");
+
+export const stockConsumptionReport = (from: string, to: string, filters: ConsumptionFilters) =>
+  rpc<ConsumptionReport>("stock_consumption_report", { p_from: from, p_to: to, p_filters: compact(filters) });
+
+/** Create (p_version null) or edit a pending order. p_order: §5.1 keys only. */
+export function stockPoSave(args: {
+  p_operation_key: string;
+  p_order_id: string;
+  p_version: number | null;
+  p_order: PoPayload;
+}) {
+  return rpc<PoWriteResult>("stock_po_save", args);
+}
+
+export function stockPoTransition(args: {
+  p_operation_key: string;
+  p_order_id: string;
+  p_version: number;
+  p_action: PoAction;
+  p_reason?: string | null;
+}) {
+  return rpc<PoWriteResult>("stock_po_transition", { p_reason: null, ...args });
+}
+
+export function stockPoReceive(args: {
+  p_operation_key: string;
+  p_order_id: string;
+  p_lines: PoReceiveRow[];
+  p_document_no: string | null;
+  p_reason: string | null;
+  /** The order version the dialog was opened with; a receipt saved meanwhile answers E_VERSION (no double receipt). */
+  p_version: number;
+}) {
+  return rpc<MoveResult & { order: PoWriteOrder }>("stock_po_receive", args);
+}
+
+export function stockRoomRequestCreate(args: {
+  p_operation_key: string;
+  p_request_id: string;
+  p_stock_item_id: string;
+  p_location_id: string;
+  p_quantity: number;
+  p_quantity_unit: QuantityUnit;
+  p_units_per_purchase: number | null;
+  p_note: string | null;
+}) {
+  return rpc<{ ok: true; already_saved?: boolean; request: RoomRequestJson }>("stock_room_request_create", args);
+}
+
+export function stockRoomRequestAction(args: {
+  p_operation_key: string;
+  p_request_id: string;
+  p_version: number;
+  p_action: RoomRequestAction;
+  p_reason?: string | null;
+  p_quantity?: number | null;
+  p_quantity_unit?: QuantityUnit;
+  p_units_per_purchase?: number | null;
+  p_batch_ids?: string[] | null;
+}) {
+  return rpc<Partial<MoveResult> & { ok: true; already_saved?: boolean; request: RoomRequestJson }>(
+    "stock_room_request_action",
+    args
+  );
+}
+
+export function stockSaveSettings(args: { p_operation_key: string; p_version: number; p_settings: StockSettingsInput }) {
+  return rpc<{ ok: true; already_saved?: boolean; settings: StockSettingsJson }>("stock_save_settings", args);
 }

@@ -4,26 +4,36 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { useStock } from "./StockContext";
+import { useWorkCounts } from "./purchasing/common";
 
 interface Tab {
   href: string;
   label: string;
   short?: string;
-  gate?: "mgr" | "cost";
-  badge?: "critical" | "requests" | "corrections";
+  gate?: "op" | "mgr" | "cost" | "po";
+  badge?: "critical" | "requests" | "corrections" | "orders";
 }
 
 const TABS: Tab[] = [
   { href: "/inventory", label: "Ana ekran" },
   { href: "/inventory/items", label: "Stok kartları", badge: "critical" },
   { href: "/inventory/movements", label: "Hareketler" },
-  { href: "/inventory/receipt", label: "Toplu mal kabul" },
+  { href: "/inventory/receipt", label: "Toplu mal kabul", gate: "op" },
+  { href: "/inventory/orders", label: "Siparişler", gate: "po", badge: "orders" },
+  { href: "/inventory/requests", label: "Talepler", badge: "requests" },
   { href: "/inventory/counts", label: "Sayım", gate: "mgr" },
   { href: "/inventory/corrections", label: "Düzeltmeler", badge: "corrections" },
-  { href: "/inventory/requests", label: "Tanımlama talepleri", badge: "requests" },
-  { href: "/inventory/report", label: "Rapor", gate: "cost" },
+  { href: "/inventory/reports", label: "Raporlar", gate: "po" },
   { href: "/inventory/settings", label: "Ayarlar", gate: "mgr" },
 ];
+
+/**
+ * Before migration 0025 (stock_work_counts missing), and until its first answer, the purchasing tabs are hidden and
+ * the report tab falls back to the Phase 7 period report (p8_purchasing §11.4).
+ */
+const TABS_WITHOUT_PURCHASING: Tab[] = TABS.filter((t) => t.href !== "/inventory/orders").map((t) =>
+  t.href === "/inventory/reports" ? { href: "/inventory/report", label: "Rapor", gate: "cost" } : t
+);
 
 /** Tab bar and page header of the stock area (same idiom as CrmShell). */
 export function StockShell({
@@ -39,13 +49,18 @@ export function StockShell({
 }) {
   const pathname = usePathname();
   const { gates, dashboard, openSheet, notifyChanged, moduleMissing } = useStock();
+  const { counts: workCounts, missing, known } = useWorkCounts();
+  // Until stock_work_counts answered, behave as if purchasing were missing: the tabs appear once, never flicker away.
+  const purchasingMissing = missing || !known;
+  const po = gates.mgr || gates.cost;
   const isActive = (href: string) =>
     href === "/inventory" ? pathname === href : pathname === href || !!pathname?.startsWith(href + "/");
 
   const badgeValue = (b: Tab["badge"]): number => {
     if (!dashboard || !b) return 0;
     if (b === "critical") return dashboard.critical?.count ?? 0;
-    if (b === "requests") return dashboard.pending?.product_requests ?? 0;
+    if (b === "requests") return (dashboard.pending?.product_requests ?? 0) + (workCounts?.room_requests?.pending ?? 0);
+    if (b === "orders") return workCounts?.purchase_orders?.pending ?? 0;
     return dashboard.pending?.corrections ?? 0;
   };
 
@@ -63,10 +78,13 @@ export function StockShell({
   return (
     <div className="p-4 sm:p-8 pb-24 sm:pb-8 text-gray-900 max-w-full">
       <nav className="mb-6 flex gap-2 border-b pb-3 overflow-x-auto" aria-label="Stok bölümleri">
-        {TABS.filter((t) => (t.gate === "mgr" ? gates.mgr : t.gate === "cost" ? gates.cost : true))
-          .filter((t) => t.href !== "/inventory/receipt" || gates.op)
+        {(purchasingMissing ? TABS_WITHOUT_PURCHASING : TABS)
+          .filter((t) =>
+            t.gate === "mgr" ? gates.mgr : t.gate === "cost" ? gates.cost : t.gate === "op" ? gates.op : t.gate === "po" ? po : true
+          )
           .map((tab) => {
             const n = badgeValue(tab.badge);
+            const overdue = tab.badge === "orders" ? workCounts?.purchase_orders?.overdue ?? 0 : 0;
             return (
               <Link
                 key={tab.href}
@@ -83,6 +101,14 @@ export function StockShell({
                     }`}
                   >
                     {n}
+                  </span>
+                )}
+                {overdue > 0 && (
+                  <span
+                    title="Teslim tarihi geçen siparişler"
+                    className="ml-1 inline-block min-w-[1.25rem] px-1 rounded-full text-xs text-center bg-red-600 text-white"
+                  >
+                    {overdue}
                   </span>
                 )}
               </Link>

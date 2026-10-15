@@ -21,6 +21,7 @@ const MENU_ITEMS: { name: string; href: string; match?: string; exclude?: string
   { name: "📊 CRM", href: "/crm/leads", match: "/crm", exclude: "/crm/today" },
   { name: "✅ Görevler", href: "/tasks" },
   { name: "🧪 Lab", href: "/lab" },
+  { name: "🔩 İmplantlar", href: "/clinical/implants", match: "/clinical" },
   { name: "📦 Stok", href: "/inventory", match: "/inventory" },
   { name: "👔 Ekip", href: "/team" },
   { name: "📈 Raporlar", href: "/reports" },

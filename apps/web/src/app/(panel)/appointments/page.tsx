@@ -265,37 +265,42 @@ export default function Page() {
                       )}
                     </td>
                     <td className="px-4 py-2">
-                      {apt.status === "scheduled" && (
-                        <div className="flex gap-3 whitespace-nowrap">
-                          <Link href={`/appointments/${apt.id}/edit`} className="text-blue-600 hover:underline">
-                            Düzenle
-                          </Link>
-                          <button
-                            onClick={() => updateStatus(apt.id, "completed")}
-                            disabled={updatingId === apt.id}
-                            className="text-green-700 hover:underline disabled:opacity-50"
-                          >
-                            Tamamlandı
-                          </button>
-                          {/* A no-show can only be recorded once the appointment has started. */}
-                          {new Date(apt.start_time).getTime() <= Date.now() && (
+                      <div className="flex gap-3 whitespace-nowrap">
+                        <Link href={`/appointments/${apt.id}`} className="text-blue-600 hover:underline">
+                          Detay
+                        </Link>
+                        {apt.status === "scheduled" && (
+                          <div className="flex gap-3 whitespace-nowrap">
+                            <Link href={`/appointments/${apt.id}/edit`} className="text-blue-600 hover:underline">
+                              Düzenle
+                            </Link>
                             <button
-                              onClick={() => updateStatus(apt.id, "no_show")}
+                              onClick={() => updateStatus(apt.id, "completed")}
                               disabled={updatingId === apt.id}
-                              className="text-yellow-700 hover:underline disabled:opacity-50"
+                              className="text-green-700 hover:underline disabled:opacity-50"
                             >
-                              Gelmedi
+                              Tamamlandı
                             </button>
-                          )}
-                          <button
-                            onClick={() => updateStatus(apt.id, "cancelled")}
-                            disabled={updatingId === apt.id}
-                            className="text-red-600 hover:underline disabled:opacity-50"
-                          >
-                            İptal Et
-                          </button>
-                        </div>
-                      )}
+                            {/* A no-show can only be recorded once the appointment has started. */}
+                            {new Date(apt.start_time).getTime() <= Date.now() && (
+                              <button
+                                onClick={() => updateStatus(apt.id, "no_show")}
+                                disabled={updatingId === apt.id}
+                                className="text-yellow-700 hover:underline disabled:opacity-50"
+                              >
+                                Gelmedi
+                              </button>
+                            )}
+                            <button
+                              onClick={() => updateStatus(apt.id, "cancelled")}
+                              disabled={updatingId === apt.id}
+                              className="text-red-600 hover:underline disabled:opacity-50"
+                            >
+                              İptal Et
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -327,7 +332,9 @@ export default function Page() {
               dayAppointments.map((apt) => (
                 <div key={apt.id} className="p-4 border rounded bg-blue-50">
                   <div className="flex items-center justify-between gap-2">
-                    <div className="font-semibold">{getPatientName(apt.patient_id)}</div>
+                    <Link href={`/appointments/${apt.id}`} className="font-semibold hover:underline">
+                      {getPatientName(apt.patient_id)}
+                    </Link>
                     <span className={`px-2 py-1 rounded text-sm ${STATUS_STYLES[apt.status] ?? STATUS_STYLES.scheduled}`}>
                       {STATUS_LABELS[apt.status] ?? apt.status}
                     </span>
