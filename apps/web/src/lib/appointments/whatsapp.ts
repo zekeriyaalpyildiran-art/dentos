@@ -51,6 +51,24 @@ function oneLine(value: string | null | undefined): string {
 }
 
 /**
+ * Doctor for the "Hekim:" line: the doctor's own name, or null (the line is then left out). Never the specialty, not
+ * even as a fallback: "Ortodonti" or "İmplantoloji" on the patient's phone screen would reveal the kind of treatment.
+ * On-screen labels may still fall back to the specialty.
+ */
+export function reminderDoctorName(
+  // The doctors row as the pages embed it; specialty is accepted and deliberately ignored.
+  doctor: { specialty?: string | null; users?: { full_name?: string | null } | null } | null | undefined
+): string | null {
+  return oneLine(doctor?.users?.full_name) || null;
+}
+
+/**
+ * Note prefilled in the reminder outcome dialog after the WhatsApp link was used. Opening the link proves nothing was
+ * sent (the number may not be on WhatsApp, or send was never pressed), so the text only says the message was written.
+ */
+export const WHATSAPP_REMINDER_NOTE = "WhatsApp'tan hatırlatma mesajı yazıldı.";
+
+/**
  * Reminder text: greeting with the first name, clinic, date with weekday, time, doctor, clinic address and phone.
  * Lines without a value are left out. Times are Istanbul wall clock.
  */

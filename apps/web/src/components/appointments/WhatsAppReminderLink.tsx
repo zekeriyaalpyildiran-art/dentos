@@ -10,9 +10,6 @@ import {
   type ClinicContact,
 } from "@/lib/appointments/whatsapp";
 
-/** Note prefilled in the reminder outcome dialog after the WhatsApp link was used. */
-export const WHATSAPP_REMINDER_NOTE = "WhatsApp'tan hatırlatma mesajı gönderildi.";
-
 /**
  * The signed-in clinic's name, phone and address for the reminder text. Load it once per page and pass it to every
  * link. undefined while loading, null when it could not be read (the text then simply leaves those lines out).
@@ -45,7 +42,9 @@ export function useClinicContact(): ClinicContact | null | undefined {
 /**
  * Free reminder: opens the user's own WhatsApp (wa.me, new tab) with a ready Turkish message to the patient. Nothing
  * is sent by the program. Renders nothing when the patient has no usable mobile number or the clinic is still loading.
- * onOpen lets the page ask for the reminder outcome (crm_set_reminder_outcome) right after.
+ * doctorName must come from reminderDoctorName (the doctor's own name, never the specialty). onOpen lets the page ask
+ * for the reminder outcome (crm_set_reminder_outcome) right after; it fires before anything is sent, so the dialog
+ * must not assume the message went out (ReminderDialog fromWhatsApp).
  */
 export function WhatsAppReminderLink({
   patientName,

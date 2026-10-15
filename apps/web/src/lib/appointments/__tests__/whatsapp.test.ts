@@ -1,7 +1,14 @@
 // WhatsApp reminder: phone normalisation for wa.me, first-name greeting, message text and link.
 
 import { describe, expect, it } from "vitest";
-import { buildReminderMessage, firstName, whatsappPhone, whatsappUrl } from "../whatsapp";
+import {
+  WHATSAPP_REMINDER_NOTE,
+  buildReminderMessage,
+  firstName,
+  reminderDoctorName,
+  whatsappPhone,
+  whatsappUrl,
+} from "../whatsapp";
 
 describe("whatsappPhone", () => {
   it.each([
@@ -133,6 +140,40 @@ describe("buildReminderMessage", () => {
       clinic,
     });
     expect(text).not.toMatch(/₺|TL|TRY|EUR|USD|fiyat|ücret|tutar|tedavi|implant|işlem/i);
+  });
+});
+
+describe("reminderDoctorName", () => {
+  it("is the doctor's own name", () => {
+    expect(reminderDoctorName({ specialty: "Ortodonti", users: { full_name: " Dt. Mehmet  Demir " } })).toBe(
+      "Dt. Mehmet Demir"
+    );
+  });
+
+  it("never falls back to the specialty", () => {
+    expect(reminderDoctorName({ specialty: "Ortodonti", users: null })).toBeNull();
+    expect(reminderDoctorName({ specialty: "İmplantoloji", users: { full_name: "  " } })).toBeNull();
+    expect(reminderDoctorName(null)).toBeNull();
+    expect(reminderDoctorName(undefined)).toBeNull();
+  });
+
+  it("keeps the specialty out of the message when the doctor has no name", () => {
+    for (const specialty of ["Ortodonti", "İmplantoloji", "Endodonti", "Pedodonti"]) {
+      const text = buildReminderMessage({
+        patientName: "Ali Veli",
+        startTime: "2026-10-16T11:30:00Z",
+        doctorName: reminderDoctorName({ specialty, users: null }),
+        clinic: { name: "Klinik", phone: null, address: null },
+      });
+      expect(text).not.toContain(specialty);
+      expect(text).not.toContain("Hekim:");
+    }
+  });
+});
+
+describe("WHATSAPP_REMINDER_NOTE", () => {
+  it("does not claim the message was sent (the link only opens WhatsApp)", () => {
+    expect(WHATSAPP_REMINDER_NOTE).not.toMatch(/gönderildi|iletildi|hatırlatıldı/i);
   });
 });
 

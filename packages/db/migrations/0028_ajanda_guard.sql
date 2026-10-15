@@ -1,8 +1,10 @@
 -- Ajanda: double-booking guard on appointments, honest SMS reminders. Safe to re-run.
 --
 -- Requires 0004 (appointments, reminders), 0014 (their policies) and 0021 (appointments index
--- idx_appointments_clinic_scheduled_start and the crm__check_slot rule this file mirrors). No crm_* / fin_* / stock_* /
--- clin_* / plt_* object is changed or called; every object created here is named appt_* / appt__* or appointments_*.
+-- idx_appointments_clinic_scheduled_start, appointments.lead_id, leads.patient_id / deleted_at, and the crm__check_slot
+-- rule and lock order this file mirrors). No crm_* / fin_* / stock_* / clin_* / plt_* object is changed or called (the
+-- trigger only row-locks leads, as crm_appointment_sync does); every object created here is named appt_* / appt__* or
+-- appointments_*.
 --
 --  1. Preflight: column shapes, enum labels, no foreign appt__* overloads.
 --  2. reminders: no SMS gateway exists (0021: "No SMS is ever sent"), yet appointments/new queued one 'sms' row per
@@ -19,6 +21,10 @@
 --         must not overlap; [start, end) is half-open, so back-to-back bookings are fine.
 --     Serialised per clinic with the advisory lock key of crm__check_slot, so concurrent bookings from the agenda and
 --     the CRM queue behind each other and the second one sees the first.
+--     Lock order: the patient's leads first (FOR UPDATE, ordered as crm_appointment_sync locks them), then the advisory
+--     lock. crm_resolve_call (0021) locks its lead and then takes the advisory lock in crm__check_slot; without the
+--     lead lock here, an agenda booking would hold the advisory lock while its AFTER trigger crm_appointment_sync waits
+--     for the same lead, and the two bookings would deadlock (40P01).
 --  4. appt__slot_conflicts(): report of overlapping scheduled appointments already in the table (SQL editor only).
 --  5. Exclusion constraints appointments_no_double_doctor / appointments_no_double_chair (btree_gist, partial on
 --     status = 'scheduled'): the hard backstop behind the trigger (e.g. REPEATABLE READ writers, a disabled trigger).
@@ -46,10 +52,13 @@
 -- RUNBOOK (production is the only database):
 --   0. Quiet time: the trigger creation and the constraint check briefly block writes to appointments.
 --   1. SQL editor -> New query -> paste this file ALONE -> Run. One transaction; any self-check failure rolls
---      everything back. Expected: success with NOTICEs: how many SMS rows were closed, and either that both
---      constraints exist or which conflicts prevented one.
---   2. If a NOTICE lists conflicts: SELECT * FROM public.appt__slot_conflicts(); cancel or move one appointment of each
---      pair in the app, then run this file again (the missing constraint is added then; nothing else changes).
+--      everything back. The dashboard editor shows only the last statement's result, not the NOTICEs, so the file
+--      ends (after COMMIT) with a one-row summary: durum ('Tamam' or what is missing), tetikleyici (true),
+--      cakisma_kisitlari (the exclusion constraints that exist), mevcut_cakismalar (overlapping planned appointments
+--      still in the table), kapatilan_sms (SMS rows marked "Gönderilmedi", all runs together).
+--   2. If durum is not 'Tamam' (mevcut_cakismalar > 0, a constraint missing): SELECT * FROM
+--      public.appt__slot_conflicts(); cancel or move one appointment of each pair in the app, then run this file
+--      again (the missing constraint is added then; nothing else changes).
 --   3. Deploy the web build of branch feat/ajanda-fixes and ask everyone to reload open tabs. Either order works: the
 --      old build keeps booking (a double booking now fails with the generic "Randevu oluşturulurken hata oluştu"), and
 --      the new build works on the old database (no reminder rows, browser-side overlap check only).
@@ -75,6 +84,9 @@ BEGIN
     ('appointments', 'doctor_id', 'uuid'), ('appointments', 'chair_id', 'uuid'),
     ('appointments', 'start_time', 'timestamptz'), ('appointments', 'end_time', 'timestamptz'),
     ('appointments', 'status', 'appointment_status'), ('appointments', 'notes', 'text'),
+    ('appointments', 'lead_id', 'uuid'),
+    ('leads', 'id', 'uuid'), ('leads', 'clinic_id', 'uuid'), ('leads', 'patient_id', 'uuid'),
+    ('leads', 'created_at', 'timestamptz'), ('leads', 'deleted_at', 'timestamptz'),
     ('reminders', 'id', 'uuid'), ('reminders', 'clinic_id', 'uuid'), ('reminders', 'appointment_id', 'uuid'),
     ('reminders', 'reminder_type', 'text'), ('reminders', 'sent_at', 'timestamptz'),
     ('reminders', 'status', 'reminder_status'), ('reminders', 'error_message', 'text'),
@@ -187,6 +199,19 @@ BEGIN
   IF NEW.status IS DISTINCT FROM 'scheduled'::public.appointment_status THEN
     RETURN NEW;
   END IF;
+
+  -- Leads before the advisory lock, the order of crm_resolve_call (lead, then crm__check_slot). These are exactly the
+  -- rows the AFTER trigger crm_appointment_sync (0021) locks, in its order; it then finds them already held. Without
+  -- this, an agenda booking (advisory lock, then the lead in the sync trigger) and a CRM booking for the same lead
+  -- (lead, then advisory lock) can deadlock. A multi-row statement (SQL editor) still locks the leads of its later
+  -- rows after the advisory lock; the app writes one appointment per statement.
+  PERFORM 1
+  FROM public.leads l
+  WHERE l.clinic_id = NEW.clinic_id
+    AND l.deleted_at IS NULL
+    AND (l.patient_id = NEW.patient_id OR l.id = NEW.lead_id)
+  ORDER BY l.created_at, l.id
+  FOR UPDATE;
 
   -- Same key as crm__check_slot (0021): CRM bookings and direct writes of one clinic queue behind each other. The
   -- queries below run after the lock with a fresh snapshot (READ COMMITTED), so they see a booking committed meanwhile.
@@ -595,3 +620,34 @@ END $$;
 NOTIFY pgrst, 'reload schema';
 
 COMMIT;
+
+-- Summary for the SQL editor (read-only; it shows the result of this last statement, not the NOTICEs above). Runs only
+-- when everything above was committed.
+SELECT
+  CASE
+    WHEN s.mevcut_cakismalar > 0 THEN
+      'Çakışan planlı randevu var: SELECT * FROM public.appt__slot_conflicts(); ile bakın, düzeltip dosyayı yeniden çalıştırın.'
+    WHEN s.kisit_sayisi < 2 THEN
+      'Çakışma kısıtı eksik (sunucuda btree_gist eklentisi olmayabilir). Tetikleyici yine de çift randevuyu engelliyor.'
+    ELSE 'Tamam'
+  END AS durum,
+  s.tetikleyici,
+  s.cakisma_kisitlari,
+  s.mevcut_cakismalar,
+  s.kapatilan_sms
+FROM (
+  SELECT
+    EXISTS (SELECT 1 FROM pg_trigger t
+            WHERE t.tgrelid = 'public.appointments'::regclass AND t.tgname = 'appt_slot_guard'
+              AND NOT t.tgisinternal AND t.tgenabled <> 'D') AS tetikleyici,
+    coalesce((SELECT string_agg(c.conname::text, ', ' ORDER BY c.conname) FROM pg_constraint c
+              WHERE c.conrelid = 'public.appointments'::regclass
+                AND c.conname IN ('appointments_no_double_doctor', 'appointments_no_double_chair')), 'YOK')
+      AS cakisma_kisitlari,
+    (SELECT count(*) FROM pg_constraint c
+     WHERE c.conrelid = 'public.appointments'::regclass
+       AND c.conname IN ('appointments_no_double_doctor', 'appointments_no_double_chair')) AS kisit_sayisi,
+    (SELECT count(*) FROM public.appt__slot_conflicts()) AS mevcut_cakismalar,
+    (SELECT count(*) FROM public.reminders
+     WHERE status = 'failed' AND error_message = 'SMS gönderilmedi - otomatik SMS etkin değil') AS kapatilan_sms
+) s;

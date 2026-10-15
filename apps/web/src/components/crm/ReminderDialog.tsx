@@ -16,11 +16,8 @@ import {
 } from "@/lib/crm";
 import { REMINDER_OUTCOMES, REMINDER_OUTCOME_LABELS, type ReminderOutcome } from "@/lib/crm/codes";
 import { CrmErrorBox, CrmModal, Field, Loading, Notice, buttonPrimary, buttonSecondary, inputClass } from "./ui";
-import {
-  WHATSAPP_REMINDER_NOTE,
-  WhatsAppReminderLink,
-  useClinicContact,
-} from "@/components/appointments/WhatsAppReminderLink";
+import { WhatsAppReminderLink, useClinicContact } from "@/components/appointments/WhatsAppReminderLink";
+import { WHATSAPP_REMINDER_NOTE, reminderDoctorName } from "@/lib/appointments/whatsapp";
 
 interface AppointmentRow {
   id: string;
@@ -49,16 +46,18 @@ interface LogRow {
  * Manual appointment reminder (owner decision 2: no SMS is sent). Reception phones the patient or opens a ready
  * WhatsApp message, then records "Hatırlatıldı" or "Ulaşılamadı" with a note. The outcome is bound to the start time
  * and doctor shown here (the legacy visitKey), so a changed appointment is refused with E_REMINDER_STALE.
- * initialNote prefills the note (e.g. after the agenda's WhatsApp link was used).
+ * fromWhatsApp: opened by a WhatsApp link, i.e. before anything was sent (the number may not be on WhatsApp, or send
+ * may never be pressed). The note then says only that a message was written, and no outcome is preselected: the user
+ * picks "Hatırlatıldı" or "Ulaşılamadı" before saving, so one click cannot record a reminder that never went out.
  */
 export function ReminderDialog({
   appointmentId,
-  initialNote,
+  fromWhatsApp = false,
   onClose,
   onSaved,
 }: {
   appointmentId: string;
-  initialNote?: string;
+  fromWhatsApp?: boolean;
   onClose: () => void;
   onSaved: (result: ReminderResult) => void;
 }) {
@@ -66,8 +65,10 @@ export function ReminderDialog({
   const [row, setRow] = useState<AppointmentRow | null>(null);
   const [logs, setLogs] = useState<LogRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [outcome, setOutcome] = useState<ReminderOutcome>("reminded");
-  const [note, setNote] = useState(initialNote ?? "");
+  const [outcome, setOutcome] = useState<ReminderOutcome | null>(fromWhatsApp ? null : "reminded");
+  // True once the user clicked an outcome; a WhatsApp link opened later then leaves that choice alone.
+  const [picked, setPicked] = useState(false);
+  const [note, setNote] = useState(fromWhatsApp ? WHATSAPP_REMINDER_NOTE : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<CrmError | null>(null);
   const clinic = useClinicContact();
@@ -104,7 +105,7 @@ export function ReminderDialog({
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!row || busy) return;
+    if (!row || busy || !outcome) return;
     setBusy(true);
     setError(null);
     try {
@@ -148,9 +149,12 @@ export function ReminderDialog({
                     patientName={row.patient.full_name}
                     phone={row.patient.phone}
                     startTime={row.start_time}
-                    doctorName={row.doctor?.users?.full_name || row.doctor?.specialty || null}
+                    doctorName={reminderDoctorName(row.doctor)}
                     clinic={clinic}
-                    onOpen={() => setNote((prev) => prev || WHATSAPP_REMINDER_NOTE)}
+                    onOpen={() => {
+                      setNote((prev) => prev || WHATSAPP_REMINDER_NOTE);
+                      if (!picked) setOutcome(null);
+                    }}
                     className="text-green-700 underline"
                   />
                 )}
@@ -184,7 +188,10 @@ export function ReminderDialog({
                     type="button"
                     role="radio"
                     aria-checked={outcome === o.value}
-                    onClick={() => setOutcome(o.value)}
+                    onClick={() => {
+                      setOutcome(o.value);
+                      setPicked(true);
+                    }}
                     className={`px-3 py-1.5 rounded border text-sm ${
                       outcome === o.value ? "bg-blue-600 border-blue-600 text-white" : "border-gray-300 hover:bg-gray-50"
                     }`}
@@ -193,6 +200,11 @@ export function ReminderDialog({
                   </button>
                 ))}
               </div>
+              {!outcome && (
+                <p className="text-xs text-amber-700">
+                  {'Mesajı gönderdiyseniz "Hatırlatıldı", gönderemediyseniz "Ulaşılamadı" seçin.'}
+                </p>
+              )}
               <Field label="Not *">
                 <textarea
                   required
@@ -212,7 +224,7 @@ export function ReminderDialog({
               Kapat
             </button>
             {editable && (
-              <button type="submit" className={buttonPrimary} disabled={busy || !note.trim()}>
+              <button type="submit" className={buttonPrimary} disabled={busy || !note.trim() || !outcome}>
                 {busy ? "Kaydediliyor…" : "Sonucu kaydet"}
               </button>
             )}

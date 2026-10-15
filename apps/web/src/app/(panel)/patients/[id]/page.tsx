@@ -20,11 +20,8 @@ import { InlineMessage } from "@/components/staff/Modal";
 import { PatientImplantsTab } from "@/components/clinical/PatientImplantsTab";
 import { PatientMaterialsTab } from "@/components/clinical/PatientMaterialsTab";
 import { ReminderDialog } from "@/components/crm/ReminderDialog";
-import {
-  WHATSAPP_REMINDER_NOTE,
-  WhatsAppReminderLink,
-  useClinicContact,
-} from "@/components/appointments/WhatsAppReminderLink";
+import { WhatsAppReminderLink, useClinicContact } from "@/components/appointments/WhatsAppReminderLink";
+import { reminderDoctorName } from "@/lib/appointments/whatsapp";
 import { SmsNotActiveNotice } from "@/components/appointments/SmsNotActiveNotice";
 
 const GENDER_LABELS: Record<string, string> = {
@@ -447,7 +444,7 @@ export default function Page() {
                           patientName={patient.full_name}
                           phone={patient.phone}
                           startTime={apt.start_time}
-                          doctorName={apt.doctors?.users?.full_name || apt.doctors?.specialty || null}
+                          doctorName={reminderDoctorName(apt.doctors)}
                           clinic={clinic}
                           onOpen={() => setReminderFor(apt.id)}
                           className="text-sm text-green-700 hover:underline whitespace-nowrap"
@@ -621,7 +618,7 @@ export default function Page() {
         <ReminderDialog
           key={reminderFor}
           appointmentId={reminderFor}
-          initialNote={WHATSAPP_REMINDER_NOTE}
+          fromWhatsApp
           onClose={() => setReminderFor(null)}
           onSaved={() => setReminderFor(null)}
         />

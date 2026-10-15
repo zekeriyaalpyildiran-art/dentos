@@ -6,11 +6,8 @@ import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { cancelPendingReminders } from "./reminder-utils";
 import { ReminderDialog } from "@/components/crm/ReminderDialog";
-import {
-  WHATSAPP_REMINDER_NOTE,
-  WhatsAppReminderLink,
-  useClinicContact,
-} from "@/components/appointments/WhatsAppReminderLink";
+import { WhatsAppReminderLink, useClinicContact } from "@/components/appointments/WhatsAppReminderLink";
+import { reminderDoctorName } from "@/lib/appointments/whatsapp";
 import { isReminderCurrent } from "@/lib/crm";
 import { REMINDER_OUTCOME_LABELS, type ReminderOutcome } from "@/lib/crm/codes";
 import { addDays, formatDateTime, isDay, istanbulDayOf, istanbulToday } from "@/lib/clinical/dates";
@@ -95,7 +92,7 @@ export default function Page() {
   // The agenda shows one Istanbul day; only that day's appointments are loaded (PostgREST answers at most 1000 rows).
   const [selectedDate, setSelectedDate] = useState(istanbulToday);
   const [dateReady, setDateReady] = useState(false);
-  const [reminder, setReminder] = useState<{ id: string; note?: string } | null>(null);
+  const [reminder, setReminder] = useState<{ id: string; fromWhatsApp?: boolean } | null>(null);
   const requestId = useRef(0);
 
   // ?date=YYYY-MM-DD (set after saving an appointment, kept while browsing); read directly so no Suspense is needed.
@@ -160,10 +157,10 @@ export default function Page() {
         patientName={apt.patients?.full_name}
         phone={apt.patients?.phone}
         startTime={apt.start_time}
-        doctorName={apt.doctors?.users?.full_name || apt.doctors?.specialty || null}
+        doctorName={reminderDoctorName(apt.doctors)}
         clinic={clinic}
         // After the message is opened, ask for the outcome so CRM "Bugün" no longer lists this reminder.
-        onOpen={() => setReminder({ id: apt.id, note: WHATSAPP_REMINDER_NOTE })}
+        onOpen={() => setReminder({ id: apt.id, fromWhatsApp: true })}
         className={className}
       />
     ) : null;
@@ -421,7 +418,7 @@ export default function Page() {
         <ReminderDialog
           key={reminder.id}
           appointmentId={reminder.id}
-          initialNote={reminder.note}
+          fromWhatsApp={reminder.fromWhatsApp}
           onClose={() => setReminder(null)}
           onSaved={(r) => {
             setAppointments((prev) =>
