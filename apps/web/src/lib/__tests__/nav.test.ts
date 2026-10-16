@@ -15,6 +15,8 @@ import {
   isMenuItemActive,
   menuBadge,
   menuItemsFor,
+  rolesAllowedFor,
+  SECTIONS_CLOSED_FOR,
   type MenuItem,
 } from "../nav";
 import { STAFF_ROLES } from "../staff";
@@ -53,10 +55,14 @@ describe("menuItemsFor", () => {
     expect(list.indexOf("/finance")).toBe(list.indexOf("/reports") + 1);
   });
 
-  it("shows every other item to every role (those pages have no role gate)", () => {
+  it("shows every other item to every role, except sections closed to that role", () => {
     const ungated = MENU_ITEMS.filter((i) => !i.visible).map((i) => i.href);
     for (const role of STAFF_ROLES) {
-      expect(hrefs(menuItemsFor(user(role)))).toEqual(ungated);
+      const closed = Object.entries(SECTIONS_CLOSED_FOR)
+        .filter(([, roles]) => (roles as readonly string[]).includes(role))
+        .map(([section]) => section);
+      const expected = ungated.filter((href) => !closed.some((s) => href === s || href.startsWith(s + "/")));
+      expect(hrefs(menuItemsFor(user(role))), role).toEqual(expected);
     }
   });
 
@@ -128,6 +134,46 @@ describe("homePathFor", () => {
       expect(src, target).not.toBeNull();
       expect(target).not.toBe("/dashboard");
       expect(src).not.toMatch(/allowedRoles|requiredPermission|FinanceShell/);
+    }
+  });
+});
+
+describe("sections closed for a role", () => {
+  it("assistants do not see CRM, Ekip or Raporlar; everything else stays", () => {
+    const list = hrefs(menuItemsFor(user("assistant")));
+    expect(list).not.toContain("/crm/today");
+    expect(list).not.toContain("/crm/leads");
+    expect(list).not.toContain("/team");
+    expect(list).not.toContain("/reports");
+    for (const href of ["/appointments", "/patients", "/tasks", "/lab", "/clinical/implants", "/inventory", "/settings"]) {
+      expect(list).toContain(href);
+    }
+  });
+
+  it("other roles keep CRM, Ekip and Raporlar", () => {
+    for (const role of ["owner", "admin", "doctor", "reception"]) {
+      const list = hrefs(menuItemsFor(user(role)));
+      expect(list, role).toEqual(expect.arrayContaining(["/crm/today", "/crm/leads", "/team", "/reports"]));
+    }
+  });
+
+  it("each closed section has a layout that refuses exactly those roles", () => {
+    for (const section of Object.keys(SECTIONS_CLOSED_FOR)) {
+      const file = `${PANEL_DIR}${section}/layout.tsx`;
+      expect(existsSync(file), file).toBe(true);
+      expect(readFileSync(file, "utf8")).toContain(`rolesAllowedFor("${section}")`);
+      const allowed = rolesAllowedFor(section);
+      for (const role of SECTIONS_CLOSED_FOR[section]) expect(allowed).not.toContain(role);
+      expect(allowed.length + SECTIONS_CLOSED_FOR[section].length).toBe(STAFF_ROLES.length);
+    }
+  });
+
+  it("no role starts on a section closed to it", () => {
+    for (const role of STAFF_ROLES) {
+      const home = homePathFor(role);
+      for (const [section, roles] of Object.entries(SECTIONS_CLOSED_FOR)) {
+        if ((roles as readonly string[]).includes(role)) expect(home === section || home.startsWith(section + "/"), role).toBe(false);
+      }
     }
   });
 });

@@ -42,8 +42,34 @@ export const MENU_ITEMS: readonly MenuItem[] = [
   { name: "⚙️ Ayarlar", href: "/settings" },
 ];
 
+/**
+ * Sections a role does not use (owner's choice, 2026-10-16: assistants work on the agenda, patients, stock, lab and
+ * implants, not on CRM, staff or reports). Such a section is left out of that role's menu, and the section's own
+ * layout (app/(panel)/<section>/layout.tsx) refuses the role, so a typed address does not open it either.
+ */
+export const SECTIONS_CLOSED_FOR: Readonly<Record<string, readonly UserRole[]>> = {
+  "/crm": ["assistant"],
+  "/team": ["assistant"],
+  "/reports": ["assistant"],
+};
+
+function sectionOf(href: string): string | undefined {
+  return Object.keys(SECTIONS_CLOSED_FOR).find((s) => href === s || href.startsWith(s + "/"));
+}
+
+/** Roles that may open a section of SECTIONS_CLOSED_FOR (for that section's layout guard). */
+export function rolesAllowedFor(section: string): UserRole[] {
+  const closed = SECTIONS_CLOSED_FOR[section] ?? [];
+  return (Object.keys(ROLE_HOME) as UserRole[]).filter((role) => !closed.includes(role));
+}
+
+function closedFor(item: MenuItem, role: string | null | undefined): boolean {
+  const section = sectionOf(item.href);
+  return !!section && !!role && (SECTIONS_CLOSED_FOR[section] as readonly string[]).includes(role);
+}
+
 export function menuItemsFor(user: NavUser): MenuItem[] {
-  return MENU_ITEMS.filter((item) => !item.visible || item.visible(user));
+  return MENU_ITEMS.filter((item) => (!item.visible || item.visible(user)) && !closedFor(item, user?.role));
 }
 
 export function isMenuItemActive(item: MenuItem, pathname: string | null | undefined): boolean {
