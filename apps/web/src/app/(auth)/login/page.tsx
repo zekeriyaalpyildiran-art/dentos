@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { signIn, signOut, getCurrentUser } from "@/lib/auth";
-import { createClient } from "@/lib/supabase";
+import { requestPasswordResetEmail } from "@/lib/supabase";
+import { resetPasswordRedirectUrl } from "@/lib/auth-link";
 import { useAuthStore } from "@/lib/store";
 import { homePathForUser } from "@/lib/nav";
 import { ClinicLogo } from "@/components/ClinicLogo";
@@ -84,9 +85,12 @@ export default function LoginPage() {
 
     setResetLoading(true);
     try {
-      const { error: resetError } = await createClient().auth.resetPasswordForEmail(trimmedEmail, {
-        redirectTo: window.location.origin + "/reset-password",
-      });
+      // Implicit-flow request (see requestPasswordResetEmail): the e-mailed link works in any browser or device, e.g.
+      // asked from the iPhone home-screen app and opened from Mail in Safari.
+      const { error: resetError } = await requestPasswordResetEmail(
+        trimmedEmail,
+        resetPasswordRedirectUrl(window.location.origin)
+      );
       const message = resetError ? resetErrorMessage(resetError) : null;
       if (message) {
         setError(message);

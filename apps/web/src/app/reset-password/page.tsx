@@ -1,13 +1,16 @@
 "use client";
 
 // Password reset and first-time password setup (spec p10_platform §4.2-4.3). Invite e-mails land here with
-// `type=invite` ("Şifrenizi belirleyin"); recovery e-mails (also "Daveti yeniden gönder") with `type=recovery`.
+// `type=invite` ("Şifrenizi belirleyin"); recovery e-mails ("Şifremi unuttum", "Daveti yeniden gönder") with
+// `type=recovery`. Both use the implicit flow (tokens in the fragment), so the link works in any browser; a PKCE
+// `?code=` recovery link (asked for before 2026-10-16) still works in the browser that asked. See lib/auth-link.ts.
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase";
 import { PASSWORD_TEXTS, newPasswordError, passwordUpdateErrorMessage } from "@/lib/password";
+import { linkMode, linkTokenEmail, parseAuthLink } from "@/lib/auth-link";
 import { ClinicLogo } from "@/components/ClinicLogo";
 
 const inputClass =
@@ -18,39 +21,12 @@ type Mode = "setup" | "reset";
 const EXPIRED_TEXT =
   "Bağlantının süresi dolmuş veya bağlantı daha önce kullanılmış. Klinik yöneticinizden daveti yeniden göndermesini isteyin ya da giriş sayfasındaki “Şifremi unuttum” bağlantısını kullanın.";
 
-/** Sign-in methods an invite / recovery e-mail link produces (GoTrue `amr`). A password login's tokens are refused. */
-const LINK_AMR = new Set(["invite", "recovery", "otp", "magiclink"]);
-
 /** Tokens from an e-mail link, held until the person confirms the account (never applied silently). */
 interface PendingLink {
   accessToken: string;
   refreshToken: string;
   email: string;
   currentEmail: string | null;
-}
-
-/** Reads (does not verify) the access token's payload; the server verifies it when the session is set. */
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-  const part = token.split(".")[1];
-  if (!part) return null;
-  try {
-    const b64 = part.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(part.length / 4) * 4, "=");
-    const bin = atob(b64);
-    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
-
-function isLinkSession(payload: Record<string, unknown>): boolean {
-  const amr = payload.amr;
-  if (!Array.isArray(amr)) return false;
-  return amr.some((m) => {
-    const method = typeof m === "string" ? m : m && typeof m === "object" ? (m as { method?: unknown }).method : null;
-    return typeof method === "string" && LINK_AMR.has(method);
-  });
 }
 
 export default function ResetPasswordPage() {
@@ -93,17 +69,10 @@ export default function ResetPasswordPage() {
     });
 
     const init = async () => {
-      const hash = new URLSearchParams(window.location.hash.slice(1));
-      const query = new URLSearchParams(window.location.search);
-      const type = hash.get("type") ?? query.get("type");
-      if (type === "invite") setMode("setup");
+      const link = parseAuthLink(window.location.hash, window.location.search);
+      setMode(linkMode(link.type));
 
-      const accessToken = hash.get("access_token");
-      const refreshToken = hash.get("refresh_token");
-      const code = query.get("code");
-      const hashError = hash.get("error_code") || hash.get("error") || query.get("error_code") || query.get("error");
-
-      if (hashError) {
+      if (link.kind === "error") {
         // Expired or already used link (e-mail scanners sometimes open links first). No session is set.
         window.history.replaceState(null, "", window.location.pathname);
         if (!cancelled) {
@@ -113,13 +82,13 @@ export default function ResetPasswordPage() {
         return;
       }
 
-      if (accessToken && refreshToken) {
+      if (link.kind === "tokens") {
         // Invite and recovery e-mails use the implicit flow. The tokens are NOT applied yet: a link carrying someone
-        // else's tokens would otherwise silently replace this browser's session (login CSRF).
+        // else's tokens would otherwise silently replace this browser's session (login CSRF). The fragment is
+        // removed from the address (and so from the history entry) right away.
         window.history.replaceState(null, "", window.location.pathname);
-        const payload = type === "invite" || type === "recovery" ? decodeJwtPayload(accessToken) : null;
-        const linkEmail = payload && typeof payload.email === "string" ? payload.email : "";
-        if (!payload || !linkEmail || !isLinkSession(payload)) {
+        const linkEmail = linkTokenEmail(link);
+        if (!linkEmail) {
           if (!cancelled) {
             setLinkError(true);
             setChecking(false);
@@ -129,8 +98,8 @@ export default function ResetPasswordPage() {
         const { data: cur } = await supabase.auth.getSession();
         if (!cancelled) {
           setPending({
-            accessToken,
-            refreshToken,
+            accessToken: link.accessToken,
+            refreshToken: link.refreshToken,
             email: linkEmail,
             currentEmail: cur.session?.user.email ?? null,
           });
@@ -139,8 +108,9 @@ export default function ResetPasswordPage() {
         return;
       }
 
-      if (code) {
-        const { error } = await supabase.auth.exchangeCodeForSession(code);
+      if (link.kind === "code") {
+        // Legacy PKCE recovery link: only the browser that asked holds the code verifier.
+        const { error } = await supabase.auth.exchangeCodeForSession(link.code);
         window.history.replaceState(null, "", window.location.pathname);
         let ok = !error;
         if (!ok) {

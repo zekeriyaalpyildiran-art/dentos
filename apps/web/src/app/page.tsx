@@ -7,6 +7,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
+import { RESET_PASSWORD_PATH, isAuthCallbackHash } from "@/lib/auth-link";
 
 export default function Home() {
   const router = useRouter();
@@ -15,8 +16,8 @@ export default function Home() {
 
   useEffect(() => {
     const hash = window.location.hash;
-    if (/(^#|&)(access_token|error_code|error)=/.test(hash)) {
-      router.replace("/reset-password" + window.location.search + hash);
+    if (isAuthCallbackHash(hash)) {
+      router.replace(RESET_PASSWORD_PATH + window.location.search + hash);
       return;
     }
     if (loading) return;
