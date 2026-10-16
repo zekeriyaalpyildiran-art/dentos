@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { AuthProvider } from "@/components/AuthProvider";
+import { ThemeSync } from "@/components/ThemeSwitch";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -22,7 +24,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#ffffff",
+  // The mobile top bar and the sidebar are the clinic navy in both themes, so the browser bar matches it in both.
+  themeColor: "#102e3b",
 };
 
 export default function RootLayout({
@@ -31,8 +34,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="tr">
+    // The init script adds the 'dark' class before hydration, hence suppressHydrationWarning on <html> (only).
+    <html lang="tr" suppressHydrationWarning>
+      <head>
+        {/* Light / dark before the first paint (lib/theme.ts). */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body>
+        <ThemeSync />
         <AuthProvider>{children}</AuthProvider>
       </body>
     </html>

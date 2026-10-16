@@ -6,6 +6,7 @@ import { signIn, signOut, getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase";
 import { useAuthStore } from "@/lib/store";
 import { homePathForUser } from "@/lib/nav";
+import { ClinicLogo } from "@/components/ClinicLogo";
 
 function loginErrorMessage(err: unknown) {
   const message = err instanceof Error ? err.message : "";
@@ -100,25 +101,16 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 flex items-center justify-center p-4">
-      {/* Decorative elements */}
-      <div className="absolute top-0 right-0 w-96 h-96 bg-blue-100 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse" />
-      <div className="absolute bottom-0 left-0 w-96 h-96 bg-blue-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse" />
-      
+    <div className="min-h-screen bg-background flex items-center justify-center p-4">
       <div className="relative w-full max-w-md">
         {/* Login Card */}
-        <div className="bg-white rounded-2xl shadow-2xl p-8 md:p-10 space-y-8">
-          {/* Logo & Title */}
+        <div className="bg-white rounded-2xl shadow-lg border border-border p-8 md:p-10 space-y-8">
+          {/* Clinic logo */}
           <div className="text-center space-y-3">
-            <div className="flex justify-center">
-              <span className="text-5xl">🦷</span>
-            </div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-blue-800 bg-clip-text text-transparent">
-              DentOS
+            <h1>
+              <ClinicLogo priority className="mx-auto max-w-[260px]" />
             </h1>
-            <p className="text-gray-600 text-lg font-medium">
-              Diş Kliniği Yönetim Sistemi
-            </p>
+            <p className="text-sm font-medium text-gray-600">DentOS · Klinik yönetim sistemi</p>
           </div>
 
           {/* Form */}

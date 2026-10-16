@@ -4,14 +4,18 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAuthStore } from "@/lib/store";
-import { ROLE_LABELS, signOut } from "@/lib/auth";
+import { ROLE_LABELS, signOut, type AuthUser } from "@/lib/auth";
 import { clearStockStorage } from "@/lib/stock/storage";
 import { badgeText, isMenuItemActive, menuItemsFor, type MenuBadgeKey, type MenuItem } from "@/lib/nav";
 import { useMenuBadges, type MenuBadges } from "@/components/useMenuBadges";
+import { ClinicLogo, ClinicMark } from "@/components/ClinicLogo";
+import { ThemeSwitch } from "@/components/ThemeSwitch";
 
 const DRAWER_ID = "panel-mobile-menu";
 /** Tailwind `md`: from here on the fixed sidebar is shown and the drawer is not used. */
 const DESKTOP_QUERY = "(min-width: 768px)";
+/** Keyboard focus on the navy background. */
+const FOCUS = "focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white";
 
 const BADGES: Record<MenuBadgeKey, { label: (n: number) => string; className: string }> = {
   crm: { label: (n) => `Günlük listede ${n} iş`, className: "bg-blue-600 text-white" },
@@ -33,8 +37,21 @@ function NavList({
   roomy?: boolean;
   onNavigate?: () => void;
 }) {
+  // The current page's link is scrolled into view inside the menu (Finans, Stok, Ayarlar sit low in a long list).
+  // Only the nav scrolls; scrollIntoView would also move the page or the drawer's backdrop.
+  const activeRef = useRef<HTMLAnchorElement>(null);
+  useEffect(() => {
+    const link = activeRef.current;
+    const nav = link?.closest("nav");
+    if (!link || !nav) return;
+    const l = link.getBoundingClientRect();
+    const n = nav.getBoundingClientRect();
+    if (l.top < n.top) nav.scrollTop -= n.top - l.top + 8;
+    else if (l.bottom > n.bottom) nav.scrollTop += l.bottom - n.bottom + 8;
+  }, [pathname]);
+
   return (
-    <ul className="space-y-2 px-4">
+    <ul className="space-y-0.5 px-3">
       {items.map((item) => {
         const isActive = isMenuItemActive(item, pathname);
         const n = item.badge ? badges[item.badge] : undefined;
@@ -43,20 +60,21 @@ function NavList({
         return (
           <li key={item.href}>
             <Link
+              ref={isActive ? activeRef : undefined}
               href={item.href}
               onClick={onNavigate}
               aria-current={isActive ? "page" : undefined}
-              className={`flex items-center gap-2 px-4 ${roomy ? "py-3" : "py-2"} rounded-lg transition-colors ${
-                isActive ? "bg-primary text-primary-foreground font-medium" : "hover:bg-foreground/5"
+              className={`flex items-center gap-2 px-3 ${roomy ? "py-2.5" : "py-2"} rounded-lg transition-colors ${FOCUS} ${
+                isActive
+                  ? "bg-sidebar-accent font-semibold text-white shadow-[inset_3px_0_0_0_rgb(var(--sidebar-highlight))]"
+                  : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-white"
               }`}
             >
               <span className="min-w-0 flex-1">{item.name}</span>
               {text && info && n !== undefined && (
                 <span
                   title={info.label(n)}
-                  className={`shrink-0 min-w-[1.5rem] px-1.5 rounded-full text-xs font-semibold leading-5 text-center ${
-                    isActive ? "bg-white text-gray-900" : info.className
-                  }`}
+                  className={`shrink-0 min-w-[1.5rem] px-1.5 rounded-full text-xs font-semibold leading-5 text-center ${info.className}`}
                 >
                   <span aria-hidden="true">{text}</span>
                   <span className="sr-only">{`, ${info.label(n)}`}</span>
@@ -70,8 +88,9 @@ function NavList({
   );
 }
 
-/** Header, menu and logout; the same content in the desktop sidebar and the mobile drawer. */
+/** Logo, user, menu, appearance and logout; the same content in the desktop sidebar and the mobile drawer. */
 function MenuPanel({
+  user,
   items,
   pathname,
   badges,
@@ -80,6 +99,7 @@ function MenuPanel({
   onNavigate,
   onLogout,
 }: {
+  user: AuthUser | null;
   items: MenuItem[];
   pathname: string | null;
   badges: MenuBadges;
@@ -88,34 +108,42 @@ function MenuPanel({
   onNavigate?: () => void;
   onLogout: () => void;
 }) {
-  const user = useAuthStore((state) => state.user);
+  // Header and footer stay compact so a 1366x768 laptop still shows most of the 13 menu items without scrolling.
   return (
     <>
-      {/* Header */}
-      <div className="p-6 border-b border-border">
-        <div className="flex items-start justify-between gap-2">
-          <p className="text-2xl font-bold">DentOS</p>
+      {/* Header: the clinic logo on its light panel (as in the legacy apps), then the user with 'DentOS' on the role line */}
+      <div className="px-4 py-3 border-b border-sidebar-border">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <ClinicLogo priority compact className="max-w-[156px]" />
+          </div>
           {headerAction}
         </div>
-        {user && (
-          <div className="mt-4 text-sm min-w-0">
-            <p className="font-medium break-all">{user.email}</p>
-            <p className="text-foreground/60">{ROLE_LABELS[user.role] || user.role}</p>
-          </div>
-        )}
+        <div className="mt-2 text-sm min-w-0">
+          {user && (
+            <p className="truncate font-medium text-sidebar-foreground" title={user.email}>
+              {user.email}
+            </p>
+          )}
+          <p className="flex items-baseline justify-between gap-2 text-sidebar-muted">
+            <span className="min-w-0 truncate">{user ? ROLE_LABELS[user.role] || user.role : ""}</span>
+            <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.25em]">DentOS</span>
+          </p>
+        </div>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto overscroll-contain py-6" aria-label="Ana menü">
+      <nav className="flex-1 overflow-y-auto overscroll-contain py-2" aria-label="Ana menü">
         <NavList items={items} pathname={pathname} badges={badges} roomy={roomy} onNavigate={onNavigate} />
       </nav>
 
       {/* Footer */}
-      <div className="p-4 border-t border-border">
+      <div className="px-3 py-2.5 space-y-2 border-t border-sidebar-border">
+        <ThemeSwitch roomy={roomy} />
         <button
           type="button"
           onClick={onLogout}
-          className={`w-full px-4 ${roomy ? "py-3" : "py-2"} text-sm border border-border rounded-lg hover:bg-foreground/5 transition-colors`}
+          className={`w-full px-4 ${roomy ? "py-2.5" : "py-1.5"} text-sm text-sidebar-foreground border border-sidebar-border rounded-lg hover:bg-sidebar-accent hover:text-white transition-colors ${FOCUS}`}
         >
           Çıkış Yap
         </button>
@@ -129,6 +157,33 @@ export function Sidebar() {
   const router = useRouter();
   const user = useAuthStore((state) => state.user);
   const badges = useMenuBadges(user?.user_id);
+
+  const handleLogout = async () => {
+    try {
+      // Per-viewer stock drafts (bulk cart with costs, count drafts) never outlive the session on a shared PC.
+      clearStockStorage();
+      await signOut();
+      router.push("/login");
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+  };
+
+  return <SidebarView user={user} pathname={pathname} badges={badges} onLogout={handleLogout} />;
+}
+
+/** The menu itself, without data fetching: mobile top bar + drawer below md, fixed navy sidebar from md. */
+export function SidebarView({
+  user,
+  pathname,
+  badges,
+  onLogout,
+}: {
+  user: AuthUser | null;
+  pathname: string | null;
+  badges: MenuBadges;
+  onLogout: () => void;
+}) {
   const items = menuItemsFor(user);
   const current = items.find((item) => isMenuItemActive(item, pathname));
 
@@ -197,23 +252,12 @@ export function Sidebar() {
     };
   }, [open]);
 
-  const handleLogout = async () => {
-    try {
-      // Per-viewer stock drafts (bulk cart with costs, count drafts) never outlive the session on a shared PC.
-      clearStockStorage();
-      await signOut();
-      router.push("/login");
-    } catch (error) {
-      console.error("Logout error:", error);
-    }
-  };
-
   const myTasks = badgeText(badges.tasks);
 
   return (
     <>
-      {/* Mobile top bar (below md) */}
-      <header className="md:hidden flex h-14 shrink-0 items-center gap-2 border-b border-border bg-background px-2">
+      {/* Mobile top bar (below md). Navigation is not printed: the navy colours would print as pale text on paper. */}
+      <header className="md:hidden print:hidden flex h-14 shrink-0 items-center gap-2 border-b border-sidebar-border bg-sidebar px-2 text-sidebar-foreground">
         <button
           ref={menuButtonRef}
           type="button"
@@ -222,7 +266,7 @@ export function Sidebar() {
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-controls={open ? DRAWER_ID : undefined}
-          className="relative inline-flex h-11 w-11 items-center justify-center rounded-lg hover:bg-foreground/5"
+          className={`relative inline-flex h-11 w-11 items-center justify-center rounded-lg hover:bg-sidebar-accent ${FOCUS}`}
         >
           <svg
             aria-hidden="true"
@@ -238,17 +282,18 @@ export function Sidebar() {
           {myTasks && (
             <span
               aria-hidden="true"
-              className="absolute right-1.5 top-1.5 h-2.5 w-2.5 rounded-full bg-blue-600 ring-2 ring-background"
+              className="absolute right-1.5 top-1.5 h-2.5 w-2.5 rounded-full bg-blue-500 ring-2 ring-sidebar"
             />
           )}
         </button>
-        <span className="text-lg font-bold">DentOS</span>
-        {current && <span className="ml-auto min-w-0 truncate pr-2 text-sm text-foreground/60">{current.name}</span>}
+        <ClinicMark className="h-9 w-9 shrink-0" />
+        <span className="text-lg font-bold text-white">DentOS</span>
+        {current && <span className="ml-auto min-w-0 truncate pr-2 text-sm text-sidebar-muted">{current.name}</span>}
       </header>
 
       {/* Desktop sidebar (md and up) */}
-      <aside className="hidden md:flex w-64 shrink-0 flex-col bg-background border-r border-border">
-        <MenuPanel items={items} pathname={pathname} badges={badges} onLogout={handleLogout} />
+      <aside className="hidden md:flex print:hidden w-64 shrink-0 flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border">
+        <MenuPanel user={user} items={items} pathname={pathname} badges={badges} onLogout={onLogout} />
       </aside>
 
       {/* Mobile drawer */}
@@ -261,22 +306,23 @@ export function Sidebar() {
             role="dialog"
             aria-modal="true"
             aria-label="Menü"
-            className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-background shadow-xl"
+            className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col bg-sidebar text-sidebar-foreground shadow-xl"
           >
             <MenuPanel
+              user={user}
               items={items}
               pathname={pathname}
               badges={badges}
               roomy
               onNavigate={() => setOpen(false)}
-              onLogout={handleLogout}
+              onLogout={onLogout}
               headerAction={
                 <button
                   ref={closeButtonRef}
                   type="button"
                   onClick={() => setOpen(false)}
                   aria-label="Menüyü kapat"
-                  className="-mr-3 -mt-2 inline-flex h-11 w-11 items-center justify-center rounded-lg hover:bg-foreground/5"
+                  className={`-mr-2 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg hover:bg-sidebar-accent ${FOCUS}`}
                 >
                   <svg
                     aria-hidden="true"

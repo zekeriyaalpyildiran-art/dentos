@@ -2,36 +2,156 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme. Light is the default; the 'dark' class on <html> switches to dark (lib/theme.ts, set before first paint by
+ * the root layout). Values are "r g b" triplets so Tailwind opacity modifiers work (bg-black/40, bg-sidebar-accent/60).
+ *
+ * - Semantic tokens: canvas (--background), body text, card surface (= bg-white), borders, sidebar.
+ * - --c-<family>-<shade>: the Tailwind shades the pages use, see lib/theme-colors.ts for the fill / ink channels.
+ *   Light keeps Tailwind's values except: gray-200/300 = the legacy hairline / input border, gray-500 slightly deeper,
+ *   and a few text inks deeper (gray-400/500, blue-500/600, red, green ...), so muted, link and status text stay
+ *   >= 4.5:1 on the gray canvas (gray-400, used for '—' placeholders and voided rows, >= 3.5:1).
+ * - The sidebar is the legacy navy in both themes.
+ * Contrast of the main pairs is checked in lib/__tests__/theme.test.ts.
+ */
 :root {
-  --background: 0 0% 100%;
-  --foreground: 0 0% 3.6%;
-  --border: 0 0% 88.2%;
-  --input: 0 0% 88.2%;
-  --ring: 0 0% 3.6%;
-  --primary: 0 0% 9%;
-  --primary-foreground: 0 0% 100%;
+  color-scheme: light;
+  /* The page behind the cards: one step darker than the legacy #f4f6f8 so the screen does not read as white. */
+  --background: 233 238 242; /* #e9eef2 */
+  --foreground: 24 43 60; /* #182b3c */
+  --surface: 255 255 255; /* #ffffff */
+  --border: 224 231 235; /* #e0e7eb */
+  --input: 213 222 228; /* #d5dee4 */
+  --ring: 59 130 246; /* #3b82f6 */
+  --primary: 37 99 235; /* #2563eb */
+  --primary-foreground: 255 255 255; /* #ffffff */
+  --card-edge: 217 225 230; /* #d9e1e6 */
+  --brand-panel: 255 255 255; /* the logo's own panel */
+  --sidebar: 16 46 59; /* #102e3b */
+  --sidebar-foreground: 217 230 236; /* #d9e6ec */
+  --sidebar-accent: 35 71 83; /* #234753 */
+  --sidebar-border: 45 75 87; /* #2d4b57 */
+  --sidebar-muted: 159 184 196; /* #9fb8c4 */
+  --sidebar-highlight: 124 196 184; /* #7cc4b8 */
+  --c-gray-50: 249 250 251; --c-gray-100: 243 244 246; --c-gray-200: 224 231 235; --c-gray-300: 213 222 228; --c-gray-400: 156 163 175; --c-gray-500: 95 107 122; --c-gray-600: 75 85 99; --c-gray-700: 55 65 81; --c-gray-800: 31 41 55; --c-gray-900: 17 24 39; --c-gray-950: 3 7 18;
+  --c-gray-400-ink: 113 123 136; --c-gray-500-ink: 90 102 118;
+  --c-slate-50: 248 250 252; --c-slate-100: 241 245 249; --c-slate-200: 226 232 240; --c-slate-300: 203 213 225; --c-slate-400: 148 163 184; --c-slate-500: 100 116 139; --c-slate-600: 71 85 105; --c-slate-700: 51 65 85; --c-slate-800: 30 41 59; --c-slate-900: 15 23 42; --c-slate-950: 2 6 23;
+  --c-red-50: 254 242 242; --c-red-100: 254 226 226; --c-red-200: 254 202 202; --c-red-300: 252 165 165; --c-red-400: 248 113 113; --c-red-500: 239 68 68; --c-red-600: 220 38 38; --c-red-700: 185 28 28; --c-red-800: 153 27 27; --c-red-900: 127 29 29; --c-red-950: 69 10 10;
+  --c-red-600-ink: 200 30 30; --c-red-500-ink: 200 30 30;
+  --c-orange-50: 255 247 237; --c-orange-100: 255 237 213; --c-orange-200: 254 215 170; --c-orange-300: 253 186 116; --c-orange-400: 251 146 60; --c-orange-500: 249 115 22; --c-orange-600: 234 88 12; --c-orange-700: 194 65 12; --c-orange-800: 154 52 18; --c-orange-900: 124 45 18; --c-orange-950: 67 20 7;
+  --c-orange-600-ink: 194 65 12;
+  --c-amber-50: 255 251 235; --c-amber-100: 254 243 199; --c-amber-200: 253 230 138; --c-amber-300: 252 211 77; --c-amber-400: 251 191 36; --c-amber-500: 245 158 11; --c-amber-600: 217 119 6; --c-amber-700: 180 83 9; --c-amber-800: 146 64 14; --c-amber-900: 120 53 15; --c-amber-950: 69 26 3;
+  --c-amber-500-ink: 180 83 9; --c-amber-600-ink: 180 83 9;
+  --c-yellow-50: 254 252 232; --c-yellow-100: 254 249 195; --c-yellow-200: 254 240 138; --c-yellow-300: 253 224 71; --c-yellow-400: 250 204 21; --c-yellow-500: 234 179 8; --c-yellow-600: 202 138 4; --c-yellow-700: 161 98 7; --c-yellow-800: 133 77 14; --c-yellow-900: 113 63 18; --c-yellow-950: 66 32 6;
+  --c-yellow-600-ink: 161 98 7;
+  --c-green-50: 240 253 244; --c-green-100: 220 252 231; --c-green-200: 187 247 208; --c-green-300: 134 239 172; --c-green-400: 74 222 128; --c-green-500: 34 197 94; --c-green-600: 22 163 74; --c-green-700: 21 128 61; --c-green-800: 22 101 52; --c-green-900: 20 83 45; --c-green-950: 5 46 22;
+  --c-green-600-ink: 21 119 58; --c-green-500-ink: 21 119 58;
+  --c-emerald-50: 236 253 245; --c-emerald-100: 209 250 229; --c-emerald-200: 167 243 208; --c-emerald-300: 110 231 183; --c-emerald-400: 52 211 153; --c-emerald-500: 16 185 129; --c-emerald-600: 5 150 105; --c-emerald-700: 4 120 87; --c-emerald-800: 6 95 70; --c-emerald-900: 6 78 59; --c-emerald-950: 2 44 34;
+  --c-emerald-600-ink: 4 120 87;
+  --c-teal-50: 240 253 250; --c-teal-100: 204 251 241; --c-teal-200: 153 246 228; --c-teal-300: 94 234 212; --c-teal-400: 45 212 191; --c-teal-500: 20 184 166; --c-teal-600: 13 148 136; --c-teal-700: 15 118 110; --c-teal-800: 17 94 89; --c-teal-900: 19 78 74; --c-teal-950: 4 47 46;
+  --c-teal-600-ink: 15 118 110;
+  --c-sky-50: 240 249 255; --c-sky-100: 224 242 254; --c-sky-200: 186 230 253; --c-sky-300: 125 211 252; --c-sky-400: 56 189 248; --c-sky-500: 14 165 233; --c-sky-600: 2 132 199; --c-sky-700: 3 105 161; --c-sky-800: 7 89 133; --c-sky-900: 12 74 110; --c-sky-950: 8 47 73;
+  --c-sky-600-ink: 3 105 161;
+  --c-blue-50: 239 246 255; --c-blue-100: 219 234 254; --c-blue-200: 191 219 254; --c-blue-300: 147 197 253; --c-blue-400: 96 165 250; --c-blue-500: 59 130 246; --c-blue-600: 37 99 235; --c-blue-700: 29 78 216; --c-blue-800: 30 64 175; --c-blue-900: 30 58 138; --c-blue-950: 23 37 84;
+  --c-blue-600-ink: 34 91 227; --c-blue-500-ink: 34 91 227;
+  --c-indigo-50: 238 242 255; --c-indigo-100: 224 231 255; --c-indigo-200: 199 210 254; --c-indigo-300: 165 180 252; --c-indigo-400: 129 140 248; --c-indigo-500: 99 102 241; --c-indigo-600: 79 70 229; --c-indigo-700: 67 56 202; --c-indigo-800: 55 48 163; --c-indigo-900: 49 46 129; --c-indigo-950: 30 27 75;
+  --c-violet-50: 245 243 255; --c-violet-100: 237 233 254; --c-violet-200: 221 214 254; --c-violet-300: 196 181 253; --c-violet-400: 167 139 250; --c-violet-500: 139 92 246; --c-violet-600: 124 58 237; --c-violet-700: 109 40 217; --c-violet-800: 91 33 182; --c-violet-900: 76 29 149; --c-violet-950: 46 16 101;
+  --c-purple-50: 250 245 255; --c-purple-100: 243 232 255; --c-purple-200: 233 213 255; --c-purple-300: 216 180 254; --c-purple-400: 192 132 252; --c-purple-500: 168 85 247; --c-purple-600: 147 51 234; --c-purple-700: 126 34 206; --c-purple-800: 107 33 168; --c-purple-900: 88 28 135; --c-purple-950: 59 7 100;
+  --shadow-sm: 0 1px 2px 0 rgb(16 42 58 / 0.05);
+  --shadow: 0 0 0 1px rgb(var(--card-edge)), 0 1px 3px 0 rgb(16 42 58 / 0.06), 0 1px 2px -1px rgb(16 42 58 / 0.06);
+  --shadow-md: 0 0 0 1px rgb(var(--card-edge)), 0 4px 6px -1px rgb(16 42 58 / 0.08), 0 2px 4px -2px rgb(16 42 58 / 0.06);
+  --shadow-lg: 0 10px 15px -3px rgb(16 42 58 / 0.1), 0 4px 6px -4px rgb(16 42 58 / 0.08);
+  --shadow-xl: 0 20px 25px -5px rgb(16 42 58 / 0.12), 0 8px 10px -6px rgb(16 42 58 / 0.08);
+  --shadow-2xl: 0 25px 50px -12px rgb(16 42 58 / 0.22);
 }
 
-* {
-  @apply border-border;
+/* Dark: screen only, so printing a page while in dark mode still gives dark text on white paper. */
+@media screen {
+  .dark {
+    color-scheme: dark;
+    --background: 15 26 34; /* #0f1a22 */
+    --foreground: 227 235 240; /* #e3ebf0 */
+    --surface: 21 35 45; /* #15232d */
+    --border: 42 61 74; /* #2a3d4a */
+    --input: 54 75 89; /* #364b59 */
+    --ring: 96 165 250; /* #60a5fa */
+    --primary: 37 99 235; /* #2563eb */
+    --primary-foreground: 255 255 255; /* #ffffff */
+    --card-edge: 38 56 69; /* #263845 */
+    --brand-panel: 230 237 241; /* #e6edf1: the logo panel, softened so it is not the one glaring white block */
+    --c-gray-50: 28 47 60; --c-gray-100: 35 55 70; --c-gray-200: 42 61 74; --c-gray-300: 54 75 89; --c-gray-400: 74 95 110; --c-gray-500: 70 89 106; --c-gray-600: 64 84 100; --c-gray-700: 58 78 93; --c-gray-800: 52 71 86; --c-gray-900: 47 66 80; --c-gray-950: 41 59 72;
+    --c-gray-400-ink: 127 147 161; --c-gray-500-ink: 154 171 183; --c-gray-600-ink: 173 188 198; --c-gray-700-ink: 194 206 214; --c-gray-800-ink: 214 223 229; --c-gray-900-ink: 227 235 240; --c-gray-950-ink: 238 243 246;
+    --c-slate-50: 28 47 60; --c-slate-100: 35 55 70; --c-slate-200: 42 61 74; --c-slate-300: 54 75 89; --c-slate-400: 148 163 184; --c-slate-500: 100 116 139; --c-slate-600: 71 85 105; --c-slate-700: 51 65 85; --c-slate-800: 30 41 59; --c-slate-900: 15 23 42; --c-slate-950: 2 6 23;
+    --c-slate-400-ink: 127 147 161; --c-slate-500-ink: 154 171 183; --c-slate-600-ink: 173 188 198; --c-slate-700-ink: 194 206 214; --c-slate-800-ink: 214 223 229; --c-slate-900-ink: 227 235 240; --c-slate-950-ink: 238 243 246;
+    --c-red-50: 49 39 48; --c-red-100: 67 42 50; --c-red-200: 91 46 52; --c-red-300: 119 50 55; --c-red-400: 248 113 113; --c-red-500: 239 68 68; --c-red-600: 220 38 38; --c-red-700: 185 28 28; --c-red-800: 153 27 27; --c-red-900: 127 29 29; --c-red-950: 69 10 10;
+    --c-red-400-ink: 239 68 68; --c-red-500-ink: 244 95 95; --c-red-600-ink: 248 113 113; --c-red-700-ink: 252 165 165; --c-red-800-ink: 254 202 202; --c-red-900-ink: 254 226 226; --c-red-950-ink: 254 242 242;
+    --c-orange-50: 51 45 42; --c-orange-100: 69 52 40; --c-orange-200: 94 61 38; --c-orange-300: 124 71 35; --c-orange-400: 251 146 60; --c-orange-500: 249 115 22; --c-orange-600: 234 88 12; --c-orange-700: 194 65 12; --c-orange-800: 154 52 18; --c-orange-900: 124 45 18; --c-orange-950: 67 20 7;
+    --c-orange-400-ink: 249 115 22; --c-orange-500-ink: 250 134 45; --c-orange-600-ink: 251 146 60; --c-orange-700-ink: 253 186 116; --c-orange-800-ink: 254 215 170; --c-orange-900-ink: 255 237 213; --c-orange-950-ink: 255 247 237;
+    --c-amber-50: 50 51 41; --c-amber-100: 68 61 38; --c-amber-200: 93 74 34; --c-amber-300: 122 90 30; --c-amber-400: 251 191 36; --c-amber-500: 245 158 11; --c-amber-600: 217 119 6; --c-amber-700: 180 83 9; --c-amber-800: 146 64 14; --c-amber-900: 120 53 15; --c-amber-950: 69 26 3;
+    --c-amber-400-ink: 245 158 11; --c-amber-500-ink: 249 178 26; --c-amber-600-ink: 251 191 36; --c-amber-700-ink: 252 211 77; --c-amber-800-ink: 253 230 138; --c-amber-900-ink: 254 243 199; --c-amber-950-ink: 255 251 235;
+    --c-yellow-50: 49 54 40; --c-yellow-100: 66 65 37; --c-yellow-200: 89 81 33; --c-yellow-300: 117 100 28; --c-yellow-400: 250 204 21; --c-yellow-500: 234 179 8; --c-yellow-600: 202 138 4; --c-yellow-700: 161 98 7; --c-yellow-800: 133 77 14; --c-yellow-900: 113 63 18; --c-yellow-950: 66 32 6;
+    --c-yellow-400-ink: 234 179 8; --c-yellow-500-ink: 244 194 16; --c-yellow-600-ink: 250 204 21; --c-yellow-700-ink: 253 224 71; --c-yellow-800-ink: 254 240 138; --c-yellow-900-ink: 254 249 195; --c-yellow-950-ink: 254 252 232;
+    --c-green-50: 23 56 51; --c-green-100: 24 69 55; --c-green-200: 25 87 61; --c-green-300: 27 108 67; --c-green-400: 74 222 128; --c-green-500: 34 197 94; --c-green-600: 22 163 74; --c-green-700: 21 128 61; --c-green-800: 22 101 52; --c-green-900: 20 83 45; --c-green-950: 5 46 22;
+    --c-green-400-ink: 34 197 94; --c-green-500-ink: 58 212 114; --c-green-600-ink: 74 222 128; --c-green-700-ink: 134 239 172; --c-green-800-ink: 187 247 208; --c-green-900-ink: 220 252 231; --c-green-950-ink: 240 253 244;
+    --c-emerald-50: 20 54 56; --c-emerald-100: 20 66 63; --c-emerald-200: 19 83 72; --c-emerald-300: 19 102 83; --c-emerald-400: 52 211 153; --c-emerald-500: 16 185 129; --c-emerald-600: 5 150 105; --c-emerald-700: 4 120 87; --c-emerald-800: 6 95 70; --c-emerald-900: 6 78 59; --c-emerald-950: 2 44 34;
+    --c-emerald-400-ink: 16 185 129; --c-emerald-500-ink: 38 201 143; --c-emerald-600-ink: 52 211 153; --c-emerald-700-ink: 110 231 183; --c-emerald-800-ink: 167 243 208; --c-emerald-900-ink: 209 250 229; --c-emerald-950-ink: 236 253 245;
+    --c-teal-50: 21 54 61; --c-teal-100: 21 66 70; --c-teal-200: 21 83 84; --c-teal-300: 21 102 99; --c-teal-400: 45 212 191; --c-teal-500: 20 184 166; --c-teal-600: 13 148 136; --c-teal-700: 15 118 110; --c-teal-800: 17 94 89; --c-teal-900: 19 78 74; --c-teal-950: 4 47 46;
+    --c-teal-400-ink: 20 184 166; --c-teal-500-ink: 35 201 181; --c-teal-600-ink: 45 212 191; --c-teal-700-ink: 94 234 212; --c-teal-800-ink: 153 246 228; --c-teal-900-ink: 204 251 241; --c-teal-950-ink: 240 253 250;
+    --c-sky-50: 20 52 69; --c-sky-100: 20 62 84; --c-sky-200: 19 77 105; --c-sky-300: 18 94 130; --c-sky-400: 56 189 248; --c-sky-500: 14 165 233; --c-sky-600: 2 132 199; --c-sky-700: 3 105 161; --c-sky-800: 7 89 133; --c-sky-900: 12 74 110; --c-sky-950: 8 47 73;
+    --c-sky-400-ink: 14 165 233; --c-sky-500-ink: 39 179 242; --c-sky-600-ink: 56 189 248; --c-sky-700-ink: 125 211 252; --c-sky-800-ink: 186 230 253; --c-sky-900-ink: 224 242 254; --c-sky-950-ink: 240 249 255;
+    --c-blue-50: 26 47 71; --c-blue-100: 29 55 87; --c-blue-200: 33 65 109; --c-blue-300: 38 78 135; --c-blue-400: 96 165 250; --c-blue-500: 59 130 246; --c-blue-600: 37 99 235; --c-blue-700: 29 78 216; --c-blue-800: 30 64 175; --c-blue-900: 30 58 138; --c-blue-950: 23 37 84;
+    --c-blue-400-ink: 59 130 246; --c-blue-500-ink: 81 151 248; --c-blue-600-ink: 106 168 247; --c-blue-700-ink: 147 197 253; --c-blue-800-ink: 191 219 254; --c-blue-900-ink: 219 234 254; --c-blue-950-ink: 239 246 255;
+    --c-indigo-50: 31 44 70; --c-indigo-100: 37 49 86; --c-indigo-200: 46 56 108; --c-indigo-300: 56 65 133; --c-indigo-400: 129 140 248; --c-indigo-500: 99 102 241; --c-indigo-600: 79 70 229; --c-indigo-700: 67 56 202; --c-indigo-800: 55 48 163; --c-indigo-900: 49 46 129; --c-indigo-950: 30 27 75;
+    --c-indigo-400-ink: 99 102 241; --c-indigo-500-ink: 117 125 245; --c-indigo-600-ink: 129 140 248; --c-indigo-700-ink: 165 180 252; --c-indigo-800-ink: 199 210 254; --c-indigo-900-ink: 224 231 255; --c-indigo-950-ink: 238 242 255;
+    --c-violet-50: 36 42 71; --c-violet-100: 46 47 87; --c-violet-200: 59 53 109; --c-violet-300: 74 61 135; --c-violet-400: 167 139 250; --c-violet-500: 139 92 246; --c-violet-600: 124 58 237; --c-violet-700: 109 40 217; --c-violet-800: 91 33 182; --c-violet-900: 76 29 149; --c-violet-950: 46 16 101;
+    --c-violet-400-ink: 139 92 246; --c-violet-500-ink: 156 120 248; --c-violet-600-ink: 167 139 250; --c-violet-700-ink: 196 181 253; --c-violet-800-ink: 221 214 254; --c-violet-900-ink: 237 233 254; --c-violet-950-ink: 245 243 255;
+    --c-purple-50: 40 42 71; --c-purple-100: 52 46 87; --c-purple-200: 68 51 110; --c-purple-300: 87 58 136; --c-purple-400: 192 132 252; --c-purple-500: 168 85 247; --c-purple-600: 147 51 234; --c-purple-700: 126 34 206; --c-purple-800: 107 33 168; --c-purple-900: 88 28 135; --c-purple-950: 59 7 100;
+    --c-purple-400-ink: 168 85 247; --c-purple-500-ink: 182 113 250; --c-purple-600-ink: 192 132 252; --c-purple-700-ink: 216 180 254; --c-purple-800-ink: 233 213 255; --c-purple-900-ink: 243 232 255; --c-purple-950-ink: 250 245 255;
+    /* Shadows barely show on dark surfaces: every elevation also gets a faint light hairline. */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --shadow: 0 0 0 1px rgb(var(--card-edge)), 0 1px 3px 0 rgb(0 0 0 / 0.35);
+    --shadow-md: 0 0 0 1px rgb(var(--card-edge)), 0 4px 6px -1px rgb(0 0 0 / 0.4);
+    --shadow-lg: 0 0 0 1px rgb(255 255 255 / 0.06), 0 10px 15px -3px rgb(0 0 0 / 0.5);
+    --shadow-xl: 0 0 0 1px rgb(255 255 255 / 0.07), 0 20px 25px -5px rgb(0 0 0 / 0.55);
+    --shadow-2xl: 0 0 0 1px rgb(255 255 255 / 0.07), 0 25px 50px -12px rgb(0 0 0 / 0.65);
+  }
+
+  /* Dark disabled fills (disabled:bg-gray-400 / -500) are lighter than the enabled secondary buttons; dim every
+     disabled control instead so 'Kaydediliyor...' / 'Pasif' never look clickable. */
+  .dark :is(button, input, select, textarea):disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
 }
 
-html {
-  scroll-behavior: smooth;
-}
+@layer base {
+  * {
+    @apply border-border;
+  }
 
-body {
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-    "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: rgb(var(--background));
+    color: rgb(var(--foreground));
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
+      "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Text fields follow the card surface (the browser's own field colour would be a neutral gray in dark mode).
+     :where() keeps this at zero specificity, so bg-gray-50 and other classes on an input still win. */
+  :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]), select, textarea) {
+    background-color: rgb(var(--surface));
+  }
 }
 
 /* Tailwind preflight uses gray-400 placeholders, which fail contrast on white and gray-50 inputs. */
 input::placeholder,
 textarea::placeholder {
-  color: #6b7280;
+  color: rgb(var(--c-gray-500-ink, var(--c-gray-500)));
 }
