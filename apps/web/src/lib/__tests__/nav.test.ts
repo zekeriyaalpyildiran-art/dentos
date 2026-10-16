@@ -14,6 +14,7 @@ import {
   homePathForUser,
   isMenuItemActive,
   menuBadge,
+  menuButtonLabel,
   menuItemsFor,
   rolesAllowedFor,
   SECTIONS_CLOSED_FOR,
@@ -218,6 +219,16 @@ describe("menuBadge", () => {
     for (const key of Object.keys(MENU_BADGES) as (keyof typeof MENU_BADGES)[]) {
       expect(pageSource(MENU_BADGES[key].href.split("?")[0]), key).not.toBeNull();
     }
+  });
+});
+
+describe("menuButtonLabel (phone menu button)", () => {
+  it("names the open tasks and, for stock managers, the open room requests", () => {
+    expect(menuButtonLabel({})).toBe("Menüyü aç");
+    expect(menuButtonLabel({ tasks: 3 })).toBe("Menüyü aç, 3 açık görev");
+    expect(menuButtonLabel({ roomRequests: 4 })).toBe("Menüyü aç, 4 açık oda talebi");
+    expect(menuButtonLabel({ tasks: 3, roomRequests: 4, stock: 9 })).toBe("Menüyü aç, 3 açık görev, 4 açık oda talebi");
+    expect(menuButtonLabel({ tasks: 0, roomRequests: 0 })).toBe("Menüyü aç");
   });
 });
 

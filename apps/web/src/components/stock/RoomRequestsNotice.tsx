@@ -6,6 +6,7 @@
 
 import Link from "next/link";
 import {
+  NOTICE_ROOM_REQUESTS,
   ROOM_REQUESTS_HREF,
   isLastBoxNote,
   openRoomRequestsText,
@@ -34,7 +35,15 @@ function requestMeta(r: RoomRequestJson): string {
 }
 
 /** Top of the stock home for managers: "2 oda talebi bekliyor" with the first few rooms and products. */
-export function RoomRequestsNotice({ total, rows, max = 3 }: { total: number; rows: RoomRequestJson[]; max?: number }) {
+export function RoomRequestsNotice({
+  total,
+  rows,
+  max = NOTICE_ROOM_REQUESTS,
+}: {
+  total: number;
+  rows: RoomRequestJson[];
+  max?: number;
+}) {
   if (!(total > 0)) return null;
   const { lines, more } = summarizeRoomRequests(rows, total, max);
   const byId = new Map(rows.map((r) => [r.id, r]));
@@ -65,7 +74,7 @@ export function RoomRequestsNotice({ total, rows, max = 3 }: { total: number; ro
               <li key={line.id}>
                 <Link
                   href={roomRequestsHref(r?.location_id)}
-                  className="flex flex-wrap items-baseline gap-x-2 min-h-[44px] py-1 hover:underline"
+                  className="flex flex-wrap content-center items-baseline gap-x-2 min-h-[48px] py-1 hover:underline"
                 >
                   <span className="font-semibold">{line.text}</span>
                   {r && (

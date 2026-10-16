@@ -6,6 +6,8 @@
 // there). crm_work_list builds the whole work list on every call, so on the free database the badges refresh only
 // every 5 minutes while the tab is visible (page changes at most once a minute); any failure just hides that badge.
 // A page that changed one of the counts (e.g. a room request was created) calls refreshMenuBadges() to update now.
+// Each load is announced (onMenuBadgesLoaded), so a page showing the same figure (the stock home notice of open room
+// requests) follows the menu's cadence instead of polling on its own.
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
@@ -20,6 +22,8 @@ const REFRESH_MS = 5 * 60_000;
 const MIN_GAP_MS = 60_000;
 /** Same-tab signal of refreshMenuBadges() (a window event, so no shared store is needed). */
 const REFRESH_EVENT = "dentos:menu-badges-refresh";
+/** Same-tab signal that the menu counts were just loaded (detail: MenuBadges). */
+const LOADED_EVENT = "dentos:menu-badges-loaded";
 
 /** Reload the menu counts now (after a write that changes one of them); ignores the one-minute gap. */
 export function refreshMenuBadges(): void {
@@ -28,6 +32,17 @@ export function refreshMenuBadges(): void {
   } catch {
     // Not in a browser: nothing to refresh.
   }
+}
+
+/** Called after every successful load of the menu counts in this tab; returns the unsubscribe function. */
+export function onMenuBadgesLoaded(listener: (badges: MenuBadges) => void): () => void {
+  const handler = (e: Event) => listener(((e as CustomEvent<MenuBadges>).detail ?? {}) as MenuBadges);
+  try {
+    window.addEventListener(LOADED_EVENT, handler);
+  } catch {
+    return () => {};
+  }
+  return () => window.removeEventListener(LOADED_EVENT, handler);
 }
 
 function count(value: unknown): number | undefined {
@@ -89,7 +104,13 @@ export function useMenuBadges(userId: string | null | undefined, stockManager = 
       last = Date.now();
       loadBadges(stockManager)
         .then((next) => {
-          if (alive) setBadges(next);
+          if (!alive) return;
+          setBadges(next);
+          try {
+            window.dispatchEvent(new CustomEvent(LOADED_EVENT, { detail: next }));
+          } catch {
+            // Listeners are optional.
+          }
         })
         .catch(() => {
           if (alive) setBadges({});

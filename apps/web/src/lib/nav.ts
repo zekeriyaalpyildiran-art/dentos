@@ -143,6 +143,17 @@ export function menuBadge(
   return { text: `${count} ${meta.short}`, label: meta.label(n), href: meta.href };
 }
 
+/**
+ * Screen-reader name of the phone's menu button, with what waits inside the drawer:
+ * "Menüyü aç, 3 açık görev, 4 açık oda talebi" (zero or missing counts are left out).
+ */
+export function menuButtonLabel(badges: Partial<Record<MenuBadgeKey, number>>): string {
+  const parts = ["Menüyü aç"];
+  if (badgeText(badges.tasks)) parts.push(`${Math.floor(badges.tasks as number)} açık görev`);
+  if (badgeText(badges.roomRequests)) parts.push(`${Math.floor(badges.roomRequests as number)} açık oda talebi`);
+  return parts.join(", ");
+}
+
 /** Badge text: hidden at 0, capped at 99+. */
 export function badgeText(n: number | null | undefined): string | null {
   if (!n || n <= 0 || !Number.isFinite(n)) return null;

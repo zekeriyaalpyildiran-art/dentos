@@ -5,8 +5,13 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  ATTENTION_ROOM_REQUESTS,
+  LAST_BOX_DRAFT_TEXT,
+  LAST_BOX_INACTIVE_TEXT,
   LAST_BOX_NOTE,
+  NOTICE_ROOM_REQUESTS,
   ROOM_REQUESTS_HREF,
+  attentionRoomRequests,
   findOpenRoomRequest,
   hasPurchasePack,
   isLastBoxNote,
@@ -14,6 +19,7 @@ import {
   isRequestRoom,
   lastBoxDefaultQuantity,
   lastBoxDuplicateText,
+  lastBoxItemProblem,
   lastBoxRoomKey,
   lastBoxSuccessText,
   openRoomRequestsText,
@@ -147,6 +153,30 @@ describe("findOpenRoomRequest (no duplicate request for the same room and card)"
     expect(s.more).toBe(3);
     expect(summarizeRoomRequests(rows.slice(0, 1), 1).more).toBe(0);
     expect(summarizeRoomRequests([row({ status: "delivered" })], 0).lines).toEqual([]);
+  });
+
+  it("lists in 'Bugün dikkat isteyenler' only the open requests the notice does not name", () => {
+    const rows = ["a", "b", "c", "d", "e", "f", "g"].map((id, i) => row({ id, ref_no: i + 1 }));
+    expect(NOTICE_ROOM_REQUESTS).toBe(3);
+    expect(ATTENTION_ROOM_REQUESTS).toBe(3);
+    expect(attentionRoomRequests(rows).map((r) => r.id)).toEqual(["d", "e", "f"]);
+    expect(attentionRoomRequests(rows.slice(0, 3))).toEqual([]);
+    expect(attentionRoomRequests(rows.slice(0, 4)).map((r) => r.id)).toEqual(["d"]);
+    // Closed rows are skipped before counting, as in the notice.
+    const mixed = [row({ id: "x", status: "delivered" }), ...rows.slice(0, 4)];
+    expect(attentionRoomRequests(mixed).map((r) => r.id)).toEqual(["d"]);
+    const names = new Set(summarizeRoomRequests(rows, rows.length).lines.map((l) => l.id));
+    expect(attentionRoomRequests(rows).some((r) => names.has(r.id))).toBe(false);
+  });
+});
+
+describe("lastBoxItemProblem (deep link or card that cannot get a request)", () => {
+  it("refuses passive and draft cards with the scan path's texts", () => {
+    expect(lastBoxItemProblem({ is_active: true, needs_review: false })).toBeNull();
+    expect(lastBoxItemProblem({ is_active: false, needs_review: false })).toBe(LAST_BOX_INACTIVE_TEXT);
+    expect(lastBoxItemProblem({ is_active: true, needs_review: true })).toBe(LAST_BOX_DRAFT_TEXT);
+    expect(LAST_BOX_DRAFT_TEXT).toBe("Bu ürünün kartı henüz tamamlanmadı. Stok sorumlusuna bildirin.");
+    expect(LAST_BOX_INACTIVE_TEXT).toBe("Bu ürün kartı pasif. Stok sorumlusuna bildirin.");
   });
 });
 

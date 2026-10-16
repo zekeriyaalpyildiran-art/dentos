@@ -22,6 +22,7 @@ import {
   hasPurchasePack,
   lastBoxDefaultQuantity,
   lastBoxDuplicateText,
+  lastBoxItemProblem,
   lastBoxRoomKey,
   lastBoxSuccessText,
   packFactor,
@@ -32,6 +33,7 @@ import {
 } from "@/lib/stock/last-box";
 import { ROOM_REQUEST_STATUS_LABELS, qtyLabel } from "@/lib/stock/purchasing";
 import {
+  RELOAD_KEYS,
   newKey,
   stockItemDetail,
   stockItemLevels,
@@ -71,6 +73,8 @@ const NOTE_MAX = 500;
 const touchSecondary =
   "inline-flex items-center justify-center min-h-[48px] px-4 border border-gray-300 text-gray-800 rounded-lg hover:bg-gray-50 disabled:opacity-40";
 const textButton = "inline-flex items-center min-h-[48px] text-sm text-blue-700 hover:underline";
+/** The duplicate check gets this long; then the form opens anyway (the submit checks again before saving). */
+const CHECK_TIMEOUT_MS = 8000;
 
 // ---------------------------------------------------------------------------
 // Data access (live RPCs by default; the preview passes a mock)
@@ -111,6 +115,9 @@ export const liveLastBoxApi: LastBoxApi = {
 // The screen
 // ---------------------------------------------------------------------------
 
+/** How the product step starts once the room is known: the camera at once, or the list's search box. */
+export type LastBoxStart = "scan" | "list";
+
 interface UnknownScan {
   scan: Gs1Scan;
   pending: ProductRequestJson | null;
@@ -124,6 +131,11 @@ export interface LastBoxSheetViewProps {
   defaultRoomId: string;
   /** Opened from a card page: start with this card. */
   initialItemId?: string | null;
+  /**
+   * 'scan': open the camera as soon as the room is known (tap, scan, tap 'Oda talebini aç'); closing the camera
+   * leaves the list below. 'list': focus the list's search box instead. Default: focus the scan button.
+   */
+  start?: LastBoxStart;
   /** Stock managers may define an unknown barcode on the spot (renderDefineItem). */
   canManage: boolean;
   onClose: () => void;
@@ -142,6 +154,7 @@ export function LastBoxSheetView({
   rooms,
   defaultRoomId,
   initialItemId,
+  start,
   canManage,
   onClose,
   onRoomChosen,
@@ -173,6 +186,8 @@ export function LastBoxSheetView({
   const [error, setError] = useState<StockError | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [result, setResult] = useState<{ request: RoomRequestJson; alreadySaved: boolean } | null>(null);
+  /** The card was reloaded after it changed on the server (E_UNIT_CHANGED); says why the quantity was reset. */
+  const [reloaded, setReloaded] = useState<string | null>(null);
 
   const [reqName, setReqName] = useState("");
   const [reqNote, setReqNote] = useState("");
@@ -189,6 +204,9 @@ export function LastBoxSheetView({
   const scanButtonRef = useRef<HTMLButtonElement>(null);
   const firstRoomRef = useRef<HTMLButtonElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  /** The requested start, used once (a later room change only moves the focus). */
+  const autoStart = useRef<LastBoxStart | undefined>(start);
 
   const room = rooms?.find((r) => r.id === roomId) ?? null;
   const showRooms = roomPicking || !room;
@@ -207,9 +225,27 @@ export function LastBoxSheetView({
     setScanError(null);
     setLocalError(null);
     setError(null);
+    setReloaded(null);
   }, []);
 
-  // Opened from a card page.
+  /** Takes the card unless it is passive or a draft (the RPC would refuse it); then says so like a scan does. */
+  const chooseIfUsable = useCallback(
+    (row: LevelRow): boolean => {
+      const problem = lastBoxItemProblem(row);
+      if (problem) {
+        setItem(null);
+        setUnknown(null);
+        setError(null);
+        setScanError(problem);
+        return false;
+      }
+      chooseItem(row);
+      return true;
+    },
+    [chooseItem]
+  );
+
+  // Opened from a card page or a deep link with a card.
   const initialized = useRef(false);
   useEffect(() => {
     if (initialized.current || !initialItemId) return;
@@ -217,26 +253,44 @@ export function LastBoxSheetView({
     setItemLoading(true);
     api
       .loadItem(initialItemId)
-      .then(chooseItem)
+      .then(chooseIfUsable)
       .catch((e) => setError(toStockError(e)))
       .finally(() => setItemLoading(false));
-  }, [api, initialItemId, chooseItem]);
+  }, [api, initialItemId, chooseIfUsable]);
 
-  // First focus: the room buttons when no room is known yet, else the scan button.
+  const focusPicker = () => pickerRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+
+  /** The room is known and no card yet: open the camera, focus the list, or focus the scan button. */
+  const startProductStep = () => {
+    const how = autoStart.current;
+    autoStart.current = undefined;
+    if (how === "scan") setScannerOpen(true);
+    else if (how === "list") focusPicker();
+    else scanButtonRef.current?.focus();
+  };
+
+  // First focus: the room buttons when no room is known yet, else the product step (camera, list or scan button).
   const focused = useRef(false);
   useEffect(() => {
     if (focused.current || rooms === null || initialItemId) return;
     focused.current = true;
     // The preselected room may arrive in this same render (its state is set by the effect above).
     const known = !!room || (!!defaultRoomId && rooms.some((r) => r.id === defaultRoomId));
-    (known ? scanButtonRef.current : firstRoomRef.current)?.focus();
+    if (known) startProductStep();
+    else firstRoomRef.current?.focus();
+    // startProductStep reads refs only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, room, defaultRoomId, initialItemId]);
 
-  // Duplicate check as soon as the room and the card are known (the submit checks again).
+  // Duplicate check as soon as the room and the card are known (the submit checks again). Until it answers the form
+  // says so and the submit waits; a check that hangs or fails opens the form (the submit's own check still runs).
   useEffect(() => {
     setExisting(undefined);
     if (!roomId || !item || result) return;
     let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (!cancelled) setExisting((e) => (e === undefined ? null : e));
+    }, CHECK_TIMEOUT_MS);
     api
       .findOpenRequest(roomId, item.id)
       .then((found) => {
@@ -244,9 +298,11 @@ export function LastBoxSheetView({
       })
       .catch(() => {
         if (!cancelled) setExisting(null);
-      });
+      })
+      .finally(() => window.clearTimeout(timer));
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [api, roomId, item, result]);
 
@@ -260,7 +316,7 @@ export function LastBoxSheetView({
     setRoomPicking(false);
     setLocalError(null);
     onRoomChosen?.(id);
-    window.setTimeout(() => scanButtonRef.current?.focus(), 0);
+    if (!item) window.setTimeout(startProductStep, 0);
   }
 
   async function lookup(scan: Gs1Scan) {
@@ -271,7 +327,7 @@ export function LastBoxSheetView({
     try {
       const look = await api.lookupBarcode(scan);
       if (look.match === "known" && look.item) {
-        chooseItem(look.item);
+        chooseIfUsable(look.item);
       } else if (look.match === "draft") {
         setScanError("Bu ürünün kartı henüz tamamlanmadı. Stok sorumlusuna bildirin.");
       } else if (look.match === "inactive") {
@@ -311,6 +367,7 @@ export function LastBoxSheetView({
     setExisting(undefined);
     setLocalError(null);
     setError(null);
+    setReloaded(null);
     window.setTimeout(() => scanButtonRef.current?.focus(), 0);
   }
 
@@ -339,8 +396,26 @@ export function LastBoxSheetView({
     onCreated?.(request);
   }
 
+  /** The card changed on the server (pack factor): load it again, so the quantity and unit follow the new pack. */
+  function reloadItem(current: LevelRow, err: StockError) {
+    opKey.current = newKey();
+    setItemLoading(true);
+    api
+      .loadItem(current.id)
+      .then((row) => {
+        if (chooseIfUsable(row)) {
+          setReloaded(
+            "Ürün kartının kutu / adet bilgisi değişmiş; miktar yeni pakete göre yeniden ayarlandı. Kontrol edip tekrar gönderin."
+          );
+        }
+      })
+      .catch(() => setError(err))
+      .finally(() => setItemLoading(false));
+  }
+
   async function submit() {
     setError(null);
+    setReloaded(null);
     const problem = validate();
     setLocalError(problem);
     if (problem || !room || !item) return;
@@ -382,6 +457,7 @@ export function LastBoxSheetView({
         }
       }
       setError(err);
+      if (!err.network && err.key && RELOAD_KEYS.has(err.key)) reloadItem(item, err);
     } finally {
       setBusy(false);
     }
@@ -428,25 +504,31 @@ export function LastBoxSheetView({
     setUnit("usage");
     setError(null);
     setLocalError(null);
+    setReloaded(null);
     window.setTimeout(() => scanButtonRef.current?.focus(), 0);
   }
 
   // ------------------------------------------------------------------ render
 
+  /** Room and card are chosen and the duplicate check has not answered yet. */
+  const checking = !!room && !!item && existing === undefined && !result;
+
   const footer = result ? undefined : (
     <button
       type="button"
       className={bigPrimary}
-      disabled={busy || itemLoading || !room || !item || !!existing}
+      disabled={busy || itemLoading || !room || !item || !!existing || checking}
       onClick={() => void submit()}
     >
       {busy
         ? "Gönderiliyor..."
         : existing
           ? "Bu oda için açık talep var"
-          : pendingRetry
-            ? "Aynı bilgilerle tekrar dene"
-            : "📣 Oda talebini aç"}
+          : checking
+            ? "Kontrol ediliyor..."
+            : pendingRetry
+              ? "Aynı bilgilerle tekrar dene"
+              : "📣 Oda talebini aç"}
     </button>
   );
 
@@ -643,9 +725,9 @@ export function LastBoxSheetView({
                     </p>
                   ) : (
                     !unknown && (
-                      <div>
+                      <div ref={pickerRef}>
                         <p className="text-sm font-semibold text-gray-800 mb-2">Barkod yoksa listeden seçin</p>
-                        <ItemPicker loader={api.listItems} onPick={chooseItem} />
+                        <ItemPicker loader={api.listItems} onPick={(row) => void chooseIfUsable(row)} />
                       </div>
                     )
                   )}
@@ -670,8 +752,20 @@ export function LastBoxSheetView({
               </div>
             )}
 
+            {reloaded && (
+              <div role="status">
+                <Notice tone="warn">{reloaded}</Notice>
+              </div>
+            )}
+
+            {checking && (
+              <p role="status" className="text-sm text-gray-600">
+                Açık talep kontrol ediliyor...
+              </p>
+            )}
+
             {/* 3: quantity and note */}
-            {item && !existing && (
+            {item && !existing && !checking && (
               <section aria-labelledby="lastbox-qty-title" className="space-y-3">
                 <h3 id="lastbox-qty-title" className="text-sm font-semibold text-gray-800">
                   3. Ne kadar istensin?
@@ -741,7 +835,15 @@ export function LastBoxSheetView({
       )}
 
       {scannerOpen && (
-        <BarcodeScanner purpose="movement" onClose={() => setScannerOpen(false)} onScan={(raw) => handleRaw(raw)} />
+        <BarcodeScanner
+          purpose="movement"
+          onClose={() => {
+            setScannerOpen(false);
+            // Back on the sheet (no camera, or closed without a code): the scan button, with the list right below.
+            window.setTimeout(() => scanButtonRef.current?.focus(), 0);
+          }}
+          onScan={(raw) => handleRaw(raw)}
+        />
       )}
       {defineGtin !== null &&
         renderDefineItem?.({
@@ -749,7 +851,7 @@ export function LastBoxSheetView({
           onCancel: () => setDefineGtin(null),
           onSaved: (saved) => {
             setDefineGtin(null);
-            chooseItem(saved);
+            chooseIfUsable(saved);
           },
         })}
     </StockModal>
@@ -839,6 +941,61 @@ export interface LastBoxOpenOptions {
   itemId?: string;
   /** Start in this room (deep link, the room the usage was taken from). */
   locationId?: string;
+  /** Product step once the room is known: camera at once ('scan') or the list's search box ('list'). */
+  start?: LastBoxStart;
+}
+
+/**
+ * The stock home's 'Son kutu' card: two big buttons, so the report is tap, scan, tap ('📷 Barkod okut' opens the
+ * camera as soon as the room is known) or tap, pick, tap ('📋 Listeden seç' opens with the search box focused).
+ */
+export function LastBoxActionCard({ onStart }: { onStart: (start: LastBoxStart) => void }) {
+  const button =
+    "flex min-h-[64px] flex-col items-center justify-center gap-0.5 rounded-lg px-2 py-2 text-base font-semibold";
+  return (
+    <section
+      aria-labelledby="lastbox-card-title"
+      className="rounded-lg border-2 border-amber-400 bg-amber-50 p-4 text-amber-900 sm:flex sm:items-center sm:gap-4"
+    >
+      <div className="flex min-w-0 items-center gap-4 sm:flex-1">
+        <span className="text-3xl" aria-hidden="true">
+          📣
+        </span>
+        <div className="min-w-0">
+          <h2 id="lastbox-card-title" className="text-lg font-semibold">
+            {LAST_BOX_ACTION_LABEL}
+          </h2>
+          <p className="text-sm">Odada son kutuyu açtıysanız bildirin; ana depodan yenisi için talep açılır.</p>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:mt-0 sm:w-80 sm:shrink-0">
+        <button
+          type="button"
+          onClick={() => onStart("scan")}
+          className={`${button} bg-amber-700 text-white hover:bg-amber-800`}
+        >
+          <span aria-hidden="true" className="text-xl leading-none">
+            📷
+          </span>
+          <span>
+            Barkod okut<span className="sr-only"> (son kutu bildir)</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onStart("list")}
+          className={`${button} border-2 border-amber-600 bg-white text-amber-900 hover:bg-amber-100`}
+        >
+          <span aria-hidden="true" className="text-xl leading-none">
+            📋
+          </span>
+          <span>
+            Listeden seç<span className="sr-only"> (son kutu bildir)</span>
+          </span>
+        </button>
+      </div>
+    </section>
+  );
 }
 
 export function LastBoxSheet({ options, onClose }: { options: LastBoxOpenOptions; onClose: () => void }) {
@@ -879,6 +1036,7 @@ export function LastBoxSheet({ options, onClose }: { options: LastBoxOpenOptions
       rooms={rooms}
       defaultRoomId={defaultRoomId}
       initialItemId={options.itemId ?? null}
+      start={options.itemId ? undefined : options.start}
       canManage={gates.mgr}
       onClose={onClose}
       onRoomChosen={(id) => {

@@ -3,10 +3,12 @@
 // Room requests (oda talepleri; spec p8_purchasing §12.6, RPC §5.4-§5.5, §6.4). Every staff member reads them;
 // operating roles create; stock managers approve, reject and deliver; the requester may withdraw. 'Son kutu' reports
 // (LastBoxSheet) are ordinary room requests with the note "Son kutu açıldı"; each card says which room, which
-// product, who reported it and when. `?location=<id>` opens the list filtered to one room (links from the notices).
+// product, who reported it and when. `?location=<id>` opens the list filtered to one room (links from the notices);
+// the room filter always follows the address, so the menu count or the Talepler tab (no `location`) shows all rooms
+// again, and choosing a room writes it to the address (reload and tab switches keep it).
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { UUID_RE } from "@/lib/finance";
 import { isLastBoxNote } from "@/lib/stock/last-box";
@@ -59,19 +61,40 @@ type Dialog =
   | { kind: "cancel"; request: RoomRequestJson }
   | null;
 
+function locationFromParams(params: Pick<URLSearchParams, "get">): string {
+  const l = params.get("location");
+  return l && UUID_RE.test(l) ? l : "";
+}
+
 export function RoomRequestsPanel() {
   const { gates, tick, notifyChanged, today } = useStock();
   const { active: locations } = useStockLocations();
   const rooms = useMemo(() => locations.filter((l) => l.kind === "room" || l.kind === "sterilization"), [locations]);
   const actionKey = useActionKeys();
   const params = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const urlLocation = locationFromParams(params);
   const [status, setStatus] = useState<RoomRequestStatusFilter>("open");
   const [mine, setMine] = useState(false);
-  const [locationId, setLocationId] = useState(() => {
-    const l = params.get("location");
-    return l && UUID_RE.test(l) ? l : "";
-  });
+  const [locationId, setLocationId] = useState(urlLocation);
   const [offset, setOffset] = useState(0);
+
+  // The page stays mounted when a link changes only the query (menu count, notice line, Talepler tab).
+  useEffect(() => {
+    setLocationId(urlLocation);
+    setOffset(0);
+  }, [urlLocation]);
+
+  const chooseLocation = (id: string) => {
+    setLocationId(id);
+    setOffset(0);
+    const next = new URLSearchParams(params.toString());
+    if (id) next.set("location", id);
+    else next.delete("location");
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  };
   const [rows, setRows] = useState<RoomRequestJson[] | null>(null);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<Partial<Record<RoomRequestStatus, number>>>({});
@@ -178,10 +201,7 @@ export function RoomRequestsPanel() {
         <select
           className={`${stockInput} sm:max-w-xs`}
           value={locationId}
-          onChange={(e) => {
-            setLocationId(e.target.value);
-            setOffset(0);
-          }}
+          onChange={(e) => chooseLocation(e.target.value)}
           aria-label="Oda"
         >
           <option value="">Tüm odalar</option>

@@ -198,7 +198,7 @@ export default function ItemDetailPage() {
       actions={
         <>
           {gates.op && ready && (
-            <button type="button" className={`${buttonPrimary} min-h-[44px]`} onClick={() => openSheet({ itemId: item.id })}>
+            <button type="button" className={`${buttonPrimary} min-h-[48px]`} onClick={() => openSheet({ itemId: item.id })}>
               Hareket
             </button>
           )}
@@ -206,7 +206,7 @@ export default function ItemDetailPage() {
             // A room opened its last box of this card: room request from the main warehouse.
             <button
               type="button"
-              className={`${buttonSecondary} min-h-[44px]`}
+              className={`${buttonSecondary} min-h-[48px]`}
               onClick={() => openLastBox({ itemId: item.id })}
             >
               📣 Son kutu

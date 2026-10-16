@@ -5,11 +5,11 @@
 // stock managers also read the open room requests (stock_room_request_list) for the notice and the attention list.
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuthStore } from "@/lib/store";
 import { TRACKING_INFO, TRACKING_LEVELS, categoryLabel } from "@/lib/stock/codes";
 import { expiryLabel } from "@/lib/stock/expiry";
-import { LAST_BOX_ACTION_LABEL } from "@/lib/stock/last-box";
+import { ATTENTION_ROOM_REQUESTS, NOTICE_ROOM_REQUESTS, attentionRoomRequests } from "@/lib/stock/last-box";
 import {
   stockExpiryWatch,
   stockRoomRequestList,
@@ -24,7 +24,9 @@ import { formatQty } from "@/lib/stock/units";
 import { useStock } from "@/components/stock/StockContext";
 import { StockShell } from "@/components/stock/StockShell";
 import { MovementTable } from "@/components/stock/MovementTable";
+import { LastBoxActionCard } from "@/components/stock/LastBoxSheet";
 import { RoomRequestAttentionRow, RoomRequestsNotice } from "@/components/stock/RoomRequestsNotice";
+import { onMenuBadgesLoaded } from "@/components/useMenuBadges";
 import { useStockLocations } from "@/components/stock/useStockRefs";
 import {
   Card,
@@ -50,17 +52,33 @@ const ACTIONS = [
 
 type Drill = "critical" | "expiry" | "value" | null;
 
-/** Open room requests shown to managers (notice: first 3; attention list: first 3). */
-const OPEN_REQUESTS_SHOWN = 5;
+/** Open room requests read for managers: the notice names the first 3, 'Bugün dikkat isteyenler' the next 3. */
+const OPEN_REQUESTS_SHOWN = NOTICE_ROOM_REQUESTS + ATTENTION_ROOM_REQUESTS;
+/** A menu count load re-reads the notice when it says another number, or when the notice is older than this. */
+const NOTICE_STALE_MS = 60_000;
 
 /**
  * Open room requests for the people who approve / deliver them; nothing (and no read) for everyone else. A failure
- * (e.g. a database without migration 0025) only hides the block.
+ * (e.g. a database without migration 0025) only hides the block. Re-read after writes in this tab (`tick`) and with
+ * the menu count (every 5 minutes while visible, on returning to the tab), so the notice and '4 talep' agree.
  */
 function useOpenRoomRequests(enabled: boolean, tick: number): { total: number; rows: RoomRequestJson[] } {
   const [state, setState] = useState<{ total: number; rows: RoomRequestJson[] }>({ total: 0, rows: [] });
+  const [reload, setReload] = useState(0);
+  const loaded = useRef<{ total: number; at: number } | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    return onMenuBadgesLoaded((badges) => {
+      const last = loaded.current;
+      const differs = badges.roomRequests !== undefined && badges.roomRequests !== last?.total;
+      if (!last || differs || Date.now() - last.at >= NOTICE_STALE_MS) setReload((n) => n + 1);
+    });
+  }, [enabled]);
+
   useEffect(() => {
     if (!enabled) {
+      loaded.current = null;
       setState({ total: 0, rows: [] });
       return;
     }
@@ -69,7 +87,9 @@ function useOpenRoomRequests(enabled: boolean, tick: number): { total: number; r
       .then((r) => {
         if (cancelled) return;
         // The server decides who manages; a non-manager never sees this block even if the client gate said yes.
-        setState(r.can_manage === false ? { total: 0, rows: [] } : { total: r.total ?? 0, rows: r.rows || [] });
+        const next = r.can_manage === false ? { total: 0, rows: [] } : { total: r.total ?? 0, rows: r.rows || [] };
+        loaded.current = { total: next.total, at: Date.now() };
+        setState(next);
       })
       .catch(() => {
         if (!cancelled) setState({ total: 0, rows: [] });
@@ -77,7 +97,7 @@ function useOpenRoomRequests(enabled: boolean, tick: number): { total: number; r
     return () => {
       cancelled = true;
     };
-  }, [enabled, tick]);
+  }, [enabled, tick, reload]);
   return state;
 }
 
@@ -132,7 +152,8 @@ export default function StockHomePage() {
 
   const d = dashboard;
   const attention = gates.op ? d.attention.slice(0, 7) : d.attention.slice(0, 3);
-  const roomAttention = gates.mgr ? openRequests.rows.slice(0, 3) : [];
+  // The notice above names the first open requests; the attention list continues with the next ones (no repeats).
+  const roomAttention = gates.mgr ? attentionRoomRequests(openRequests.rows) : [];
   const emptyCatalog = d.items.active === 0 && d.items.draft === 0;
 
   return (
@@ -143,21 +164,9 @@ export default function StockHomePage() {
         {gates.op && (
           <section>
             {/* Rooms rarely record usage, so the room's last box is the signal that it is running out. */}
-            <button
-              type="button"
-              onClick={() => openLastBox()}
-              className="mb-3 w-full min-h-[64px] rounded-lg border-2 border-amber-400 bg-amber-50 p-4 text-left hover:border-amber-500 flex items-center gap-4"
-            >
-              <span className="text-3xl" aria-hidden="true">
-                📣
-              </span>
-              <span>
-                <span className="block text-lg font-semibold text-amber-900">{LAST_BOX_ACTION_LABEL}</span>
-                <span className="block text-sm text-amber-900">
-                  Odada son kutuyu açtıysanız bildirin; ana depodan yenisi için talep açılır.
-                </span>
-              </span>
-            </button>
+            <div className="mb-3">
+              <LastBoxActionCard onStart={(start) => openLastBox({ start })} />
+            </div>
             <div className="grid gap-3 sm:grid-cols-3">
               {ACTIONS.map((a) => (
                 <button

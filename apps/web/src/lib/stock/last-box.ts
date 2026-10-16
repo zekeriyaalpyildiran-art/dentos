@@ -112,6 +112,17 @@ export function lastBoxDefaultQuantity(item: PackInfo): LastBoxQuantity {
   return { qtyText: "1", unit: "usage", usageQty: 1, label: `${formatQty(1)} ${item.usage_unit}` };
 }
 
+/** A draft or passive card cannot get a request (the RPC answers E_ITEM_NOT_FOUND); same texts as a scanned one. */
+export const LAST_BOX_DRAFT_TEXT = "Bu ürünün kartı henüz tamamlanmadı. Stok sorumlusuna bildirin.";
+export const LAST_BOX_INACTIVE_TEXT = "Bu ürün kartı pasif. Stok sorumlusuna bildirin.";
+
+/** Why this card cannot be reported (passive or draft), or null when it can. */
+export function lastBoxItemProblem(item: { is_active?: boolean | null; needs_review?: boolean | null }): string | null {
+  if (item.is_active === false) return LAST_BOX_INACTIVE_TEXT;
+  if (item.needs_review) return LAST_BOX_DRAFT_TEXT;
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Duplicates and texts
 // ---------------------------------------------------------------------------
@@ -173,11 +184,29 @@ export interface RoomRequestSummaryRow extends RoomRequestLike {
   item_name: string;
 }
 
+/** Open requests named in the stock home notice (managers). */
+export const NOTICE_ROOM_REQUESTS = 3;
+/** Further open requests listed in 'Bugün dikkat isteyenler', after the ones the notice already names. */
+export const ATTENTION_ROOM_REQUESTS = 3;
+
+/**
+ * Rows for 'Bugün dikkat isteyenler': the open requests after the first `noticeRows` (the notice above already lists
+ * those), at most `max`. The same request is never shown twice on the stock home.
+ */
+export function attentionRoomRequests<T extends Pick<RoomRequestLike, "status">>(
+  rows: readonly T[],
+  noticeRows = NOTICE_ROOM_REQUESTS,
+  max = ATTENTION_ROOM_REQUESTS
+): T[] {
+  const n = Math.max(0, noticeRows);
+  return rows.filter(isOpenRoomRequest).slice(n, n + Math.max(0, max));
+}
+
 /** First few open requests as "Oda 2 · Kompozit A2", plus how many more are not listed. */
 export function summarizeRoomRequests(
   rows: readonly RoomRequestSummaryRow[],
   total: number,
-  max = 3
+  max = NOTICE_ROOM_REQUESTS
 ): { lines: { id: string; refNo: number; text: string }[]; more: number } {
   const open = rows.filter(isOpenRoomRequest).slice(0, Math.max(0, max));
   return {

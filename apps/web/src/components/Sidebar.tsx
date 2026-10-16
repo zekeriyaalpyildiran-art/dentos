@@ -6,7 +6,15 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAuthStore } from "@/lib/store";
 import { ROLE_LABELS, signOut, type AuthUser } from "@/lib/auth";
 import { clearStockStorage } from "@/lib/stock/storage";
-import { badgeText, isMenuItemActive, menuBadge, menuItemsFor, type MenuBadgeKey, type MenuItem } from "@/lib/nav";
+import {
+  badgeText,
+  isMenuItemActive,
+  menuBadge,
+  menuButtonLabel,
+  menuItemsFor,
+  type MenuBadgeKey,
+  type MenuItem,
+} from "@/lib/nav";
 import { canManageStock } from "@/lib/stock/permissions";
 import { useMenuBadges, type MenuBadges } from "@/components/useMenuBadges";
 import { ClinicLogo, ClinicMark } from "@/components/ClinicLogo";
@@ -274,6 +282,9 @@ export function SidebarView({
   }, [open]);
 
   const myTasks = badgeText(badges.tasks);
+  // Open room requests ('Son kutu' reports) stay visible on a phone on every page, not only inside the drawer: the
+  // count is loaded for stock managers only, so nobody else sees this pill.
+  const roomRequests = menuBadge("roomRequests", badges.roomRequests);
 
   return (
     <>
@@ -283,7 +294,7 @@ export function SidebarView({
           ref={menuButtonRef}
           type="button"
           onClick={() => setOpen(true)}
-          aria-label={myTasks ? `Menüyü aç, ${badges.tasks} açık görev` : "Menüyü aç"}
+          aria-label={menuButtonLabel(badges)}
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-controls={open ? DRAWER_ID : undefined}
@@ -309,7 +320,26 @@ export function SidebarView({
         </button>
         <ClinicMark className="h-9 w-9 shrink-0" />
         <span className="text-lg font-bold text-white">DentOS</span>
-        {current && <span className="ml-auto min-w-0 truncate pr-2 text-sm text-sidebar-muted">{current.name}</span>}
+        <div className="ml-auto flex min-w-0 items-center gap-1 pr-1">
+          {roomRequests && (
+            <Link
+              href={roomRequests.href}
+              title={roomRequests.label}
+              aria-label={roomRequests.label}
+              className={`flex min-h-[48px] shrink-0 items-center rounded-full px-1 hover:brightness-110 ${FOCUS}`}
+            >
+              <span
+                className={`whitespace-nowrap rounded-full px-2.5 text-xs font-semibold leading-6 ${BADGE_CLASS.roomRequests}`}
+              >
+                <span aria-hidden="true" className="mr-1">
+                  📣
+                </span>
+                {roomRequests.text}
+              </span>
+            </Link>
+          )}
+          {current && <span className="min-w-0 truncate pr-1 text-sm text-sidebar-muted">{current.name}</span>}
+        </div>
       </header>
 
       {/* Desktop sidebar (md and up) */}

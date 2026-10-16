@@ -204,10 +204,10 @@ function SheetDeepLink() {
     };
     if (!type) {
       const room = params.get("oda");
-      openLastBox({
-        itemId: item && UUID_RE.test(item) ? item : undefined,
-        locationId: room && UUID_RE.test(room) ? room : undefined,
-      });
+      const itemId = item && UUID_RE.test(item) ? item : undefined;
+      const locationId = room && UUID_RE.test(room) ? room : undefined;
+      // A room's QR label: the room is known, so the camera opens for the product at once (tap, scan, tap).
+      openLastBox({ itemId, locationId, start: locationId && !itemId ? "scan" : undefined });
       strip();
       return;
     }
