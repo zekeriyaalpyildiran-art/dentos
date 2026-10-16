@@ -8,7 +8,8 @@ import { useParams } from "next/navigation";
 import { useAuthStore } from "@/lib/store";
 import { createClient } from "@/lib/supabase";
 import { UUID_RE } from "@/lib/clinical/rpc";
-import { formatDateTime } from "@/lib/clinical/dates";
+import { formatDateTime, istanbulDayOf } from "@/lib/clinical/dates";
+import { agendaHref, readAgendaQuery } from "@/lib/appointments/agenda";
 import { AppointmentMaterials } from "@/components/clinical/AppointmentMaterials";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -48,6 +49,12 @@ export default function AppointmentDetailPage() {
   const user = useAuthStore((s) => s.user);
   const [apt, setApt] = useState<AppointmentRow | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "missing" | "error">("loading");
+  // ?patient=<id>: opened from the Ajanda's "Hasta ara" panel; "← Randevular" then returns to that panel.
+  const [fromPatient, setFromPatient] = useState<string | null>(null);
+
+  useEffect(() => {
+    setFromPatient(readAgendaQuery(window.location.search).patientId);
+  }, []);
 
   useEffect(() => {
     if (!user?.clinic_id || !id) return;
@@ -99,11 +106,15 @@ export default function AppointmentDetailPage() {
   }
 
   const status = apt.status ?? "scheduled";
+  const backHref =
+    fromPatient && fromPatient === apt.patient_id
+      ? agendaHref(istanbulDayOf(apt.start_time), apt.patient_id)
+      : "/appointments";
   const doctor = apt.doctors?.users?.full_name || apt.doctors?.specialty || "-";
 
   return (
     <div className="p-4 md:p-8 space-y-8 text-gray-900">
-      <Link href="/appointments" className="text-blue-600 hover:underline text-sm">
+      <Link href={backHref} className="text-blue-600 hover:underline text-sm">
         ← Randevular
       </Link>
       <div className="flex flex-wrap items-start justify-between gap-4">

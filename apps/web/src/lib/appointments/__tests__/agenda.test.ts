@@ -1,7 +1,15 @@
 // Agenda day helpers: the Randevular page loads exactly one Istanbul day with [from, to).
 
 import { describe, expect, it } from "vitest";
-import { dayRange, formatClock, formatDayWithWeekday, weekdayName } from "../agenda";
+import {
+  agendaHref,
+  appointmentDetailHref,
+  dayRange,
+  formatClock,
+  formatDayWithWeekday,
+  readAgendaQuery,
+  weekdayName,
+} from "../agenda";
 import { addDays } from "../../clinical/dates";
 
 describe("dayRange", () => {
@@ -71,5 +79,37 @@ describe("formatClock", () => {
   it("handles empty and invalid input", () => {
     expect(formatClock(null)).toBe("—");
     expect(formatClock("not a date")).toBe("—");
+  });
+});
+
+describe("Ajanda address (day and 'Hasta ara' patient)", () => {
+  const patient = "3f2c1a9e-8b7d-4c6e-9f10-2a3b4c5d6e7f";
+
+  it("keeps the day and, while one is shown, the patient", () => {
+    expect(agendaHref("2026-10-16")).toBe("/appointments?date=2026-10-16");
+    expect(agendaHref("2026-10-16", patient)).toBe(`/appointments?date=2026-10-16&patient=${patient}`);
+    expect(agendaHref("2026-10-16", null)).toBe("/appointments?date=2026-10-16");
+  });
+
+  it("drops malformed values", () => {
+    expect(agendaHref("2026-13-01", patient)).toBe(`/appointments?patient=${patient}`);
+    expect(agendaHref(null, "not-a-uuid")).toBe("/appointments");
+    expect(agendaHref("2026-10-16", "x&date=2020-01-01")).toBe("/appointments?date=2026-10-16");
+  });
+
+  it("reads back what it writes", () => {
+    expect(readAgendaQuery(agendaHref("2026-10-16", patient).split("?")[1])).toEqual({
+      date: "2026-10-16",
+      patientId: patient,
+    });
+    expect(readAgendaQuery("?date=2026-10-16")).toEqual({ date: "2026-10-16", patientId: null });
+    expect(readAgendaQuery("")).toEqual({ date: null, patientId: null });
+    expect(readAgendaQuery("?date=16.10.2026&patient=1")).toEqual({ date: null, patientId: null });
+  });
+
+  it("links an appointment's page with the panel's patient only", () => {
+    expect(appointmentDetailHref("a1", patient)).toBe(`/appointments/a1?patient=${patient}`);
+    expect(appointmentDetailHref("a1", null)).toBe("/appointments/a1");
+    expect(appointmentDetailHref("a1", "javascript:alert(1)")).toBe("/appointments/a1");
   });
 });

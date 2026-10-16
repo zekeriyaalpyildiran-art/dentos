@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase";
 import { istanbulToday } from "@/lib/clinical/dates";
+import { appointmentDetailHref } from "@/lib/appointments/agenda";
 import type { PatientRef } from "@/components/patients/PatientPicker";
 import {
   PATIENT_APPOINTMENT_LIMITS,
@@ -38,6 +39,9 @@ const COLUMNS =
 const doctorName = (a: PatientAppointment) => a.doctors?.users?.full_name || a.doctors?.specialty || "Hekim yok";
 const chairName = (a: PatientAppointment) => a.chairs?.name || "Koltuk yok";
 
+/** Id of the panel's heading; the Ajanda moves the focus there after a patient is chosen. */
+export const patientAppointmentsTitleId = (patientId: string) => `patient-apts-${patientId}`;
+
 const actionButton =
   "inline-flex items-center justify-center min-h-[44px] px-3 rounded border border-blue-300 bg-white text-sm font-medium text-blue-700 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500";
 
@@ -63,7 +67,7 @@ export function PatientAppointmentsPanel({
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const today = istanbulToday();
-  const titleId = `patient-apts-${patient.id}`;
+  const titleId = patientAppointmentsTitleId(patient.id);
 
   useEffect(() => {
     const from = upcomingFrom(today);
@@ -145,7 +149,11 @@ export function PatientAppointmentsPanel({
               Güne git
             </button>
           )}
-          <Link href={`/appointments/${a.id}`} className={actionButton} aria-label={`Detay: ${dayLabel} ${time}`}>
+          <Link
+            href={appointmentDetailHref(a.id, patient.id)}
+            className={actionButton}
+            aria-label={`Detay: ${dayLabel} ${time}`}
+          >
             Detay
           </Link>
         </div>
@@ -156,7 +164,11 @@ export function PatientAppointmentsPanel({
   return (
     <section aria-labelledby={titleId} className="mb-6 rounded-lg border border-blue-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <h2 id={titleId} className="text-lg font-semibold text-gray-900 break-words">
+        <h2
+          id={titleId}
+          tabIndex={-1}
+          className="text-lg font-semibold text-gray-900 break-words rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+        >
           {patientAppointmentsTitle(patient.full_name)}
         </h2>
         <div className="flex flex-wrap gap-2">

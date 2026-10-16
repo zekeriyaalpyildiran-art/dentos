@@ -11,13 +11,23 @@ import { reminderDoctorName } from "@/lib/appointments/whatsapp";
 import { isReminderCurrent } from "@/lib/crm";
 import { REMINDER_OUTCOME_LABELS, type ReminderOutcome } from "@/lib/crm/codes";
 import { addDays, formatDateTime, isDay, istanbulDayOf, istanbulToday } from "@/lib/clinical/dates";
-import { dayRange, formatClock, formatDayWithWeekday } from "@/lib/appointments/agenda";
+import {
+  agendaHref,
+  appointmentDetailHref,
+  dayRange,
+  formatClock,
+  formatDayWithWeekday,
+  readAgendaQuery,
+} from "@/lib/appointments/agenda";
 import {
   AGENDA_STATUS_LABELS as STATUS_LABELS,
   AGENDA_STATUS_STYLES as STATUS_STYLES,
 } from "@/lib/appointments/patient-appointments";
-import { PatientPicker, type PatientRef } from "@/components/patients/PatientPicker";
-import { PatientAppointmentsPanel } from "@/components/appointments/PatientAppointmentsPanel";
+import { PatientPicker, fetchActivePatient, type PatientRef } from "@/components/patients/PatientPicker";
+import {
+  PatientAppointmentsPanel,
+  patientAppointmentsTitleId,
+} from "@/components/appointments/PatientAppointmentsPanel";
 
 interface Appointment {
   id: string;
@@ -96,16 +106,46 @@ export default function Page() {
   const [panelReloadKey, setPanelReloadKey] = useState(0);
   const [highlight, setHighlight] = useState<{ id: string; seq: number } | null>(null);
   const focusSearchAfterClear = useRef(false);
+  const focusPanelAfterSelect = useRef(false);
+  /** ?patient= from the address, until that patient is loaded (the panel comes back after "Geri"). */
+  const urlPatientId = useRef<string | null>(null);
   /** Each "Güne git" click gets a new number; it scrolls once, later list changes do not scroll again. */
   const highlightSeq = useRef(0);
   const scrolledSeq = useRef(0);
 
-  // ?date=YYYY-MM-DD (set after saving an appointment, kept while browsing); read directly so no Suspense is needed.
+  // ?date=YYYY-MM-DD (set after saving an appointment, kept while browsing) and ?patient=<id> (kept while "Hasta ara"
+  // shows a patient); read directly so no Suspense is needed.
   useEffect(() => {
-    const fromUrl = new URLSearchParams(window.location.search).get("date");
-    if (fromUrl && isDay(fromUrl)) setSelectedDate(fromUrl);
+    const { date, patientId } = readAgendaQuery(window.location.search);
+    if (date) setSelectedDate(date);
+    urlPatientId.current = patientId;
     setDateReady(true);
   }, []);
+
+  // Bring the "Hasta ara" panel back for ?patient= (only an active patient of this clinic; anything else is dropped).
+  useEffect(() => {
+    const id = urlPatientId.current;
+    if (!clinicId || !dateReady || !id) return;
+    let cancelled = false;
+    fetchActivePatient(clinicId, id)
+      .then((p) => {
+        if (cancelled || urlPatientId.current !== id) return;
+        urlPatientId.current = null;
+        if (p) {
+          setSearchPatient((current) => current ?? p);
+        } else {
+          const url = new URL(window.location.href);
+          if (url.searchParams.get("patient") === id) {
+            url.searchParams.delete("patient");
+            window.history.replaceState(window.history.state, "", url.pathname + url.search);
+          }
+        }
+      })
+      .catch((err) => console.error("Error restoring the searched patient:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [clinicId, dateReady]);
 
   useEffect(() => {
     if (!clinicId || !dateReady) return;
@@ -142,16 +182,38 @@ export default function Page() {
     if (!isDay(day)) return;
     setSelectedDate(day);
     setHighlight(highlightId ? { id: highlightId, seq: ++highlightSeq.current } : null);
-    // Keep the day in the address so "Geri" from a detail page returns to it; the router's own state is preserved.
-    window.history.replaceState(window.history.state, "", `/appointments?date=${day}`);
+    // Keep the day (and the searched patient) in the address so "Geri" from a detail page returns to them; the
+    // router's own state is preserved.
+    window.history.replaceState(
+      window.history.state,
+      "",
+      agendaHref(day, searchPatient?.id ?? urlPatientId.current)
+    );
+  };
+
+  const choosePatient = (p: PatientRef) => {
+    urlPatientId.current = null;
+    focusPanelAfterSelect.current = true;
+    setSearchPatient(p);
+    window.history.replaceState(window.history.state, "", agendaHref(selectedDate, p.id));
   };
 
   const clearPatientSearch = () => {
+    urlPatientId.current = null;
     setSearchPatient(null);
     setHighlight(null);
     setPickerKey((k) => k + 1);
     focusSearchAfterClear.current = true;
+    window.history.replaceState(window.history.state, "", agendaHref(selectedDate));
   };
+
+  // After choosing a patient the search box and its results are gone: put the focus on the panel's heading, so
+  // keyboard and screen reader users are not thrown back to the top of the page.
+  useEffect(() => {
+    if (!searchPatient || !focusPanelAfterSelect.current) return;
+    focusPanelAfterSelect.current = false;
+    document.getElementById(patientAppointmentsTitleId(searchPatient.id))?.focus();
+  }, [searchPatient]);
 
   // After "Temizle" the search box is back: put the focus in it (keyboard and screen reader users stay in place).
   useEffect(() => {
@@ -178,6 +240,10 @@ export default function Page() {
 
   const today = istanbulToday();
   const now = Date.now();
+
+  // The searched patient's appointment keeps the patient in its page's address, for that page's "← Randevular".
+  const detailHref = (apt: Appointment) =>
+    appointmentDetailHref(apt.id, searchPatient?.id === apt.patient_id ? apt.patient_id : null);
 
   // Manual reminder (no SMS is sent): only for scheduled appointments from today on (Istanbul).
   const canRemind = (apt: Appointment) => apt.status === "scheduled" && (istanbulDayOf(apt.start_time) ?? "") >= today;
@@ -272,7 +338,7 @@ export default function Page() {
             inputId={SEARCH_INPUT_ID}
             value={null}
             onChange={(p) => {
-              if (p) setSearchPatient(p);
+              if (p) choosePatient(p);
             }}
             placeholder="En az 2 harf veya rakam"
             inputClassName="w-full px-3 py-2 min-h-[44px] border rounded bg-white text-base text-gray-900"
@@ -406,7 +472,7 @@ export default function Page() {
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex gap-3 whitespace-nowrap">
-                        <Link href={`/appointments/${apt.id}`} className="text-blue-600 hover:underline">
+                        <Link href={detailHref(apt)} className="text-blue-600 hover:underline">
                           Detay
                         </Link>
                         {apt.status === "scheduled" && (
@@ -466,7 +532,7 @@ export default function Page() {
                 className={`p-4 border rounded focus:outline-none ${highlight?.id === apt.id ? HIGHLIGHT_CLASS : "bg-blue-50"}`}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <Link href={`/appointments/${apt.id}`} className="font-semibold hover:underline">
+                  <Link href={detailHref(apt)} className="font-semibold hover:underline">
                     {getPatientName(apt)}
                   </Link>
                   <span className={`px-2 py-1 rounded text-sm ${STATUS_STYLES[apt.status] ?? STATUS_STYLES.scheduled}`}>

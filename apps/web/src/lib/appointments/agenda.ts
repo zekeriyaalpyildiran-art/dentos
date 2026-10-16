@@ -52,3 +52,32 @@ export function formatClock(ts: string | null | undefined): string {
   const hour = get("hour") === "24" ? "00" : get("hour");
   return `${hour}:${get("minute")}`;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const validPatientId = (id: string | null | undefined) => (id && UUID_RE.test(id) ? id : null);
+
+/**
+ * The Ajanda's address: `/appointments?date=YYYY-MM-DD`, plus `&patient=<id>` while "Hasta ara" shows a patient, so
+ * "Geri" (or "← Randevular") from an appointment's page brings the day and the patient's panel back.
+ */
+export function agendaHref(day: string | null | undefined, patientId?: string | null): string {
+  const q = new URLSearchParams();
+  if (isDay(day)) q.set("date", day!);
+  const patient = validPatientId(patientId);
+  if (patient) q.set("patient", patient);
+  const query = q.toString();
+  return query ? `/appointments?${query}` : "/appointments";
+}
+
+/** `?date=` and `?patient=` of an address (the Ajanda's or an appointment page's); malformed values read as null. */
+export function readAgendaQuery(search: string): { date: string | null; patientId: string | null } {
+  const q = new URLSearchParams(search);
+  const date = q.get("date");
+  return { date: isDay(date) ? date : null, patientId: validPatientId(q.get("patient")) };
+}
+
+/** An appointment's page; opened from the "Hasta ara" panel it carries the patient, for its "← Randevular" link. */
+export function appointmentDetailHref(appointmentId: string, patientId?: string | null): string {
+  const patient = validPatientId(patientId);
+  return `/appointments/${appointmentId}${patient ? `?patient=${patient}` : ""}`;
+}
