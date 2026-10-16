@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAuthStore } from "@/lib/store";
 import { ROLE_LABELS, signOut, type AuthUser } from "@/lib/auth";
 import { clearStockStorage } from "@/lib/stock/storage";
-import { badgeText, isMenuItemActive, menuItemsFor, type MenuBadgeKey, type MenuItem } from "@/lib/nav";
+import { badgeText, isMenuItemActive, menuBadge, menuItemsFor, type MenuBadgeKey, type MenuItem } from "@/lib/nav";
 import { useMenuBadges, type MenuBadges } from "@/components/useMenuBadges";
 import { ClinicLogo, ClinicMark } from "@/components/ClinicLogo";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
@@ -17,10 +17,11 @@ const DESKTOP_QUERY = "(min-width: 768px)";
 /** Keyboard focus on the navy background. */
 const FOCUS = "focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-white";
 
-const BADGES: Record<MenuBadgeKey, { label: (n: number) => string; className: string }> = {
-  crm: { label: (n) => `Günlük listede ${n} iş`, className: "bg-blue-600 text-white" },
-  tasks: { label: (n) => `${n} açık görev`, className: "bg-blue-600 text-white" },
-  stock: { label: (n) => `${n} kritik stok kartı`, className: "bg-red-600 text-white" },
+/** Colours of the menu counts; their wording and targets live in MENU_BADGES (lib/nav.ts). */
+const BADGE_CLASS: Record<MenuBadgeKey, string> = {
+  crm: "bg-blue-600 text-white",
+  tasks: "bg-blue-600 text-white",
+  stock: "bg-red-600 text-white",
 };
 
 function NavList({
@@ -54,33 +55,39 @@ function NavList({
     <ul className="space-y-0.5 px-3">
       {items.map((item) => {
         const isActive = isMenuItemActive(item, pathname);
-        const n = item.badge ? badges[item.badge] : undefined;
-        const text = badgeText(n);
-        const info = item.badge ? BADGES[item.badge] : null;
+        const badge = menuBadge(item.badge, item.badge ? badges[item.badge] : undefined);
         return (
-          <li key={item.href}>
+          <li
+            key={item.href}
+            className={`flex items-center rounded-lg transition-colors ${
+              isActive
+                ? "bg-sidebar-accent shadow-[inset_3px_0_0_0_rgb(var(--sidebar-highlight))]"
+                : "hover:bg-sidebar-accent/60"
+            }`}
+          >
             <Link
               ref={isActive ? activeRef : undefined}
               href={item.href}
               onClick={onNavigate}
               aria-current={isActive ? "page" : undefined}
-              className={`flex items-center gap-2 px-3 ${roomy ? "py-2.5" : "py-2"} rounded-lg transition-colors ${FOCUS} ${
-                isActive
-                  ? "bg-sidebar-accent font-semibold text-white shadow-[inset_3px_0_0_0_rgb(var(--sidebar-highlight))]"
-                  : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-white"
+              className={`min-w-0 flex-1 px-3 ${roomy ? "py-2.5" : "py-2"} rounded-lg ${FOCUS} ${
+                isActive ? "font-semibold text-white" : "text-sidebar-foreground hover:text-white"
               }`}
             >
-              <span className="min-w-0 flex-1">{item.name}</span>
-              {text && info && n !== undefined && (
-                <span
-                  title={info.label(n)}
-                  className={`shrink-0 min-w-[1.5rem] px-1.5 rounded-full text-xs font-semibold leading-5 text-center ${info.className}`}
-                >
-                  <span aria-hidden="true">{text}</span>
-                  <span className="sr-only">{`, ${info.label(n)}`}</span>
-                </span>
-              )}
+              {item.name}
             </Link>
+            {badge && item.badge && (
+              // Its own link: the count opens the list behind it (e.g. the critical stock cards).
+              <Link
+                href={badge.href}
+                onClick={onNavigate}
+                title={badge.label}
+                aria-label={badge.label}
+                className={`mr-2 shrink-0 whitespace-nowrap rounded-full px-2 text-xs font-semibold leading-5 hover:brightness-110 ${FOCUS} ${BADGE_CLASS[item.badge]}`}
+              >
+                {badge.text}
+              </Link>
+            )}
           </li>
         );
       })}

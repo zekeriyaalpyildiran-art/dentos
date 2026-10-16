@@ -85,6 +85,30 @@ export function homePathForUser(user: NavUser): string {
   return homePathFor(user?.role);
 }
 
+/**
+ * What each menu count means. The number alone said nothing (and its tooltip never shows on a phone), so it carries a
+ * short word ('9 kritik') and is its own link to the list behind it.
+ */
+export const MENU_BADGES: Record<MenuBadgeKey, { short: string; label: (n: number) => string; href: string }> = {
+  crm: { short: "iş", label: (n) => `Günlük listede ${n} iş`, href: "/crm/today" },
+  tasks: { short: "görev", label: (n) => `${n} açık görev`, href: "/tasks" },
+  stock: {
+    short: "kritik",
+    label: (n) => `${n} kritik stok kartı (en düşük seviyede veya tükenmiş); listeyi aç`,
+    href: "/inventory/items?status=critical",
+  },
+};
+
+export function menuBadge(
+  key: MenuBadgeKey | undefined,
+  n: number | null | undefined,
+): { text: string; label: string; href: string } | null {
+  const count = badgeText(n);
+  if (!key || !count || n === null || n === undefined) return null;
+  const meta = MENU_BADGES[key];
+  return { text: `${count} ${meta.short}`, label: meta.label(n), href: meta.href };
+}
+
 /** Badge text: hidden at 0, capped at 99+. */
 export function badgeText(n: number | null | undefined): string | null {
   if (!n || n <= 0 || !Number.isFinite(n)) return null;

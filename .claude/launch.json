@@ -4,14 +4,38 @@
     {
       "name": "web-dev",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["-F", "web", "dev"],
+      "runtimeArgs": [
+        "-F",
+        "web",
+        "dev"
+      ],
       "port": 3000
     },
     {
       "name": "postgres",
       "runtimeExecutable": "docker-compose",
-      "runtimeArgs": ["up", "-d", "postgres"],
+      "runtimeArgs": [
+        "up",
+        "-d",
+        "postgres"
+      ],
       "port": 5432
+    },
+    {
+      "name": "web-preview",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "-C",
+        "apps/web",
+        "exec",
+        "next",
+        "dev",
+        "-p",
+        "3930",
+        "-H",
+        "127.0.0.1"
+      ],
+      "port": 3930
     }
   ]
 }

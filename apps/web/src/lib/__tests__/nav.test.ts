@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_HOME,
+  MENU_BADGES,
   MENU_ITEMS,
   ROLE_HOME,
   badgeText,
@@ -12,6 +13,7 @@ import {
   homePathFor,
   homePathForUser,
   isMenuItemActive,
+  menuBadge,
   menuItemsFor,
   type MenuItem,
 } from "../nav";
@@ -126,6 +128,33 @@ describe("homePathFor", () => {
       expect(src, target).not.toBeNull();
       expect(target).not.toBe("/dashboard");
       expect(src).not.toMatch(/allowedRoles|requiredPermission|FinanceShell/);
+    }
+  });
+});
+
+describe("menuBadge", () => {
+  it("shows the count with a word and links to the list behind it", () => {
+    expect(menuBadge("stock", 9)).toEqual({
+      text: "9 kritik",
+      label: "9 kritik stok kartı (en düşük seviyede veya tükenmiş); listeyi aç",
+      href: "/inventory/items?status=critical",
+    });
+    expect(menuBadge("crm", 12)?.text).toBe("12 iş");
+    expect(menuBadge("crm", 12)?.href).toBe("/crm/today");
+    expect(menuBadge("tasks", 3)?.text).toBe("3 görev");
+    expect(menuBadge("tasks", 3)?.href).toBe("/tasks");
+    expect(menuBadge("tasks", 150)?.text).toBe("99+ görev");
+  });
+
+  it("is hidden at zero, without a key or without a number", () => {
+    expect(menuBadge("stock", 0)).toBeNull();
+    expect(menuBadge("stock", undefined)).toBeNull();
+    expect(menuBadge(undefined, 5)).toBeNull();
+  });
+
+  it("every badge target is a page that exists", () => {
+    for (const key of Object.keys(MENU_BADGES) as (keyof typeof MENU_BADGES)[]) {
+      expect(pageSource(MENU_BADGES[key].href.split("?")[0]), key).not.toBeNull();
     }
   });
 });
