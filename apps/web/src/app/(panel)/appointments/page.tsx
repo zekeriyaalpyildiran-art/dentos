@@ -12,6 +12,12 @@ import { isReminderCurrent } from "@/lib/crm";
 import { REMINDER_OUTCOME_LABELS, type ReminderOutcome } from "@/lib/crm/codes";
 import { addDays, formatDateTime, isDay, istanbulDayOf, istanbulToday } from "@/lib/clinical/dates";
 import { dayRange, formatClock, formatDayWithWeekday } from "@/lib/appointments/agenda";
+import {
+  AGENDA_STATUS_LABELS as STATUS_LABELS,
+  AGENDA_STATUS_STYLES as STATUS_STYLES,
+} from "@/lib/appointments/patient-appointments";
+import { PatientPicker, type PatientRef } from "@/components/patients/PatientPicker";
+import { PatientAppointmentsPanel } from "@/components/appointments/PatientAppointmentsPanel";
 
 interface Appointment {
   id: string;
@@ -40,20 +46,6 @@ const APPOINTMENT_COLUMNS =
   "reminder_outcome,reminder_note,reminder_start_time,reminder_doctor_id," +
   "patients(full_name,phone),doctors(specialty,users(full_name)),chairs(name),procedures_catalog(name)";
 
-const STATUS_LABELS: Record<string, string> = {
-  scheduled: "Planlı",
-  completed: "Tamamlandı",
-  cancelled: "İptal",
-  no_show: "Gelmedi",
-};
-
-const STATUS_STYLES: Record<string, string> = {
-  scheduled: "bg-blue-100 text-blue-800",
-  completed: "bg-green-100 text-green-800",
-  cancelled: "bg-red-100 text-red-800",
-  no_show: "bg-yellow-100 text-yellow-800",
-};
-
 type StatusAction = "completed" | "no_show" | "cancelled";
 
 const STATUS_ACTIONS: Record<StatusAction, { confirm: string; error: string }> = {
@@ -72,6 +64,10 @@ const STATUS_ACTIONS: Record<StatusAction, { confirm: string; error: string }> =
 };
 
 const navButton = "px-3 py-2 min-h-[44px] rounded bg-gray-200 hover:bg-gray-300 disabled:opacity-50";
+
+const SEARCH_INPUT_ID = "agenda-patient-search";
+/** Marks the appointment opened with "Güne git" in the day list and the calendar. */
+const HIGHLIGHT_CLASS = "bg-amber-50 ring-2 ring-inset ring-amber-400";
 
 const getPatientName = (apt: Appointment) => apt.patients?.full_name || "-";
 const getDoctorName = (apt: Appointment) => apt.doctors?.users?.full_name || apt.doctors?.specialty || "-";
@@ -94,6 +90,15 @@ export default function Page() {
   const [dateReady, setDateReady] = useState(false);
   const [reminder, setReminder] = useState<{ id: string; fromWhatsApp?: boolean } | null>(null);
   const requestId = useRef(0);
+  // "Hasta ara": the chosen patient's appointments are shown above the day ("Güne git" opens their day).
+  const [searchPatient, setSearchPatient] = useState<PatientRef | null>(null);
+  const [pickerKey, setPickerKey] = useState(0);
+  const [panelReloadKey, setPanelReloadKey] = useState(0);
+  const [highlight, setHighlight] = useState<{ id: string; seq: number } | null>(null);
+  const focusSearchAfterClear = useRef(false);
+  /** Each "Güne git" click gets a new number; it scrolls once, later list changes do not scroll again. */
+  const highlightSeq = useRef(0);
+  const scrolledSeq = useRef(0);
 
   // ?date=YYYY-MM-DD (set after saving an appointment, kept while browsing); read directly so no Suspense is needed.
   useEffect(() => {
@@ -132,12 +137,44 @@ export default function Page() {
       });
   }, [supabase, clinicId, selectedDate, dateReady]);
 
-  const changeDate = (day: string) => {
+  /** Shows another day; `highlightId` marks one of its appointments ("Güne git"), any other change clears the mark. */
+  const changeDate = (day: string, highlightId: string | null = null) => {
     if (!isDay(day)) return;
     setSelectedDate(day);
+    setHighlight(highlightId ? { id: highlightId, seq: ++highlightSeq.current } : null);
     // Keep the day in the address so "Geri" from a detail page returns to it; the router's own state is preserved.
     window.history.replaceState(window.history.state, "", `/appointments?date=${day}`);
   };
+
+  const clearPatientSearch = () => {
+    setSearchPatient(null);
+    setHighlight(null);
+    setPickerKey((k) => k + 1);
+    focusSearchAfterClear.current = true;
+  };
+
+  // After "Temizle" the search box is back: put the focus in it (keyboard and screen reader users stay in place).
+  useEffect(() => {
+    if (searchPatient || !focusSearchAfterClear.current) return;
+    focusSearchAfterClear.current = false;
+    document.getElementById(SEARCH_INPUT_ID)?.focus();
+  }, [searchPatient, pickerKey]);
+
+  // "Güne git": once the day is loaded, scroll to the marked appointment and move the focus to it (once per click).
+  useEffect(() => {
+    if (!highlight || loading || scrolledSeq.current === highlight.seq) return;
+    const el = document.getElementById(`apt-${highlight.id}`);
+    if (!el) return;
+    scrolledSeq.current = highlight.seq;
+    let reduce = false;
+    try {
+      reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch {
+      // Older browsers: animate.
+    }
+    el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+    el.focus({ preventScroll: true });
+  }, [highlight, loading, appointments, view]);
 
   const today = istanbulToday();
   const now = Date.now();
@@ -185,6 +222,7 @@ export default function Page() {
         return;
       }
       setAppointments((prev) => prev.map((a) => (a.id === id ? { ...a, status } : a)));
+      setPanelReloadKey((k) => k + 1);
 
       // A completed or missed appointment must not trigger its reminder either, so every status change closes them.
       if (!(await cancelPendingReminders(supabase, clinicId, id))) {
@@ -213,6 +251,34 @@ export default function Page() {
           + Yeni Randevu
         </Link>
       </div>
+
+      {searchPatient && clinicId ? (
+        <PatientAppointmentsPanel
+          key={searchPatient.id}
+          patient={searchPatient}
+          clinicId={clinicId}
+          reloadKey={panelReloadKey}
+          highlightId={highlight?.id ?? null}
+          onGoToDay={(day, id) => changeDate(day, id)}
+          onClear={clearPatientSearch}
+        />
+      ) : (
+        <div className="mb-6 max-w-xl">
+          <label htmlFor={SEARCH_INPUT_ID} className="block text-sm font-semibold text-gray-800 mb-1">
+            Hasta ara: ad veya telefon
+          </label>
+          <PatientPicker
+            key={pickerKey}
+            inputId={SEARCH_INPUT_ID}
+            value={null}
+            onChange={(p) => {
+              if (p) setSearchPatient(p);
+            }}
+            placeholder="En az 2 harf veya rakam"
+            inputClassName="w-full px-3 py-2 min-h-[44px] border rounded bg-white text-base text-gray-900"
+          />
+        </div>
+      )}
 
       <div className="flex gap-4 mb-6">
         <button
@@ -297,8 +363,19 @@ export default function Page() {
                 </tr>
               ) : (
                 appointments.map((apt) => (
-                  <tr key={apt.id} className="border-b hover:bg-gray-50">
-                    <td className="px-4 py-2">{getPatientName(apt)}</td>
+                  <tr
+                    key={apt.id}
+                    id={`apt-${apt.id}`}
+                    tabIndex={-1}
+                    aria-current={highlight?.id === apt.id ? "true" : undefined}
+                    className={`border-b focus:outline-none ${
+                      highlight?.id === apt.id ? HIGHLIGHT_CLASS : "hover:bg-gray-50"
+                    }`}
+                  >
+                    <td className="px-4 py-2">
+                      {getPatientName(apt)}
+                      {highlight?.id === apt.id && <span className="sr-only"> (aranan hastanın randevusu)</span>}
+                    </td>
                     <td className="px-4 py-2">{getDoctorName(apt)}</td>
                     <td className="px-4 py-2">{getChairName(apt)}</td>
                     <td className="px-4 py-2">{getProcedureName(apt)}</td>
@@ -381,7 +458,13 @@ export default function Page() {
             <p className={loadFailed ? "text-red-600" : "text-gray-500"}>{emptyText}</p>
           ) : (
             appointments.map((apt) => (
-              <div key={apt.id} className="p-4 border rounded bg-blue-50">
+              <div
+                key={apt.id}
+                id={`apt-${apt.id}`}
+                tabIndex={-1}
+                aria-current={highlight?.id === apt.id ? "true" : undefined}
+                className={`p-4 border rounded focus:outline-none ${highlight?.id === apt.id ? HIGHLIGHT_CLASS : "bg-blue-50"}`}
+              >
                 <div className="flex items-center justify-between gap-2">
                   <Link href={`/appointments/${apt.id}`} className="font-semibold hover:underline">
                     {getPatientName(apt)}
