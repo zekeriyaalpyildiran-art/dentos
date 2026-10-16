@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPTED_LINK_TYPES,
   decodeJwtPayload,
@@ -180,5 +180,119 @@ describe("'Şifremi unuttum' request", () => {
     expect(login).toContain("requestPasswordResetEmail(");
     expect(login).toContain("resetPasswordRedirectUrl(window.location.origin)");
     expect(login).not.toMatch(/createClient\(\)\.auth\.resetPasswordForEmail/);
+  });
+});
+
+// Runtime checks against the installed supabase-js: fetch is stubbed, nothing leaves the test.
+const SUPABASE_URL = "https://project.supabase.test";
+const ANON_KEY = "anon-test-key";
+
+interface Call {
+  url: string;
+  init: RequestInit;
+}
+
+function stubFetch(responses: Array<{ status: number; body?: unknown }>): Call[] {
+  const calls: Call[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      calls.push({ url: String(input), init });
+      const next = responses.shift() ?? { status: 200, body: {} };
+      const body = next.status === 204 ? null : JSON.stringify(next.body ?? {});
+      return new Response(body, { status: next.status, headers: { "Content-Type": "application/json" } });
+    })
+  );
+  return calls;
+}
+
+const header = (call: Call, name: string) => new Headers(call.init.headers).get(name);
+
+describe("supabase.ts at runtime", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", SUPABASE_URL);
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", ANON_KEY);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("asks for the 'Şifremi unuttum' e-mail without a PKCE challenge (implicit flow, any browser)", async () => {
+    const calls = stubFetch([{ status: 200, body: {} }]);
+    const { requestPasswordResetEmail } = await import("../supabase");
+    const { error } = await requestPasswordResetEmail("a@example.com", "https://x.test/reset-password");
+    expect(error).toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(`${SUPABASE_URL}/auth/v1/recover?redirect_to=https%3A%2F%2Fx.test%2Freset-password`);
+    expect(calls[0].init.method).toBe("POST");
+    const body = JSON.parse(String(calls[0].init.body));
+    expect(body.email).toBe("a@example.com");
+    expect(body.code_challenge).toBeNull();
+    expect(body.code_challenge_method).toBeNull();
+    expect(header(calls[0], "apikey")).toBe(ANON_KEY);
+  });
+
+  it("revokes a link's session with its own access token (that session only)", async () => {
+    const calls = stubFetch([{ status: 204 }]);
+    const { revokeLinkSession } = await import("../supabase");
+    await expect(revokeLinkSession({ accessToken: "acc", refreshToken: "ref" })).resolves.toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe(`${SUPABASE_URL}/auth/v1/logout?scope=local`);
+    expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].init.keepalive).toBe(false);
+    expect(header(calls[0], "authorization")).toBe("Bearer acc");
+    expect(header(calls[0], "apikey")).toBe(ANON_KEY);
+  });
+
+  it("can send the revocation as a keepalive request (pagehide)", async () => {
+    const calls = stubFetch([{ status: 204 }]);
+    const { revokeLinkSession } = await import("../supabase");
+    await revokeLinkSession({ accessToken: "acc", refreshToken: "ref" }, { keepalive: true });
+    expect(calls[0].init.keepalive).toBe(true);
+  });
+
+  it("uses the refresh token once when the access token has expired, then ends that session", async () => {
+    const calls = stubFetch([{ status: 401, body: { code: 401 } }, { status: 200, body: { access_token: "fresh" } }, { status: 204 }]);
+    const { revokeLinkSession } = await import("../supabase");
+    await expect(revokeLinkSession({ accessToken: "old", refreshToken: "ref" })).resolves.toBe(true);
+    expect(calls.map((c) => c.url)).toEqual([
+      `${SUPABASE_URL}/auth/v1/logout?scope=local`,
+      `${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,
+      `${SUPABASE_URL}/auth/v1/logout?scope=local`,
+    ]);
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ refresh_token: "ref" });
+    expect(header(calls[2], "authorization")).toBe("Bearer fresh");
+  });
+
+  it("reports false, never throws, when nothing could be revoked", async () => {
+    const { revokeLinkSession } = await import("../supabase");
+    stubFetch([{ status: 403 }, { status: 400, body: { error: "invalid_grant" } }]);
+    await expect(revokeLinkSession({ accessToken: "a", refreshToken: "r" })).resolves.toBe(false);
+    stubFetch([{ status: 500 }]);
+    await expect(revokeLinkSession({ accessToken: "a", refreshToken: "r" })).resolves.toBe(false);
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
+    await expect(revokeLinkSession({ accessToken: "a", refreshToken: "r" })).resolves.toBe(false);
+  });
+});
+
+describe("/reset-password token hygiene", () => {
+  const page = source("app/reset-password/page.tsx");
+
+  it("rotates the link's refresh token right after applying it", () => {
+    const accept = page.slice(page.indexOf("const acceptLink"), page.indexOf("const discardLink"));
+    expect(accept.indexOf("auth.setSession(")).toBeGreaterThan(-1);
+    expect(accept.indexOf("auth.refreshSession()")).toBeGreaterThan(accept.indexOf("auth.setSession("));
+  });
+
+  it("revokes the link's session on 'Vazgeç' and when the page is left with the link pending", () => {
+    const discard = page.slice(page.indexOf("const discardLink"), page.indexOf("const handleSubmit"));
+    expect(discard).toContain("revokeLinkSession(link)");
+    expect(discard.indexOf("revokeLinkSession(link)")).toBeLessThan(discard.indexOf('router.push("/login")'));
+    expect(page).toContain('onClick={() => void discardLink()}');
+    expect(page).toMatch(/addEventListener\("pagehide"[\s\S]*?\)/);
+    expect(page).toContain("revokeLinkSession(link, { keepalive: true })");
   });
 });

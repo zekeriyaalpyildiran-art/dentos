@@ -4,11 +4,13 @@
 // `type=invite` ("Şifrenizi belirleyin"); recovery e-mails ("Şifremi unuttum", "Daveti yeniden gönder") with
 // `type=recovery`. Both use the implicit flow (tokens in the fragment), so the link works in any browser; a PKCE
 // `?code=` recovery link (asked for before 2026-10-16) still works in the browser that asked. See lib/auth-link.ts.
+// The browser's history may keep a link's address, fragment included: the page therefore rotates the link's refresh
+// token once it is applied, and revokes the link's session when it is declined or left (see lib/supabase.ts).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase";
+import { createClient, revokeLinkSession } from "@/lib/supabase";
 import { PASSWORD_TEXTS, newPasswordError, passwordUpdateErrorMessage } from "@/lib/password";
 import { linkMode, linkTokenEmail, parseAuthLink } from "@/lib/auth-link";
 import { ClinicLogo } from "@/components/ClinicLogo";
@@ -38,6 +40,9 @@ export default function ResetPasswordPage() {
   const [noLink, setNoLink] = useState(false);
   const [pending, setPending] = useState<PendingLink | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+  /** The link still waiting for "Devam et" / "Vazgeç"; read by the pagehide handler. */
+  const pendingRef = useRef<PendingLink | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -85,7 +90,8 @@ export default function ResetPasswordPage() {
       if (link.kind === "tokens") {
         // Invite and recovery e-mails use the implicit flow. The tokens are NOT applied yet: a link carrying someone
         // else's tokens would otherwise silently replace this browser's session (login CSRF). The fragment is
-        // removed from the address (and so from the history entry) right away.
+        // removed from the address (and from this tab's history entry) right away; the browser's global history may
+        // still hold it, which is why the tokens are rotated on "Devam et" and revoked on "Vazgeç" or on leaving.
         window.history.replaceState(null, "", window.location.pathname);
         const linkEmail = linkTokenEmail(link);
         if (!linkEmail) {
@@ -97,12 +103,14 @@ export default function ResetPasswordPage() {
         }
         const { data: cur } = await supabase.auth.getSession();
         if (!cancelled) {
-          setPending({
+          const next = {
             accessToken: link.accessToken,
             refreshToken: link.refreshToken,
             email: linkEmail,
             currentEmail: cur.session?.user.email ?? null,
-          });
+          };
+          pendingRef.current = next;
+          setPending(next);
           setChecking(false);
         }
         return;
@@ -149,8 +157,25 @@ export default function ResetPasswordPage() {
     };
   }, []);
 
+  // Leaving the page (closing the tab, typing another address) with a link neither applied nor declined: revoke its
+  // session, so its tokens kept in the browser history are useless. Reloading cannot bring the link back anyway: the
+  // fragment is gone from the address and the e-mailed link is single use. If the page is later restored from the
+  // back-forward cache, it shows the link as used.
+  useEffect(() => {
+    const onPageHide = () => {
+      const link = pendingRef.current;
+      if (!link) return;
+      pendingRef.current = null;
+      void revokeLinkSession(link, { keepalive: true });
+      setPending(null);
+      setLinkError(true);
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, []);
+
   const acceptLink = async () => {
-    if (!pending || confirming) return;
+    if (!pending || confirming || discarding) return;
     setConfirming(true);
     try {
       const supabase = createClient();
@@ -159,10 +184,22 @@ export default function ResetPasswordPage() {
         refresh_token: pending.refreshToken,
       });
       if (sessionError) {
+        pendingRef.current = null;
         setPending(null);
         setLinkError(true);
         return;
       }
+      // Rotate the refresh token at once: the copy in the link (and so in the browser history) is then refused after
+      // GoTrue's reuse interval, and a later reuse revokes this session. setSession alone keeps the link's token
+      // until the first automatic refresh (about an hour). A failure here is not fatal: the session stays usable
+      // and is rotated at the next automatic refresh.
+      try {
+        const { error: rotateError } = await supabase.auth.refreshSession();
+        if (rotateError) console.warn("Could not rotate the link's refresh token:", rotateError.message);
+      } catch (err) {
+        console.warn("Could not rotate the link's refresh token:", err);
+      }
+      pendingRef.current = null;
       const { data } = await supabase.auth.getUser();
       setEmail(data.user?.email ?? pending.email);
       setPending(null);
@@ -170,6 +207,17 @@ export default function ResetPasswordPage() {
     } finally {
       setConfirming(false);
     }
+  };
+
+  /** "Vazgeç": end the link's session before leaving, so its tokens kept in the browser history are useless. */
+  const discardLink = async () => {
+    const link = pending;
+    if (!link || confirming || discarding) return;
+    setDiscarding(true);
+    pendingRef.current = null;
+    // Never keep the person waiting on a slow network: the request carries on in the background after 4 s.
+    await Promise.race([revokeLinkSession(link), new Promise((resolve) => setTimeout(resolve, 4000))]);
+    router.push("/login");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -240,16 +288,16 @@ export default function ResetPasswordPage() {
             <div className="flex flex-col-reverse sm:flex-row gap-2">
               <button
                 type="button"
-                onClick={() => router.push("/login")}
-                disabled={confirming}
+                onClick={() => void discardLink()}
+                disabled={confirming || discarding}
                 className="w-full py-3 border border-gray-300 text-gray-800 rounded-lg font-semibold hover:bg-gray-50"
               >
-                Vazgeç
+                {discarding ? "Bağlantı kapatılıyor..." : "Vazgeç"}
               </button>
               <button
                 type="button"
                 onClick={() => void acceptLink()}
-                disabled={confirming}
+                disabled={confirming || discarding}
                 className="w-full py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:bg-gray-500"
               >
                 {confirming ? "Kontrol ediliyor..." : "Devam et"}
