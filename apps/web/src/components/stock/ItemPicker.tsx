@@ -2,7 +2,15 @@
 
 import dynamic from "next/dynamic";
 import { useEffect, useState } from "react";
-import { stockItemLevels, toStockError, type LevelRow, type StockError } from "@/lib/stock/rpc";
+import {
+  stockItemLevels,
+  toStockError,
+  type LevelFilters,
+  type LevelList,
+  type LevelRow,
+  type PageArg,
+  type StockError,
+} from "@/lib/stock/rpc";
 import { formatQty } from "@/lib/stock/units";
 import { LevelBadge, StockErrorBox, stockInput } from "./ui";
 
@@ -21,12 +29,15 @@ export function ItemPicker({
   operable = true,
   autoFocus,
   locationId,
+  loader = stockItemLevels,
 }: {
   onPick: (row: LevelRow) => void;
   operable?: boolean;
   autoFocus?: boolean;
   /** Only items with stock at this location (and their quantity there). */
   locationId?: string | null;
+  /** The list read (stock_item_levels); replaceable for previews. Keep it stable (module level). */
+  loader?: (filters: LevelFilters, page: PageArg) => Promise<LevelList>;
 }) {
   const [tab, setTab] = useState<Tab>("all");
   const [search, setSearch] = useState("");
@@ -43,7 +54,7 @@ export function ItemPicker({
   useEffect(() => {
     let cancelled = false;
     setRows(null);
-    stockItemLevels(
+    loader(
       {
         q: query || undefined,
         operable: operable || undefined,
@@ -67,7 +78,7 @@ export function ItemPicker({
     return () => {
       cancelled = true;
     };
-  }, [query, tab, operable, locationId]);
+  }, [query, tab, operable, locationId, loader]);
 
   return (
     <div className="space-y-2">

@@ -139,7 +139,7 @@ export function RoomRequestDialog({ onClose, onDone }: { onClose: () => void; on
     setLocalError(null);
     setBusy(true);
     try {
-      await stockRoomRequestCreate({
+      const r = await stockRoomRequestCreate({
         p_operation_key: opKey.current,
         p_request_id: requestId.current,
         p_stock_item_id: item.id,
@@ -149,7 +149,7 @@ export function RoomRequestDialog({ onClose, onDone }: { onClose: () => void; on
         p_units_per_purchase: unit === "purchase" ? factor : null,
         p_note: note.trim() || null,
       });
-      onDone("Oda talebi oluşturuldu.");
+      onDone(r.request?.ref_no ? `Talep #${r.request.ref_no} açıldı; stok sorumlusu görecek.` : "Oda talebi oluşturuldu.");
     } catch (e) {
       const err = toStockError(e);
       if (err.key === "E_OP_KEY") opKey.current = newKey();

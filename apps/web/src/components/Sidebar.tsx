@@ -7,6 +7,7 @@ import { useAuthStore } from "@/lib/store";
 import { ROLE_LABELS, signOut, type AuthUser } from "@/lib/auth";
 import { clearStockStorage } from "@/lib/stock/storage";
 import { badgeText, isMenuItemActive, menuBadge, menuItemsFor, type MenuBadgeKey, type MenuItem } from "@/lib/nav";
+import { canManageStock } from "@/lib/stock/permissions";
 import { useMenuBadges, type MenuBadges } from "@/components/useMenuBadges";
 import { ClinicLogo, ClinicMark } from "@/components/ClinicLogo";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
@@ -22,6 +23,8 @@ const BADGE_CLASS: Record<MenuBadgeKey, string> = {
   crm: "bg-blue-600 text-white",
   tasks: "bg-blue-600 text-white",
   stock: "bg-red-600 text-white",
+  // Amber (waiting work, not an alarm) with the navy ink: the same in both themes, about 8:1.
+  roomRequests: "bg-amber-400 text-sidebar",
 };
 
 function NavList({
@@ -55,7 +58,10 @@ function NavList({
     <ul className="space-y-0.5 px-3">
       {items.map((item) => {
         const isActive = isMenuItemActive(item, pathname);
-        const badge = menuBadge(item.badge, item.badge ? badges[item.badge] : undefined);
+        const shown = (item.badges ?? []).flatMap((key) => {
+          const badge = menuBadge(key, badges[key]);
+          return badge ? [{ key, ...badge }] : [];
+        });
         return (
           <li
             key={item.href}
@@ -76,18 +82,26 @@ function NavList({
             >
               {item.name}
             </Link>
-            {badge && item.badge && (
-              // Its own link: the count opens the list behind it (e.g. the critical stock cards).
+            {shown.map((badge, i) => (
+              // Its own link: the count opens the list behind it (e.g. the critical stock cards). In the phone drawer
+              // the link is as tall as the row (48px touch target); the pill inside stays small.
               <Link
+                key={badge.key}
                 href={badge.href}
                 onClick={onNavigate}
                 title={badge.label}
                 aria-label={badge.label}
-                className={`mr-2 shrink-0 whitespace-nowrap rounded-full px-2 text-xs font-semibold leading-5 hover:brightness-110 ${FOCUS} ${BADGE_CLASS[item.badge]}`}
+                className={`${i === shown.length - 1 ? "mr-2" : "mr-1"} flex shrink-0 items-center rounded-full hover:brightness-110 ${
+                  roomy ? "min-h-[48px]" : ""
+                } ${FOCUS}`}
               >
-                {badge.text}
+                <span
+                  className={`whitespace-nowrap rounded-full px-2 text-xs font-semibold leading-5 ${BADGE_CLASS[badge.key]}`}
+                >
+                  {badge.text}
+                </span>
               </Link>
-            )}
+            ))}
           </li>
         );
       })}
@@ -163,7 +177,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const user = useAuthStore((state) => state.user);
-  const badges = useMenuBadges(user?.user_id);
+  const badges = useMenuBadges(user?.user_id, canManageStock(user));
 
   const handleLogout = async () => {
     try {

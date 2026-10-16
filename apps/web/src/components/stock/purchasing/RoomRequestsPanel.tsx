@@ -1,10 +1,15 @@
 "use client";
 
 // Room requests (oda talepleri; spec p8_purchasing §12.6, RPC §5.4-§5.5, §6.4). Every staff member reads them;
-// operating roles create; stock managers approve, reject and deliver; the requester may withdraw.
+// operating roles create; stock managers approve, reject and deliver; the requester may withdraw. 'Son kutu' reports
+// (LastBoxSheet) are ordinary room requests with the note "Son kutu açıldı"; each card says which room, which
+// product, who reported it and when. `?location=<id>` opens the list filtered to one room (links from the notices).
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { UUID_RE } from "@/lib/finance";
+import { isLastBoxNote } from "@/lib/stock/last-box";
 import { qtyLabel, type RoomRequestStatus } from "@/lib/stock/purchasing";
 import {
   stockRoomRequestAction,
@@ -16,9 +21,11 @@ import {
   type StockError,
 } from "@/lib/stock/rpc";
 import { formatQty } from "@/lib/stock/units";
+import { refreshMenuBadges } from "@/components/useMenuBadges";
 import { useStock } from "../StockContext";
 import { useStockLocations } from "../useStockRefs";
 import {
+  Badge,
   Card,
   EmptyState,
   Loading,
@@ -57,9 +64,13 @@ export function RoomRequestsPanel() {
   const { active: locations } = useStockLocations();
   const rooms = useMemo(() => locations.filter((l) => l.kind === "room" || l.kind === "sterilization"), [locations]);
   const actionKey = useActionKeys();
+  const params = useSearchParams();
   const [status, setStatus] = useState<RoomRequestStatusFilter>("open");
   const [mine, setMine] = useState(false);
-  const [locationId, setLocationId] = useState("");
+  const [locationId, setLocationId] = useState(() => {
+    const l = params.get("location");
+    return l && UUID_RE.test(l) ? l : "";
+  });
   const [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<RoomRequestJson[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -103,7 +114,16 @@ export function RoomRequestsPanel() {
     setDialog(null);
     setToast(action === "approve" ? "Talep onaylandı." : action === "reject" ? "Talep reddedildi." : "Talep geri çekildi.");
     notifyChanged();
+    refreshMenuBadges();
   }
+
+  /** After a create / delivery from a dialog: refresh the list, the tab badges and the menu count. */
+  const changed = (message: string) => {
+    setDialog(null);
+    setToast(message);
+    notifyChanged();
+    refreshMenuBadges();
+  };
 
   const chipCount = (c: RoomRequestStatusFilter): number | null => {
     if (c === "open") return (counts.pending ?? 0) + (counts.approved ?? 0);
@@ -116,7 +136,7 @@ export function RoomRequestsPanel() {
       <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
         <p className="text-sm text-gray-600">Talep bir kişiye değil, yetkili stok ekibine düşer.</p>
         {gates.op && (
-          <button type="button" className={`${buttonPrimary} min-h-[44px]`} onClick={() => setDialog({ kind: "create" })}>
+          <button type="button" className={`${buttonPrimary} min-h-[48px]`} onClick={() => setDialog({ kind: "create" })}>
             Odaya malzeme talep et
           </button>
         )}
@@ -196,18 +216,29 @@ export function RoomRequestsPanel() {
                     <div className="flex flex-wrap items-center gap-2">
                       <RoomRequestBadge status={r.status} />
                       <span className="text-sm text-gray-500">Talep #{r.ref_no}</span>
+                      {isLastBoxNote(r.note) && <Badge className="bg-amber-100 text-amber-800">📣 Son kutu</Badge>}
                     </div>
+                    <p className="text-lg font-semibold">
+                      <span aria-hidden="true">📍 </span>
+                      <span className="sr-only">Oda: </span>
+                      {r.location_name}
+                    </p>
                     <p className="font-semibold">
+                      <span className="sr-only">Ürün: </span>
                       <Link href={`/inventory/items/${r.stock_item_id}`} className="hover:underline">
                         {r.item_name}
                       </Link>
+                      <span className="font-normal text-gray-700"> · {lbl(r.quantity)}</span>
                     </p>
-                    <p className="text-sm">
-                      {lbl(r.quantity)} · {r.location_name}
-                    </p>
-                    {r.note && <p className="text-sm text-gray-700 whitespace-pre-wrap">{r.note}</p>}
-                    <p className="text-xs text-gray-500">
-                      {r.requested_by_name ?? "Kullanıcı"} · {formatTimestamp(r.created_at)}
+                    {r.note && (
+                      <p className="text-sm text-gray-800 whitespace-pre-wrap">
+                        <span className="text-gray-600">Not: </span>
+                        {r.note}
+                      </p>
+                    )}
+                    <p className="text-sm text-gray-600">
+                      Bildiren: <span className="text-gray-800">{r.requested_by_name ?? "Kullanıcı"}</span> ·{" "}
+                      {formatTimestamp(r.created_at)}
                     </p>
                     {typeof r.warehouse_usable_qty === "number" && (r.status === "pending" || r.status === "approved") && (
                       <p className={`text-xs ${short ? "text-red-700 font-medium" : "text-gray-600"}`}>
@@ -244,7 +275,7 @@ export function RoomRequestsPanel() {
                   {r.actions.can_approve && (
                     <button
                       type="button"
-                      className={`${buttonSecondary} min-h-[44px]`}
+                      className={`${buttonSecondary} min-h-[48px]`}
                       disabled={busyId === r.id}
                       onClick={async () => {
                         setBusyId(r.id);
@@ -264,19 +295,19 @@ export function RoomRequestsPanel() {
                   {r.actions.can_deliver && (
                     <button
                       type="button"
-                      className={`${buttonPrimary} min-h-[44px]`}
+                      className={`${buttonPrimary} min-h-[48px]`}
                       onClick={() => setDialog({ kind: "deliver", request: r })}
                     >
                       {r.status === "pending" ? "Onayla ve teslim et" : "Teslim et"}
                     </button>
                   )}
                   {r.actions.can_reject && (
-                    <button type="button" className={`${buttonDanger} min-h-[44px]`} onClick={() => setDialog({ kind: "reject", request: r })}>
+                    <button type="button" className={`${buttonDanger} min-h-[48px]`} onClick={() => setDialog({ kind: "reject", request: r })}>
                       Reddet
                     </button>
                   )}
                   {r.actions.can_cancel && (
-                    <button type="button" className={`${buttonSecondary} min-h-[44px]`} onClick={() => setDialog({ kind: "cancel", request: r })}>
+                    <button type="button" className={`${buttonSecondary} min-h-[48px]`} onClick={() => setDialog({ kind: "cancel", request: r })}>
                       Geri çek
                     </button>
                   )}
@@ -289,14 +320,7 @@ export function RoomRequestsPanel() {
       <Pager offset={offset} limit={PAGE} total={total} onChange={setOffset} />
 
       {dialog?.kind === "create" && (
-        <RoomRequestDialog
-          onClose={() => setDialog(null)}
-          onDone={(message) => {
-            setDialog(null);
-            setToast(message);
-            notifyChanged();
-          }}
-        />
+        <RoomRequestDialog onClose={() => setDialog(null)} onDone={changed} />
       )}
       {dialog?.kind === "deliver" && (
         <RoomDeliverDialog
@@ -304,11 +328,7 @@ export function RoomRequestsPanel() {
           today={today}
           operationKey={actionKey(`${dialog.request.id}:deliver:${dialog.request.version}`)}
           onClose={() => setDialog(null)}
-          onDone={(message) => {
-            setDialog(null);
-            setToast(message);
-            notifyChanged();
-          }}
+          onDone={changed}
         />
       )}
       {dialog?.kind === "reject" && (

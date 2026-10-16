@@ -60,7 +60,7 @@ export default function ItemDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const clinicId = useAuthStore((state) => state.user?.clinic_id);
-  const { gates, today, openSheet, tick, notifyChanged } = useStock();
+  const { gates, today, openSheet, openLastBox, tick, notifyChanged } = useStock();
   const [detail, setDetail] = useState<ItemDetailJson | null>(null);
   const [error, setError] = useState<StockError | null>(null);
   const [history, setHistory] = useState<MovementRow[] | null>(null);
@@ -200,6 +200,16 @@ export default function ItemDetailPage() {
           {gates.op && ready && (
             <button type="button" className={`${buttonPrimary} min-h-[44px]`} onClick={() => openSheet({ itemId: item.id })}>
               Hareket
+            </button>
+          )}
+          {gates.op && ready && (
+            // A room opened its last box of this card: room request from the main warehouse.
+            <button
+              type="button"
+              className={`${buttonSecondary} min-h-[44px]`}
+              onClick={() => openLastBox({ itemId: item.id })}
+            >
+              📣 Son kutu
             </button>
           )}
           {gates.mgr && (

@@ -7,7 +7,7 @@ import { canSeeFinance } from "./permissions";
 type NavUser = { role?: string | null; permissions?: readonly string[] } | null | undefined;
 
 /** Counts shown next to a menu item (see useMenuBadges). */
-export type MenuBadgeKey = "crm" | "tasks" | "stock";
+export type MenuBadgeKey = "crm" | "tasks" | "stock" | "roomRequests";
 
 export interface MenuItem {
   name: string;
@@ -16,7 +16,8 @@ export interface MenuItem {
   match?: string;
   /** Never active for this path or its sub-pages, even under `match`. */
   exclude?: string;
-  badge?: MenuBadgeKey;
+  /** Counts shown on the row, in this order; each is hidden while its count is 0 or not loaded. */
+  badges?: readonly MenuBadgeKey[];
   /** Shown only when this returns true; the same rule the page itself enforces. */
   visible?: (user: NavUser) => boolean;
 }
@@ -29,12 +30,13 @@ export const MENU_ITEMS: readonly MenuItem[] = [
   { name: "📅 Ajanda", href: "/appointments" },
   { name: "👥 Hastalar", href: "/patients" },
   { name: "🦷 Tedavi Planları", href: "/treatment-plans" },
-  { name: "📞 CRM · Bugün", href: "/crm/today", badge: "crm" },
+  { name: "📞 CRM · Bugün", href: "/crm/today", badges: ["crm"] },
   { name: "📊 CRM", href: "/crm/leads", match: "/crm", exclude: "/crm/today" },
-  { name: "✅ Görevler", href: "/tasks", badge: "tasks" },
+  { name: "✅ Görevler", href: "/tasks", badges: ["tasks"] },
   { name: "🧪 Lab", href: "/lab" },
   { name: "🔩 İmplantlar", href: "/clinical/implants", match: "/clinical" },
-  { name: "📦 Stok", href: "/inventory", match: "/inventory", badge: "stock" },
+  // Red: critical cards. Amber: open room requests ('Son kutu' reports among them), loaded for stock managers only.
+  { name: "📦 Stok", href: "/inventory", match: "/inventory", badges: ["stock", "roomRequests"] },
   { name: "👔 Ekip", href: "/team" },
   { name: "📈 Raporlar", href: "/reports" },
   // Finance pages require 'finance' or 'finance_readonly' (FinanceShell); the role alone gives nothing.
@@ -122,6 +124,12 @@ export const MENU_BADGES: Record<MenuBadgeKey, { short: string; label: (n: numbe
     short: "kritik",
     label: (n) => `${n} kritik stok kartı (en düşük seviyede veya tükenmiş); listeyi aç`,
     href: "/inventory/items?status=critical",
+  },
+  // Open = waiting for approval or delivery. The requests page opens on the room tab with 'Açık' selected.
+  roomRequests: {
+    short: "talep",
+    label: (n) => `${n} açık oda talebi (onay veya teslim bekliyor); listeyi aç`,
+    href: "/inventory/requests",
   },
 };
 

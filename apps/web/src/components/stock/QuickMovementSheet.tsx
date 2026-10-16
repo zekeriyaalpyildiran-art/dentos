@@ -12,6 +12,7 @@ import { MOVEMENT_LABELS } from "@/lib/stock/codes";
 import { BARCODE_MATCH_MESSAGES, batchMatchesScan, hasScannedBatch, type ScanLike } from "@/lib/stock/barcode-match";
 import { MAX_BARCODE_LENGTH, parseGs1, type Gs1Scan } from "@/lib/stock/gs1";
 import { daysLeft } from "@/lib/stock/expiry";
+import { LAST_BOX_ACTION_LABEL } from "@/lib/stock/last-box";
 import {
   istanbulToday,
   movementOperationSaved,
@@ -112,7 +113,7 @@ function summarize(result: MoveResult, type: SheetType, unit: string): string {
 }
 
 export function QuickMovementSheet({ options, onClose }: { options: SheetOpenOptions; onClose: () => void }) {
-  const { gates, today: serverToday, notifyChanged } = useStock();
+  const { gates, today: serverToday, notifyChanged, openLastBox } = useStock();
   const user = useAuthStore((state) => state.user);
   const today = serverToday ?? istanbulToday();
   const cartMode = !!options.onAddToCart;
@@ -746,6 +747,16 @@ export function QuickMovementSheet({ options, onClose }: { options: SheetOpenOpt
                   <span className="block text-sm text-gray-600">{INSTRUCTIONS[t]}</span>
                 </button>
               ))}
+              {!cartMode && (
+                <button
+                  type="button"
+                  onClick={() => openLastBox()}
+                  className="w-full min-h-[64px] text-left px-4 py-3 rounded-lg border border-amber-300 bg-amber-50 hover:border-amber-500"
+                >
+                  <span className="block font-semibold text-amber-900">📣 {LAST_BOX_ACTION_LABEL}</span>
+                  <span className="block text-sm text-amber-900">Odada son kutuyu açtıysanız ana depodan yenisini isteyin.</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="text-sm text-blue-700 hover:underline min-h-[44px]"

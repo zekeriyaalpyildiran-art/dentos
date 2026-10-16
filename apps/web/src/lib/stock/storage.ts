@@ -77,7 +77,10 @@ export function removeSessionKey(key: string): void {
   }
 }
 
-/** Removes every per-viewer stock key (both storages) of this browser; called on sign-out (shared clinic PCs). */
+/**
+ * Removes every per-viewer stock key (both storages) of this browser; called on sign-out (shared clinic PCs). The
+ * device's 'Son kutu' room (lastBoxRoomKey in last-box.ts, a location id only) is not per viewer and stays.
+ */
 export function clearStockStorage(): void {
   for (const area of ["localStorage", "sessionStorage"] as const) {
     try {

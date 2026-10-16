@@ -1,7 +1,8 @@
 "use client";
 
 // Stock area provider (mounted by app/(panel)/inventory/layout.tsx): one dashboard read shared by the tab badges
-// and the home screen, a change counter that pages use to refresh after a save, and the quick movement sheet.
+// and the home screen, a change counter that pages use to refresh after a save, the quick movement sheet and the
+// 'Son kutu' sheet (a room request when a room opens its last box).
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
@@ -21,6 +22,7 @@ import { stockDashboard, toStockError, type DashboardJson, type StockError } fro
 import type { CartLine } from "@/lib/stock/cart";
 import { UUID_RE } from "@/lib/finance";
 import { QuickMovementSheet } from "./QuickMovementSheet";
+import { LastBoxSheet, type LastBoxOpenOptions } from "./LastBoxSheet";
 
 export type SheetType = "receive" | "issue" | "transfer" | "waste" | "return";
 export const SHEET_TYPES: SheetType[] = ["receive", "issue", "transfer", "waste", "return"];
@@ -46,6 +48,8 @@ interface StockContextValue {
   tick: number;
   notifyChanged: () => void;
   openSheet: (options?: SheetOpenOptions) => void;
+  /** 'Son kutu açıldı / azaldı' (closes the quick movement sheet if it is open). */
+  openLastBox: (options?: LastBoxOpenOptions) => void;
   gates: StockGates;
   today: string | null;
   /**
@@ -77,6 +81,8 @@ export function StockProvider({ children }: { children: ReactNode }) {
   const [dashTick, setDashTick] = useState(0);
   const [sheet, setSheet] = useState<SheetOpenOptions | null>(null);
   const sheetSeq = useRef(0);
+  const [lastBox, setLastBox] = useState<LastBoxOpenOptions | null>(null);
+  const lastBoxSeq = useRef(0);
 
   // A different signed-in user (e.g. a sign-in synced from another tab) must never keep the previous user's
   // dashboard (cost value block, server permission flags) or open sheet: clear them before refetching, so the
@@ -85,6 +91,7 @@ export function StockProvider({ children }: { children: ReactNode }) {
     setDashboard(null);
     setDashboardError(null);
     setSheet(null);
+    setLastBox(null);
   }, [user?.user_id, user?.clinic_id]);
 
   useEffect(() => {
@@ -109,7 +116,13 @@ export function StockProvider({ children }: { children: ReactNode }) {
   const notifyChanged = useCallback(() => setTick((t) => t + 1), []);
   const openSheet = useCallback((options?: SheetOpenOptions) => {
     sheetSeq.current++;
+    setLastBox(null);
     setSheet(options ?? {});
+  }, []);
+  const openLastBox = useCallback((options?: LastBoxOpenOptions) => {
+    lastBoxSeq.current++;
+    setSheet(null);
+    setLastBox(options ?? {});
   }, []);
 
   // Server flags win over the client mirror of the role rules.
@@ -130,11 +143,12 @@ export function StockProvider({ children }: { children: ReactNode }) {
       tick,
       notifyChanged,
       openSheet,
+      openLastBox,
       gates,
       today: dashboard?.today ?? null,
       moduleMissing: isStockModuleMissing(dashboardError),
     }),
-    [dashboard, dashboardError, reloadDashboard, tick, notifyChanged, openSheet, gates]
+    [dashboard, dashboardError, reloadDashboard, tick, notifyChanged, openSheet, openLastBox, gates]
   );
 
   return (
@@ -143,7 +157,7 @@ export function StockProvider({ children }: { children: ReactNode }) {
       <Suspense fallback={null}>
         <SheetDeepLink />
       </Suspense>
-      {gates.op && !sheet && !value.moduleMissing && (
+      {gates.op && !sheet && !lastBox && !value.moduleMissing && (
         <button
           type="button"
           onClick={() => openSheet()}
@@ -159,24 +173,44 @@ export function StockProvider({ children }: { children: ReactNode }) {
           onClose={() => setSheet(null)}
         />
       )}
+      {lastBox && gates.op && !value.moduleMissing && (
+        <LastBoxSheet key={lastBoxSeq.current} options={lastBox} onClose={() => setLastBox(null)} />
+      )}
     </StockContext.Provider>
   );
 }
 
 /**
  * Deep link `?hareket=<type>&item=<id>&gtin=…&lot=…&serial=…&expiry=…` opens the sheet once and is then removed
- * from the address bar. It never carries patient data.
+ * from the address bar. It never carries patient data. `?sonkutu=1&oda=<location id>&item=<id>` opens the 'Son kutu'
+ * sheet instead (e.g. a QR label on a room cabinet pointing at /inventory?sonkutu=1&oda=…).
  */
 function SheetDeepLink() {
   const params = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
-  const { openSheet, gates } = useStock();
+  const { openSheet, openLastBox, gates } = useStock();
 
   useEffect(() => {
     const type = params.get("hareket");
-    if (!type || !gates.op) return;
+    const lastBox = params.get("sonkutu");
+    if ((!type && !lastBox) || !gates.op) return;
     const item = params.get("item");
+    const strip = () => {
+      const rest = new URLSearchParams(params.toString());
+      ["hareket", "item", "gtin", "lot", "serial", "expiry", "request", "sonkutu", "oda"].forEach((k) => rest.delete(k));
+      const qs = rest.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname);
+    };
+    if (!type) {
+      const room = params.get("oda");
+      openLastBox({
+        itemId: item && UUID_RE.test(item) ? item : undefined,
+        locationId: room && UUID_RE.test(room) ? room : undefined,
+      });
+      strip();
+      return;
+    }
     const opts: SheetOpenOptions = {
       type: (SHEET_TYPES as string[]).includes(type) ? (type as SheetType) : undefined,
       itemId: item && UUID_RE.test(item) ? item : undefined,
@@ -188,11 +222,8 @@ function SheetDeepLink() {
       },
     };
     openSheet(opts);
-    const rest = new URLSearchParams(params.toString());
-    ["hareket", "item", "gtin", "lot", "serial", "expiry", "request"].forEach((k) => rest.delete(k));
-    const qs = rest.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname);
-  }, [params, gates.op, openSheet, router, pathname]);
+    strip();
+  }, [params, gates.op, openSheet, openLastBox, router, pathname]);
 
   return null;
 }

@@ -72,9 +72,15 @@ describe("menuItemsFor", () => {
     }
   });
 
-  it("puts the badges on CRM · Bugün, Görevler and Stok", () => {
-    const badged = Object.fromEntries(MENU_ITEMS.filter((i) => i.badge).map((i) => [i.badge, i.href]));
-    expect(badged).toEqual({ crm: "/crm/today", tasks: "/tasks", stock: "/inventory" });
+  it("puts the badges on CRM · Bugün, Görevler and Stok (critical cards, then open room requests)", () => {
+    const badged = Object.fromEntries(MENU_ITEMS.flatMap((i) => (i.badges ?? []).map((key) => [key, i.href])));
+    expect(badged).toEqual({ crm: "/crm/today", tasks: "/tasks", stock: "/inventory", roomRequests: "/inventory" });
+    expect(MENU_ITEMS.find((i) => i.href === "/inventory")?.badges).toEqual(["stock", "roomRequests"]);
+  });
+
+  it("uses every badge key exactly once", () => {
+    const keys = MENU_ITEMS.flatMap((i) => i.badges ?? []);
+    expect([...keys].sort()).toEqual(Object.keys(MENU_BADGES).sort());
   });
 });
 
@@ -190,6 +196,16 @@ describe("menuBadge", () => {
     expect(menuBadge("tasks", 3)?.text).toBe("3 görev");
     expect(menuBadge("tasks", 3)?.href).toBe("/tasks");
     expect(menuBadge("tasks", 150)?.text).toBe("99+ görev");
+  });
+
+  it("counts open room requests as 'n talep' and opens the room tab of Talepler", () => {
+    expect(menuBadge("roomRequests", 2)).toEqual({
+      text: "2 talep",
+      label: "2 açık oda talebi (onay veya teslim bekliyor); listeyi aç",
+      href: "/inventory/requests",
+    });
+    expect(menuBadge("roomRequests", 0)).toBeNull();
+    expect(menuBadge("roomRequests", 120)?.text).toBe("99+ talep");
   });
 
   it("is hidden at zero, without a key or without a number", () => {
