@@ -16,6 +16,7 @@ import {
   useCanManageCrm,
 } from "@/components/crm/ui";
 import { useAuthStore } from "@/lib/store";
+import { useCanOpenPath } from "@/components/useCanOpenPath";
 import {
   dayTimeLabel,
   formatDateTime,
@@ -45,6 +46,9 @@ export default function TasksPage() {
   const canManage = useCanManageCrm();
   const canSeeAll = useCanAssignTasks();
   const staff = useStaff();
+  // CRM is closed to some roles (assistants, lib/nav.ts): no CRM button, and a task's lead is shown as plain text.
+  const canOpenCrmToday = useCanOpenPath("/crm/today");
+  const canOpenLeads = useCanOpenPath("/crm/leads");
   const [scope, setScope] = useState<TaskScope>("mine");
   const [offset, setOffset] = useState(0);
   const [rows, setRows] = useState<TaskJson[] | null>(null);
@@ -113,9 +117,11 @@ export default function TasksPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Link href="/crm/today" className={buttonSecondary}>
-            CRM · Bugün
-          </Link>
+          {canOpenCrmToday && (
+            <Link href="/crm/today" className={buttonSecondary}>
+              CRM · Bugün
+            </Link>
+          )}
           <button type="button" className={buttonPrimary} onClick={() => setDialog({ kind: "create" })}>
             + Yeni görev
           </button>
@@ -174,9 +180,13 @@ export default function TasksPage() {
                       <>
                         {" "}
                         · Hasta:{" "}
-                        <Link href={`/crm/leads/${t.lead_id}`} className="text-blue-700 underline">
-                          {t.lead_name ?? "Hasta kartı"}
-                        </Link>
+                        {canOpenLeads ? (
+                          <Link href={`/crm/leads/${t.lead_id}`} className="text-blue-700 underline">
+                            {t.lead_name ?? "Hasta kartı"}
+                          </Link>
+                        ) : (
+                          <span className="font-medium text-gray-800">{t.lead_name ?? "Hasta adayı"}</span>
+                        )}
                       </>
                     ) : (
                       " · İlgili hasta kaydı artık görünmüyor."

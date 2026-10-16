@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { crmPhoneMatches, normalizePhone, type PhoneMatchesJson } from "@/lib/crm";
 import { stageLabel } from "@/lib/crm/codes";
+import { useCanOpenPath } from "@/components/useCanOpenPath";
 
 /** True when the matches list anything. */
 export function hasPhoneMatches(m: PhoneMatchesJson | null | undefined): m is PhoneMatchesJson {
@@ -15,6 +16,8 @@ export function hasPhoneMatches(m: PhoneMatchesJson | null | undefined): m is Ph
  * patients with the same normalized number and links to each with "Mevcut kaydı aç".
  */
 export function PhoneMatchesList({ matches, title }: { matches: PhoneMatchesJson | null; title?: string }) {
+  // The patient form is shared with roles CRM is closed to (assistants, lib/nav.ts): they see the lead, without a link.
+  const canOpenLeads = useCanOpenPath("/crm/leads");
   if (!hasPhoneMatches(matches)) return null;
   return (
     <div className="p-3 rounded border border-amber-200 bg-amber-50 text-amber-900 text-sm" role="status">
@@ -26,9 +29,11 @@ export function PhoneMatchesList({ matches, title }: { matches: PhoneMatchesJson
               Hasta adayı: <b>{l.full_name}</b> · {stageLabel(l.stage)}
               {l.assigned_name ? ` · ${l.assigned_name}` : ""}
             </span>
-            <Link href={`/crm/leads/${l.id}`} className="text-blue-700 underline">
-              Mevcut kaydı aç
-            </Link>
+            {canOpenLeads && (
+              <Link href={`/crm/leads/${l.id}`} className="text-blue-700 underline">
+                Mevcut kaydı aç
+              </Link>
+            )}
           </li>
         ))}
         {matches.patients.map((p) => (

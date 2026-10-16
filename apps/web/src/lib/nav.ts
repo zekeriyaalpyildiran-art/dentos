@@ -66,8 +66,19 @@ export function rolesAllowedFor(section: string): UserRole[] {
 }
 
 function closedFor(item: MenuItem, role: string | null | undefined): boolean {
-  const section = sectionOf(item.href);
-  return !!section && !!role && (SECTIONS_CLOSED_FOR[section] as readonly string[]).includes(role);
+  return !canOpenPath(role, item.href);
+}
+
+/**
+ * False when `href` (a panel path, query and fragment ignored) lies in a section of SECTIONS_CLOSED_FOR that is closed
+ * to this role. Pages other roles share (Görevler, the patient card, the patient form…) use it to show a link into
+ * such a section as plain text, or to leave the button out, instead of a link the section's layout would refuse.
+ * A missing role (user not loaded) is not refused here; the section's layout still is the guard.
+ */
+export function canOpenPath(role: string | null | undefined, href: string): boolean {
+  const path = href.split(/[?#]/, 1)[0];
+  const section = sectionOf(path);
+  return !section || !role || !(SECTIONS_CLOSED_FOR[section] as readonly string[]).includes(role);
 }
 
 export function menuItemsFor(user: NavUser): MenuItem[] {

@@ -1,6 +1,7 @@
 // Panel menu and role start pages (lib/nav.ts). Synthetic users only.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,6 +10,7 @@ import {
   MENU_ITEMS,
   ROLE_HOME,
   badgeText,
+  canOpenPath,
   OWNER_FINANCE_HOME,
   homePathFor,
   homePathForUser,
@@ -23,6 +25,7 @@ import {
 import { STAFF_ROLES } from "../staff";
 
 const PANEL_DIR = fileURLToPath(new URL("../../app/(panel)", import.meta.url));
+const SRC_DIR = fileURLToPath(new URL("../..", import.meta.url));
 
 function pageSource(href: string): string | null {
   const file = `${PANEL_DIR}${href}/page.tsx`;
@@ -181,6 +184,105 @@ describe("sections closed for a role", () => {
       for (const [section, roles] of Object.entries(SECTIONS_CLOSED_FOR)) {
         if ((roles as readonly string[]).includes(role)) expect(home === section || home.startsWith(section + "/"), role).toBe(false);
       }
+    }
+  });
+});
+
+describe("canOpenPath (links from shared pages)", () => {
+  it("refuses assistants every path of CRM, Ekip and Raporlar, query and fragment ignored", () => {
+    for (const href of [
+      "/crm",
+      "/crm/today",
+      "/crm/leads/0b6c3c8e-1d2f-4a8b-9c1d-2e3f4a5b6c7d",
+      "/crm/leads?stage=new",
+      "/crm/today#work",
+      "/team",
+      "/team/abc",
+      "/reports",
+      "/reports?month=2026-10",
+    ]) {
+      expect(canOpenPath("assistant", href), href).toBe(false);
+    }
+  });
+
+  it("lets assistants open everything else, mal kabul and the rest of stock included", () => {
+    for (const href of [
+      "/appointments",
+      "/appointments?date=2026-10-16",
+      "/patients/abc",
+      "/tasks",
+      "/inventory",
+      "/inventory/receipt",
+      "/inventory/requests",
+      "/inventory/reports",
+      "/finance/reports",
+      "/crm-archive",
+      "/teams",
+    ]) {
+      expect(canOpenPath("assistant", href), href).toBe(true);
+    }
+  });
+
+  it("lets every other role open the closed sections, and does not guess for a user not loaded yet", () => {
+    for (const role of ["owner", "admin", "doctor", "reception"]) {
+      for (const href of ["/crm/today", "/crm/leads/x", "/team", "/reports"]) expect(canOpenPath(role, href), role).toBe(true);
+    }
+    expect(canOpenPath(null, "/crm/today")).toBe(true);
+    expect(canOpenPath(undefined, "/team")).toBe(true);
+  });
+
+  it("is the rule the menu uses", () => {
+    for (const role of STAFF_ROLES) {
+      const shown = hrefs(menuItemsFor(user(role, ["finance"])));
+      for (const item of MENU_ITEMS) expect(shown.includes(item.href), `${role} ${item.href}`).toBe(canOpenPath(role, item.href));
+    }
+  });
+});
+
+function sourceFiles(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) return name === "__tests__" || name === "node_modules" ? [] : sourceFiles(full);
+    return /\.(ts|tsx)$/.test(name) ? [full] : [];
+  });
+}
+
+describe("links into closed sections from shared pages", () => {
+  const sections = Object.keys(SECTIONS_CLOSED_FOR);
+  const linkRe = new RegExp(`["'\`](${sections.map((s) => s.replace("/", "\\/")).join("|")})(?=[/"'\`?#])`);
+  const rel = (file: string) => relative(SRC_DIR, file).split(sep).join("/");
+  const files = sourceFiles(SRC_DIR).map((f) => ({ path: rel(f), text: readFileSync(f, "utf8") }));
+  const inClosedSection = (path: string) => sections.some((s) => path.startsWith(`app/(panel)${s}/`));
+
+  /** Components rendered only on a closed section's own pages: the named export and where it is defined. */
+  const SECTION_ONLY: Record<string, string> = {
+    "components/crm/DaySummary.tsx": "DaySummary",
+    "components/crm/OverdueDialog.tsx": "OverdueDialog",
+    "components/crm/ui.tsx": "CrmShell",
+  };
+
+  it("finds the links it guards (the check is not vacuous)", () => {
+    const tasks = files.find((f) => f.path === "app/(panel)/tasks/page.tsx");
+    expect(tasks && linkRe.test(tasks.text)).toBe(true);
+  });
+
+  it("every file outside those sections that links into one asks canOpenPath / useCanOpenPath", () => {
+    const offenders = files
+      .filter((f) => linkRe.test(f.text))
+      .filter((f) => !inClosedSection(f.path) && f.path !== "lib/nav.ts" && !(f.path in SECTION_ONLY))
+      .filter((f) => !/\b(useCanOpenPath|canOpenPath)\(/.test(f.text))
+      .map((f) => f.path);
+    expect(offenders).toEqual([]);
+  });
+
+  it("the components allowed to link freely are used only inside the closed sections", () => {
+    for (const [path, name] of Object.entries(SECTION_ONLY)) {
+      expect(files.some((f) => f.path === path && f.text.includes(`export function ${name}`)), path).toBe(true);
+      const base = path.replace(/^.*\//, "").replace(/\.tsx?$/, "");
+      const importRe = new RegExp(`import\\s*\\{[^}]*\\b${name}\\b[^}]*\\}\\s*from\\s*["'][^"']*/${base}["']`);
+      const users = files.filter((f) => f.path !== path && importRe.test(f.text)).map((f) => f.path);
+      expect(users.length, name).toBeGreaterThan(0);
+      for (const u of users) expect(inClosedSection(u) || u in SECTION_ONLY, `${name} used in ${u}`).toBe(true);
     }
   });
 });
