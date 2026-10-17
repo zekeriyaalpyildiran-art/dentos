@@ -2,6 +2,7 @@
 // Sources feed fin_import_balances (p2i_db_contract §4.9), which wraps the Phase 1 merge
 // (fin_merge_balance_sources) that enforces every merge rule (C17). Nothing here writes data.
 
+import type { TableClosing } from "./bank-table";
 import { detectBank, normalizeBankText } from "./bank-text";
 import { activityRange, layoutTerms, type WorkbookLayout } from "./layout";
 import { isoDate, optionalPattern, trNumber } from "./primitives";
@@ -12,7 +13,52 @@ import type { BalanceSource, SheetBook } from "./types";
 export const maskedLabel = (bank: string, account: string): string =>
   bank + " · " + (account.length > 4 ? "…" + account.slice(-4) : account);
 
+/**
+ * D15 for an account import key: '<Bank>:<account number>' as the ready readers label it; any other (mapper) key keeps
+ * its words, and every run of 6+ digits (spaces / dashes inside allowed) is shown by its last 4 digits.
+ */
+export function maskedKeyLabel(key: string): string {
+  const i = key.indexOf(":");
+  if (i > 0 && /^\d[\d-]*$/.test(key.slice(i + 1))) return maskedLabel(key.slice(0, i), key.slice(i + 1));
+  return key.replace(/\d[\d -]*\d/g, (run) => {
+    const digits = run.replace(/\D/g, "");
+    return digits.length >= 6 ? "…" + digits.slice(-4) : run;
+  });
+}
+
 export const BANK_BALANCE_NOTE = "Dökümdeki hesap bakiyesi; kullanılabilir limit veya işlem toplamı değildir.";
+export const TABLE_BALANCE_NOTE =
+  "Dökümdeki son işlemden sonraki hesap bakiyesi; kullanılabilir limit veya işlem toplamı değildir.";
+export const TABLE_BALANCE_UNKNOWN = "Bakiye sütunu okundu ama son bakiye belirlenemedi; Bakiyeler ekranından elle girin.";
+
+export type TableBalanceResult = { source: BalanceSource | null; note: string | null };
+
+/**
+ * Column-mapped statement (bank-table.ts): the balance after its last movement, offered for the resolved account's
+ * import key. No source and no note when no balance column is mapped, nothing was read or no account is resolved;
+ * TABLE_BALANCE_UNKNOWN when the last balance cannot be told or its day is after `today` (the merge refuses it).
+ */
+export function tableBalance(
+  closing: TableClosing | null,
+  opts: { importKey: string; file: string; today: string }
+): TableBalanceResult {
+  const importKey = opts.importKey.trim();
+  if (!closing || !importKey) return { source: null, note: null };
+  if (!closing.ok || closing.day > opts.today || closing.day < "2000-01-01" || !Number.isSafeInteger(closing.amountCents))
+    return { source: null, note: TABLE_BALANCE_UNKNOWN };
+  return {
+    source: {
+      kind: "bank",
+      importKey,
+      label: maskedKeyLabel(importKey),
+      day: closing.day,
+      amountCents: closing.amountCents,
+      file: opts.file,
+      note: TABLE_BALANCE_NOTE,
+    },
+    note: null,
+  };
+}
 
 /** §13.1 (BI:3-11) PDF header balance. Returns null when bank, account, value or period is missing. */
 export function bankBalance(text: string, file: string): BalanceSource | null {

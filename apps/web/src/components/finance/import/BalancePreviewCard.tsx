@@ -22,10 +22,11 @@ import type { BalanceSource } from "@/lib/finance-import/types";
 /**
  * Balances read from the files (legacy BP, merge rules C17). Preview = fin_import_balances with p_dry_run;
  * the save repeats the same call for real. Importing movements never changes balances, and saving balances never
- * creates movements.
+ * creates movements. `notes` are files whose balance column was read but gave no balance (shown even without candidates).
  */
 export function BalancePreviewCard({
   candidates,
+  notes = [],
   setup,
   refData,
   today,
@@ -33,6 +34,7 @@ export function BalancePreviewCard({
   onSetupChanged,
 }: {
   candidates: BalanceSource[];
+  notes?: string[];
   setup: ImportSetupJson;
   refData: ReferenceData;
   today: string;
@@ -61,7 +63,15 @@ export function BalancePreviewCard({
     loadCurrent();
   }, [loadCurrent]);
 
-  if (!candidates.length) return null;
+  if (!candidates.length && !notes.length) return null;
+  const noteList = notes.length > 0 && (
+    <ul className="text-sm text-amber-700 mt-2 space-y-1">
+      {notes.map((n, i) => (
+        <li key={i}>{n}</li>
+      ))}
+    </ul>
+  );
+  if (!candidates.length) return <Card title="Dosyalardan okunan bakiyeler">{noteList}</Card>;
 
   const mappedAccount = (s: BalanceSource) =>
     s.kind === "cash"
@@ -145,6 +155,7 @@ export function BalancePreviewCard({
           );
         })}
       </div>
+      {noteList}
       {needsInit && (
         <label className="flex items-start gap-2 text-sm mt-3">
           <input type="checkbox" className="mt-1" checked={initialize} disabled={disabled || busy} onChange={(e) => { setInitialize(e.target.checked); setConfirmed(false); }} />

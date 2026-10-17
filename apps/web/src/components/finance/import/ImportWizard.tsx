@@ -25,7 +25,7 @@ import {
   type ImportWarningCode,
   type ReferenceData,
 } from "@/lib/finance";
-import { mergeSessionBalances } from "@/lib/finance-import/balances";
+import { mergeSessionBalances, type TableBalanceResult } from "@/lib/finance-import/balances";
 import { intakePdf, intakeSpreadsheet, type SavedWorkbookLayout, type SpreadsheetOutcome } from "@/lib/finance-import/detect";
 import { validateWorkbookLayout } from "@/lib/finance-import/layout";
 import { matchTargetsError } from "@/lib/finance-import/matching";
@@ -101,6 +101,9 @@ function Wizard({
   const [rows, setRows] = useState<WizardRow[]>([]);
   const [cards, setCards] = useState<CardState[]>([]);
   const [balances, setBalances] = useState<BalanceSource[]>([]);
+  // Closing balances of column-mapped bank cards, by card id: live while the card is mapped, kept after it is closed
+  // like a ready reader's balance (cleared with the list). Adding a sheet's rows also keeps its balance in `balances`.
+  const [tableBalances, setTableBalances] = useState<Record<string, TableBalanceResult & { file: string }>>({});
   const [notes, setNotes] = useState<string[]>([]);
   const [fileErrors, setFileErrors] = useState<string[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
@@ -371,6 +374,8 @@ function Wizard({
         match: null,
       }));
       setNotes((old) => [...old, ...accepted.notes]);
+      const balance = accepted.balance;
+      if (balance) setBalances((old) => mergeSessionBalances(old, [balance]));
       setMessage(
         `${n} banka satırı kontrol listesine eklendi. Henüz kaydedilmedi. Başka sayfa varsa onu da seçip ekleyebilirsiniz.`
       );
@@ -397,6 +402,7 @@ function Wizard({
     setRows([]);
     setCards([]);
     setBalances([]);
+    setTableBalances({});
     setNotes([]);
     setFileErrors([]);
     setCheck(null);
@@ -428,6 +434,23 @@ function Wizard({
   // --- derived ---------------------------------------------------------------------------------------
 
   const ctx = { month, today, ref: refData };
+  const tableBalanceList = Object.values(tableBalances);
+  const balanceCandidates = mergeSessionBalances(
+    balances,
+    tableBalanceList.flatMap((b) => (b.source ? [b.source] : []))
+  );
+  const balanceNotes = tableBalanceList.flatMap((b) => (b.note ? [`${b.file}: ${b.note}`] : []));
+  const reportTableBalance = (cardId: string, file: string, b: TableBalanceResult) =>
+    setTableBalances((old) => {
+      if (!b.source && !b.note) {
+        if (!(cardId in old)) return old;
+        const rest = { ...old };
+        delete rest[cardId];
+        return rest;
+      }
+      const next = { ...b, file };
+      return JSON.stringify(old[cardId]) === JSON.stringify(next) ? old : { ...old, [cardId]: next };
+    });
   const items: ReviewItem[] = rows.map((row) => {
     const blockers = wizardBlockers(row, ctx);
     const warnings = Array.from(new Set([...rowWarnings(row), ...(preFlags[row.key] ?? [])]));
@@ -641,14 +664,16 @@ function Wizard({
           rules={rules}
           disabled={busy}
           onAdd={(accepted) => void acceptBank(accepted)}
+          onBalance={(b) => reportTableBalance(c.id, c.file, b)}
           onClose={() => setCards((old) => old.filter((x) => x.id !== c.id))}
           onSetupChanged={reloadAll}
         />
       ))}
 
       <BalancePreviewCard
-        key={JSON.stringify(balances.map((b) => [b.importKey, b.day, b.amountCents]))}
-        candidates={balances}
+        key={JSON.stringify(balanceCandidates.map((b) => [b.importKey, b.day, b.amountCents]))}
+        candidates={balanceCandidates}
+        notes={balanceNotes}
         setup={setup}
         refData={refData}
         today={today}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ErrorBox, Field, buttonPrimary, buttonSecondary, inputClass } from "@/components/finance/ui";
 import {
   ACCOUNT_KIND_LABELS,
@@ -27,10 +27,11 @@ import {
   type BankTableResult,
   type MappingMode,
 } from "@/lib/finance-import/bank-table";
+import { tableBalance, type TableBalanceResult } from "@/lib/finance-import/balances";
 import type { CompiledRules } from "@/lib/finance-import/classify";
 import type { BankCard } from "@/lib/finance-import/detect";
 import { bankText, normB } from "@/lib/finance-import/primitives";
-import type { ParsedRow } from "@/lib/finance-import/types";
+import type { BalanceSource, ParsedRow } from "@/lib/finance-import/types";
 import { asBankTableConfig, type BankTableLayoutConfig } from "./layout-config";
 
 export type CardState = BankCard & { id: string };
@@ -40,6 +41,8 @@ export interface AcceptedBankRows {
   notes: string[];
   accountId: string;
   layoutId: string | null;
+  /** The mapped sheet's closing balance; kept for the session so the next sheet of the same file can be mapped. */
+  balance?: BalanceSource | null;
 }
 
 const MODE_LABELS: Record<MappingMode, string> = {
@@ -61,6 +64,7 @@ export function BankMapperCard({
   rules,
   disabled,
   onAdd,
+  onBalance,
   onClose,
   onSetupChanged,
 }: {
@@ -70,6 +74,8 @@ export function BankMapperCard({
   rules: CompiledRules;
   disabled: boolean;
   onAdd: (accepted: AcceptedBankRows) => void;
+  /** The column mapper's closing balance for the 'Dosyalardan okunan bakiyeler' card (live while mapping). */
+  onBalance: (balance: TableBalanceResult) => void;
   onClose: () => void;
   onSetupChanged: () => Promise<unknown>;
 }) {
@@ -111,6 +117,7 @@ export function BankMapperCard({
         rules={rules}
         disabled={disabled}
         onAdd={onAdd}
+        onBalance={onBalance}
         onSetupChanged={onSetupChanged}
         collapsed={!!card.knownRows?.length}
       />
@@ -221,6 +228,7 @@ function GenericMapper({
   rules,
   disabled,
   onAdd,
+  onBalance,
   onSetupChanged,
   collapsed,
 }: {
@@ -230,6 +238,7 @@ function GenericMapper({
   rules: CompiledRules;
   disabled: boolean;
   onAdd: (accepted: AcceptedBankRows) => void;
+  onBalance: (balance: TableBalanceResult) => void;
   onSetupChanged: () => Promise<unknown>;
   collapsed: boolean;
 }) {
@@ -262,6 +271,7 @@ function GenericMapper({
   const keyLabel = layout?.key_label ?? state.label;
 
   const mapping: BankMapping = useMemo(() => ({ ...state.mapping, account: keyLabel.trim() }), [state.mapping, keyLabel]);
+  const labelOk = keyLabel.trim().length >= 1 && keyLabel.trim().length <= 100;
 
   useEffect(() => {
     let alive = true;
@@ -273,6 +283,21 @@ function GenericMapper({
       alive = false;
     };
   }, [table, mapping, card.file, rules]);
+
+  // Closing balance of a mapped 'balance after' column, for the chosen account: its import key resolves the account
+  // in fin_import_balances; without one the mapper key is offered and the balances card links it. Only while the
+  // mapper is in use (a ready reading has its own balance).
+  const accountKey = account ? account.import_key?.trim() || keyLabel.trim() : "";
+  const fileBalance = useMemo<TableBalanceResult>(
+    () =>
+      open && parsed && labelOk && accountKey
+        ? tableBalance(parsed.closing, { importKey: accountKey, file: card.file, today: setup.today })
+        : { source: null, note: null },
+    [open, parsed, labelOk, accountKey, card.file, setup.today]
+  );
+  const onBalanceRef = useRef(onBalance);
+  onBalanceRef.current = onBalance;
+  useEffect(() => onBalanceRef.current(fileBalance), [fileBalance]);
 
   const change = (patch: Partial<MapperState>) => {
     setState((s) => ({ ...s, ...patch }));
@@ -334,6 +359,7 @@ function GenericMapper({
       ],
       accountId: account.id,
       layoutId: layout?.id ?? null,
+      balance: fileBalance.source,
     });
     setChecked(false);
     setTl(false);
@@ -384,7 +410,6 @@ function GenericMapper({
     );
   }
 
-  const labelOk = keyLabel.trim().length >= 1 && keyLabel.trim().length <= 100;
   return (
     <div className="space-y-4 text-sm">
       <p className="text-gray-700">
@@ -518,6 +543,13 @@ function GenericMapper({
             <b>{parsed.rows.length} işlem okunabildi.</b> {parsed.issues.length} sorunlu satır aktarılmayacak. {parsed.ignored} başlık veya
             işlem dışı satır atlandı.
           </p>
+          {fileBalance.source && (
+            <p className="text-gray-700">
+              Son işlemden sonraki bakiye: <b>{formatTL(fileBalance.source.amountCents)}</b> · {formatDay(fileBalance.source.day)}. Aşağıdaki
+              “Dosyalardan okunan bakiyeler” bölümünden önizleyip kaydedebilirsiniz.
+            </p>
+          )}
+          {fileBalance.note && <p className="text-amber-700">{fileBalance.note}</p>}
           {parsed.issues.length > 0 && (
             <details open={parsed.rows.length === 0}>
               <summary className="cursor-pointer">Kontrol gereken satırlar</summary>
