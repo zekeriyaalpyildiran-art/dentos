@@ -101,8 +101,9 @@ function Wizard({
   const [rows, setRows] = useState<WizardRow[]>([]);
   const [cards, setCards] = useState<CardState[]>([]);
   const [balances, setBalances] = useState<BalanceSource[]>([]);
-  // Closing balances of column-mapped bank cards, by card id: live while the card is mapped, kept after it is closed
-  // like a ready reader's balance (cleared with the list). Adding a sheet's rows also keeps its balance in `balances`.
+  // Closing balances of column-mapped bank cards, by card id: sent once the card's mapping is confirmed (its two
+  // boxes), kept after the card is closed like a ready reader's balance (cleared with the list). Adding a sheet's rows
+  // moves its balance to `balances`, so the next sheet of the same file can be mapped.
   const [tableBalances, setTableBalances] = useState<Record<string, TableBalanceResult & { file: string }>>({});
   const [notes, setNotes] = useState<string[]>([]);
   const [fileErrors, setFileErrors] = useState<string[]>([]);
@@ -367,6 +368,10 @@ function Wizard({
 
   const acceptBank = async (accepted: AcceptedBankRows) => {
     setProgress("Satırlar kontrol ediliyor…");
+    // The confirmed mapping's balance moves from the card's live entry (cleared as the card resets its boxes) to the
+    // session list in the same render, so the balances card keeps its state.
+    const balance = accepted.balance;
+    if (balance) setBalances((old) => mergeSessionBalances(old, [balance]));
     try {
       const n = await appendRows(accepted.rows, "bank", () => ({
         accountId: accepted.accountId,
@@ -374,8 +379,6 @@ function Wizard({
         match: null,
       }));
       setNotes((old) => [...old, ...accepted.notes]);
-      const balance = accepted.balance;
-      if (balance) setBalances((old) => mergeSessionBalances(old, [balance]));
       setMessage(
         `${n} banka satırı kontrol listesine eklendi. Henüz kaydedilmedi. Başka sayfa varsa onu da seçip ekleyebilirsiniz.`
       );

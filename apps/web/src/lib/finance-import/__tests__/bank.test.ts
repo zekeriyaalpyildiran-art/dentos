@@ -151,6 +151,6 @@ describe("TEB spreadsheet reader (§6.1, D6)", () => {
     const fin = intakeSpreadsheet({ names: ["S"], sheets: { S: [["x", "Bayi Katkı Faizi"]] } }, { file: "f.xlsx", month: "2026-03", layouts: [], rules });
     expect(fin.kind).toBe("financing_refused");
     const other = intakeSpreadsheet({ names: ["S"], sheets: { S: [["a"]] } }, { file: "o.csv", month: "2026-03", layouts: [], rules });
-    expect(other.kind === "bank" && other.card.knownRows === undefined && other.notes[0].includes("bakiye bulunamadı")).toBe(true);
+    expect(other.kind === "bank" && other.card.knownRows === undefined && other.notes[0].includes("hazır okuyucu bakiye bulamadı")).toBe(true);
   });
 });

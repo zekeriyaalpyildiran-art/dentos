@@ -125,6 +125,8 @@ export type BalanceSource = {
   amountCents: number;
   file: string;
   note: string;
+  /** Column mapper only: the finance account chosen there, preselected when the key still has to be linked. */
+  accountId?: string;
 };
 
 /** Error with a user-facing Turkish message (legacy texts). Never contains row text unless legacy did. */

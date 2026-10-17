@@ -70,6 +70,9 @@ export const MAPPING_ERRORS = {
   duplicate: "Aynı sütun birden çok alan için seçilmiş. Özellikle işlem tutarı ile bakiyeyi ayrı seçin.",
 } as const;
 
+/** Total, carry-over and opening / closing balance lines: not movements. */
+const TOTAL_LINE = /^(toplam|devir|acilis bakiyesi|kapanis bakiyesi|opening balance|closing balance|total)\b/;
+
 const ROW_ISSUES = {
   dateColumn: "Tarih seçilen sütunda değil; eşleştirmeyi kontrol edin.",
   emptyOrTotal: "Açıklama boş veya toplam/devir satırı. İşlem olarak eklenmedi.",
@@ -99,6 +102,10 @@ const CHAIN_BUDGET = 50_000;
  * its amount, and the last movement is the only one no other same-day movement continues from. Every same-day
  * movement must sit on that one chain; otherwise (gap, repeated balances, a column that is not a running balance,
  * an empty cell, or a movement of that day that could not be read: `blockedDays`) nothing is guessed.
+ *
+ * When the previous movement day is fully read, the day must also start where that day ended (its closing balance,
+ * or when that one cannot be told, one of its balances): this catches a mis-mapped column on a one-movement day, and
+ * the previous closing balance tells where a day without a single last movement (a reversal pair) starts.
  */
 export function closingBalance(rows: readonly ChainRow[], blockedDays: ReadonlySet<string> = new Set()): TableClosing | null {
   if (!rows.length) return null;
@@ -107,42 +114,91 @@ export function closingBalance(rows: readonly ChainRow[], blockedDays: ReadonlyS
   for (const d of Array.from(blockedDays)) if (d > day) day = d;
   const unknown: TableClosing = { ok: false, day };
   if (blockedDays.has(day)) return unknown;
-  const same = rows.filter((r) => r.date === day);
-  if (!same.length || same.some((r) => r.balanceCents === null)) return unknown;
-  const linked = same as Linked[];
-  const before = (r: Linked) => r.balanceCents - r.signedCents;
-  const continued = new Set(linked.map(before));
-  const ends = linked.filter((r) => !continued.has(r.balanceCents));
-  if (ends.length !== 1 || !onOneChain(linked, ends[0], before)) return unknown;
-  return { ok: true, day, amountCents: ends[0].balanceCents, line: ends[0].line };
+  const same = linkedDay(rows, day);
+  if (!same) return unknown;
+  const opening = openingAnchor(rows, day, blockedDays);
+  const net = same.reduce((n, r) => n + r.signedCents, 0);
+  const continued = new Set(same.map(before));
+  const ends = same.filter((r) => !continued.has(r.balanceCents));
+  let end: Linked | null = null;
+  if (ends.length === 1) {
+    // Walked back from the one last movement; the day then started at its balance minus the day's net movement.
+    if (fullChain(same.length, ends, previousOf(same))) end = ends[0];
+    if (end && opening && !opening.has(end.balanceCents - net)) end = null;
+  } else if (opening?.size === 1) {
+    // No single last movement (a net-zero day): walk forward from where the previous day ended.
+    const start = Array.from(opening)[0];
+    end = fullChain(same.length, same.filter((r) => before(r) === start), nextOf(same));
+  }
+  return end ? { ok: true, day, amountCents: end.balanceCents, line: end.line } : unknown;
 }
 
-/** Walks back from `end` (with backtracking) until every row is on the chain; false when no such order exists. */
-function onOneChain(rows: Linked[], end: Linked, before: (r: Linked) => number): boolean {
-  const byBalance = new Map<number, Linked[]>();
-  for (const r of rows) byBalance.set(r.balanceCents, [...(byBalance.get(r.balanceCents) ?? []), r]);
-  const used = new Set<Linked>([end]);
-  const path: { row: Linked; next: number }[] = [{ row: end, next: 0 }];
+const before = (r: Linked) => r.balanceCents - r.signedCents;
+
+/** The day's movements, or null when one of them has no balance. */
+function linkedDay(rows: readonly ChainRow[], day: string): Linked[] | null {
+  const same = rows.filter((r) => r.date === day);
+  return same.length && same.every((r) => r.balanceCents !== null) ? (same as Linked[]) : null;
+}
+
+/**
+ * Balances the latest day may start from: the previous movement day's closing balance, or all of that day's balances
+ * when its own last one cannot be told. null (no check) when there is no earlier day, or it is not fully read.
+ */
+function openingAnchor(rows: readonly ChainRow[], day: string, blockedDays: ReadonlySet<string>): Set<number> | null {
+  let prevDay = "";
+  for (const r of rows) if (r.date < day && r.date > prevDay) prevDay = r.date;
+  for (const d of Array.from(blockedDays)) if (d < day && d > prevDay) prevDay = d;
+  if (!prevDay || blockedDays.has(prevDay)) return null;
+  const prev = linkedDay(rows, prevDay);
+  if (!prev) return null;
+  const closing = closingBalance(prev);
+  return new Set(closing?.ok ? [closing.amountCents] : prev.map((r) => r.balanceCents));
+}
+
+function previousOf(rows: Linked[]): (r: Linked) => readonly Linked[] {
+  const byBalance = groupBy(rows, (r) => r.balanceCents);
+  return (r) => byBalance.get(before(r)) ?? [];
+}
+
+function nextOf(rows: Linked[]): (r: Linked) => readonly Linked[] {
+  const byBefore = groupBy(rows, before);
+  return (r) => byBefore.get(r.balanceCents) ?? [];
+}
+
+function groupBy(rows: Linked[], key: (r: Linked) => number): Map<number, Linked[]> {
+  const out = new Map<number, Linked[]>();
+  for (const r of rows) out.set(key(r), [...(out.get(key(r)) ?? []), r]);
+  return out;
+}
+
+/**
+ * Depth-first with backtracking: an order of all `count` movements that starts with one of `first` and where each
+ * movement is followed by one of `follow(movement)`. Returns the order's last movement, or null when there is none
+ * (or the step budget runs out).
+ */
+function fullChain(count: number, first: readonly Linked[], follow: (r: Linked) => readonly Linked[]): Linked | null {
+  const used = new Set<Linked>();
+  const path: { options: readonly Linked[]; next: number; row?: Linked }[] = [{ options: first, next: 0 }];
   let budget = CHAIN_BUDGET;
   while (path.length) {
-    if (used.size === rows.length) return true;
-    if (--budget < 0) return false;
+    if (--budget < 0) return null;
     const top = path[path.length - 1];
-    const options = byBalance.get(before(top.row)) ?? [];
     let pick: Linked | undefined;
-    while (!pick && top.next < options.length) {
-      const c = options[top.next++];
+    while (!pick && top.next < top.options.length) {
+      const c = top.options[top.next++];
       if (!used.has(c)) pick = c;
     }
-    if (pick) {
-      used.add(pick);
-      path.push({ row: pick, next: 0 });
-    } else {
-      used.delete(top.row);
+    if (!pick) {
       path.pop();
+      if (top.row) used.delete(top.row);
+      continue;
     }
+    used.add(pick);
+    if (used.size === count) return pick;
+    path.push({ options: follow(pick), next: 0, row: pick });
   }
-  return false;
+  return null;
 }
 
 /** BT:28-53 + BM:13. Every generic row starts unselected (C8). */
@@ -152,6 +208,8 @@ export async function parseBankTable(table: BankTable, m: BankMapping, file: str
   const seen = new Map<string, number>();
   const chain: ChainRow[] = [];
   const blocked = new Set<string>();
+  // A movement whose date could not be read may be the last one: no closing balance is told then.
+  let undatedMovement = false;
   let ignored = 0;
   if (!m.account.trim()) return { rows, issues: [{ line: 0, reason: MAPPING_ERRORS.account }], ignored, closing: null };
   if (
@@ -173,6 +231,13 @@ export async function parseBankTable(table: BankTable, m: BankMapping, file: str
     m.currency,
   ].filter((i) => i >= 0);
   if (new Set(used).size !== used.length) return { rows, issues: [{ line: 0, reason: MAPPING_ERRORS.duplicate }], ignored, closing: null };
+  const amountColumns = (m.mode === "split" ? [m.debit, m.credit] : [m.amount]).filter((c) => c >= 0);
+  /** The row's amount cell(s) for the mode hold a readable non-zero number (a movement, not a footer or note line). */
+  const moves = (raw: unknown[]) =>
+    amountColumns.some((c) => {
+      const v = bankNumber(raw[c], m.format);
+      return v !== null && v !== 0;
+    });
   for (let i = m.header + 1; i < table.rows.length; i++) {
     const raw = table.rows[i] || [];
     if (!raw.some((v) => bankText(v))) continue;
@@ -188,15 +253,17 @@ export async function parseBankTable(table: BankTable, m: BankMapping, file: str
               const v = bankNumber(raw[c], m.format);
               return v !== null && v !== 0;
             }))
-      )
+      ) {
         issues.push({ line: i + 1, reason: ROW_ISSUES.dateColumn });
-      else ignored++;
+        if (moves(raw) && !TOTAL_LINE.test(normB(desc))) undatedMovement = true;
+      } else ignored++;
       continue;
     }
-    if (!desc || /^(toplam|devir|acilis bakiyesi|kapanis bakiyesi|opening balance|closing balance|total)\b/.test(normB(desc))) {
+    if (!desc || TOTAL_LINE.test(normB(desc))) {
       issues.push({ line: i + 1, reason: ROW_ISSUES.emptyOrTotal });
-      // A dated movement without narration may be the day's last one; total / opening lines are not movements.
-      if (!desc) blocked.add(date);
+      // A dated movement without narration may be the day's last one; total / opening lines and dated lines without
+      // an amount (a print time in the footer) are not movements.
+      if (!desc && moves(raw)) blocked.add(date);
       continue;
     }
     if (m.currency >= 0 && bankText(raw[m.currency]) && !/^(tl|try|₺|turk lirasi)$/.test(normB(raw[m.currency]))) {
@@ -229,7 +296,10 @@ export async function parseBankTable(table: BankTable, m: BankMapping, file: str
     }
     if (amount === null || !amount || !Number.isSafeInteger(amount) || Math.abs(amount) > 1e12) {
       issues.push({ line: i + 1, reason: ROW_ISSUES.amount });
-      blocked.add(date);
+      // An information line with a written zero amount ('0,00') is not a movement; an empty or unreadable amount
+      // may be one, so its day gets no closing balance.
+      const zero = amountColumns.every((c) => bankNumber(raw[c], m.format) === 0) && amountColumns.some((c) => bankText(raw[c]));
+      if (!zero) blocked.add(date);
       continue;
     }
     const balance = m.balance >= 0 ? bankNumber(raw[m.balance], m.format) : null;
@@ -269,7 +339,8 @@ export async function parseBankTable(table: BankTable, m: BankMapping, file: str
       meta: { line: i + 1, table: table.name, occurrence },
     });
   }
-  return { rows, issues, ignored, closing: m.balance >= 0 ? closingBalance(chain, blocked) : null };
+  const closing = m.balance >= 0 ? closingBalance(chain, blocked) : null;
+  return { rows, issues, ignored, closing: closing && undatedMovement ? { ok: false, day: closing.day } : closing };
 }
 
 /** BT:55-67: positioned PDF text items → a column table. */

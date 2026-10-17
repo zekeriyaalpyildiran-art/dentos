@@ -27,7 +27,7 @@ import {
   type BankTableResult,
   type MappingMode,
 } from "@/lib/finance-import/bank-table";
-import { tableBalance, type TableBalanceResult } from "@/lib/finance-import/balances";
+import { mapperBalance, type TableBalanceResult } from "@/lib/finance-import/balances";
 import type { CompiledRules } from "@/lib/finance-import/classify";
 import type { BankCard } from "@/lib/finance-import/detect";
 import { bankText, normB } from "@/lib/finance-import/primitives";
@@ -285,16 +285,19 @@ function GenericMapper({
   }, [table, mapping, card.file, rules]);
 
   // Closing balance of a mapped 'balance after' column, for the chosen account: its import key resolves the account
-  // in fin_import_balances; without one the mapper key is offered and the balances card links it. Only while the
+  // in fin_import_balances; without one the mapper key is offered when the balances card can link it. Only while the
   // mapper is in use (a ready reading has its own balance).
-  const accountKey = account ? account.import_key?.trim() || keyLabel.trim() : "";
-  const fileBalance = useMemo<TableBalanceResult>(
+  const readBalance = useMemo<TableBalanceResult>(
     () =>
-      open && parsed && labelOk && accountKey
-        ? tableBalance(parsed.closing, { importKey: accountKey, file: card.file, today: setup.today })
+      open && parsed && labelOk && account
+        ? mapperBalance(parsed.closing, { account, keyLabel, accounts: setup.accounts, file: card.file, today: setup.today })
         : { source: null, note: null },
-    [open, parsed, labelOk, accountKey, card.file, setup.today]
+    [open, parsed, labelOk, account, keyLabel, setup.accounts, card.file, setup.today]
   );
+  // Offered to the balances card only once the mapping is confirmed (both boxes, which every mapping, sheet or account
+  // change clears): a sheet glanced at with a carried-over account never sends its balance under that account.
+  const confirmed = tl && checked;
+  const fileBalance = useMemo<TableBalanceResult>(() => (confirmed ? readBalance : { source: null, note: null }), [confirmed, readBalance]);
   const onBalanceRef = useRef(onBalance);
   onBalanceRef.current = onBalance;
   useEffect(() => onBalanceRef.current(fileBalance), [fileBalance]);
@@ -543,13 +546,15 @@ function GenericMapper({
             <b>{parsed.rows.length} işlem okunabildi.</b> {parsed.issues.length} sorunlu satır aktarılmayacak. {parsed.ignored} başlık veya
             işlem dışı satır atlandı.
           </p>
-          {fileBalance.source && (
+          {readBalance.source && (
             <p className="text-gray-700">
-              Son işlemden sonraki bakiye: <b>{formatTL(fileBalance.source.amountCents)}</b> · {formatDay(fileBalance.source.day)}. Aşağıdaki
-              “Dosyalardan okunan bakiyeler” bölümünden önizleyip kaydedebilirsiniz.
+              Son işlemden sonraki bakiye: <b>{formatTL(readBalance.source.amountCents)}</b> · {formatDay(readBalance.source.day)}.{" "}
+              {confirmed
+                ? "Aşağıdaki “Dosyalardan okunan bakiyeler” bölümünden önizleyip kaydedebilirsiniz."
+                : "Bakiyeyi önermek için kontrol kutularını işaretleyin."}
             </p>
           )}
-          {fileBalance.note && <p className="text-amber-700">{fileBalance.note}</p>}
+          {readBalance.note && <p className="text-amber-700">{readBalance.note}</p>}
           {parsed.issues.length > 0 && (
             <details open={parsed.rows.length === 0}>
               <summary className="cursor-pointer">Kontrol gereken satırlar</summary>

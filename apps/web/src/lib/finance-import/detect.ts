@@ -42,6 +42,8 @@ export type SpreadsheetOutcome =
 const SHEET_NOTICE = "Başlık satırı ve sütunlar otomatik önerildi. Doğru değilse aşağıdan değiştirebilirsiniz.";
 const PDF_NOTICE = "PDF’den okunan sütunları ve satırları aşağıda kontrol edin.";
 const noBalance = (file: string) => `${file}: bakiye bulunamadı; mevcut bakiye korunacak.`;
+const noSheetBalance = (file: string) =>
+  `${file}: hazır okuyucu bakiye bulamadı; bakiye sütununu eşleştirip onaylarsanız son işlemden sonraki bakiye önerilir.`;
 const noPdfBalance = (file: string) => `${file}: hesap bakiyesi otomatik okunamadı; hareket eşleştirmesi bakiyeyi değiştirmez.`;
 
 /**
@@ -88,7 +90,7 @@ export function intakeSpreadsheet(
     card.accountImportKey = undefined;
     balance = null;
   }
-  if (!card.knownRows) notes.push(noBalance(file));
+  if (!card.knownRows) notes.push(noSheetBalance(file));
   return { kind: "bank", card, balance, notes };
 }
 

@@ -60,6 +60,30 @@ export function tableBalance(
   };
 }
 
+/** fin_set_account_import_key's key form ('Banka:hesap'). */
+export const IMPORT_KEY_FORM = /^[^:\s][^:]*:[^:]+$/;
+export const TABLE_BALANCE_NEEDS_KEY =
+  "Bakiye okundu; kaydetmek için bu hesaba “Banka:hesap” biçiminde, başka hesapta kullanılmayan bir içe aktarma anahtarı verin (Banka + hesap etiketi).";
+
+type KeyedAccount = { id: string; import_key: string | null };
+
+/**
+ * The column mapper's balance for the account chosen there: under the account's import key; for an account without
+ * one, under the mapper key only when the balances card can link it (fin_set_account_import_key takes an unused
+ * 'Banka:hesap' key; another account's key would put the balance on that account), else TABLE_BALANCE_NEEDS_KEY.
+ */
+export function mapperBalance(
+  closing: TableClosing | null,
+  opts: { account: KeyedAccount; keyLabel: string; accounts: readonly KeyedAccount[]; file: string; today: string }
+): TableBalanceResult {
+  const own = opts.account.import_key?.trim();
+  const importKey = own || opts.keyLabel.trim();
+  const read = tableBalance(closing, { importKey, file: opts.file, today: opts.today });
+  if (!read.source || own) return read;
+  const linkable = IMPORT_KEY_FORM.test(importKey) && !opts.accounts.some((a) => a.id !== opts.account.id && a.import_key === importKey);
+  return linkable ? { source: { ...read.source, accountId: opts.account.id }, note: null } : { source: null, note: TABLE_BALANCE_NEEDS_KEY };
+}
+
 /** §13.1 (BI:3-11) PDF header balance. Returns null when bank, account, value or period is missing. */
 export function bankBalance(text: string, file: string): BalanceSource | null {
   const t = text.replace(/(\d)\s*\n\s*(,\d{2})/g, "$1$2").replace(/\s+/g, " ");

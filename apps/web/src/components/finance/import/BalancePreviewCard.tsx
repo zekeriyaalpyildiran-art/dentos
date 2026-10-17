@@ -216,7 +216,7 @@ function LinkAccount({
   onLinked: () => Promise<unknown>;
 }) {
   const free = sortByOrder(refData.accounts.filter((a) => a.is_active && (a.kind === "bank" || a.kind === "pos") && !a.import_key));
-  const [pick, setPick] = useState("");
+  const [pick, setPick] = useState(() => (source.accountId && free.some((a) => a.id === source.accountId) ? source.accountId : ""));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<FinanceError | null>(null);
   const link = async () => {

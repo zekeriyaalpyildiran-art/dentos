@@ -7,8 +7,16 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { maskedKeyLabel, TABLE_BALANCE_NOTE, TABLE_BALANCE_UNKNOWN, tableBalance } from "../balances";
+import {
+  mapperBalance,
+  maskedKeyLabel,
+  TABLE_BALANCE_NEEDS_KEY,
+  TABLE_BALANCE_NOTE,
+  TABLE_BALANCE_UNKNOWN,
+  tableBalance,
+} from "../balances";
 import { closingBalance, parseBankTable, suggestMapping, type BankMapping, type BankTable, type ChainRow } from "../bank-table";
+import { normB } from "../primitives";
 import { readSpreadsheetFile } from "../read-file";
 import { seedRules } from "./fixtures";
 
@@ -148,6 +156,98 @@ describe("closing balance of a column-mapped statement", () => {
     expect(await closingOf(split)).toMatchObject({ ok: true, day: "2026-10-04", amountCents: 9549975 });
   });
 
+  it("the latest day must start where the previous day ended", async () => {
+    // 990,00 after 15.10; 16.10 −20,00 → 123,00 contradicts it (the column is not the balance after each movement).
+    const contradicts: Line[] = [
+      ["15.10.2026", "-10,00", "990,00"],
+      ["16.10.2026", "-20,00", "123,00"],
+    ];
+    expect(await closingOf(statement(contradicts))).toEqual({ ok: false, day: "2026-10-16" });
+    expect(await closingOf(statement([...contradicts].reverse()))).toEqual({ ok: false, day: "2026-10-16" });
+    const fits: Line[] = [
+      ["15.10.2026", "-10,00", "990,00"],
+      ["16.10.2026", "-20,00", "970,00"],
+    ];
+    expect(await closingOf(statement(fits))).toMatchObject({ ok: true, day: "2026-10-16", amountCents: 97000 });
+  });
+
+  it("a mis-mapped balance column on a one-movement day gives no balance", async () => {
+    // Like the Ziraat export (Tarih | Fiş No | Açıklama | İşlem Tutarı | Bakiye) with 'Fiş No' chosen as the balance.
+    const t: BankTable = {
+      name: "Hesap hareketleri",
+      rows: [
+        HEADER,
+        ["16.10.2026", "4711", "Havale", "7.556,80", "42.559,72"],
+        ["15.10.2026", "4710", "Masraf", "-2,63", "35.002,92"],
+        ["15.10.2026", "4709", "Masraf", "-0,67", "35.005,55"],
+        ["15.10.2026", "4708", "Ödeme", "-100.000,00", "35.006,22"],
+      ],
+    };
+    expect(await closingOf(t)).toEqual({ ok: true, day: "2026-10-16", amountCents: 4255972, line: 2 });
+    expect(await closingOf(t, { balance: 1 })).toEqual({ ok: false, day: "2026-10-16" });
+    // A one-movement previous day: its 'balance' (a slip number) is not where the latest day started either.
+    const oneEach = { ...t, rows: t.rows.slice(0, 3) };
+    expect(await closingOf(oneEach)).toMatchObject({ ok: true, amountCents: 4255972 });
+    expect(await closingOf(oneEach, { balance: 1 })).toEqual({ ok: false, day: "2026-10-16" });
+  });
+
+  it("a net-zero latest day (reversal) starts where the previous day ended", async () => {
+    const prev: Line = ["15.10.2026", "-10,00", "1.000,00"];
+    const pair: Line[] = [
+      ["16.10.2026", "-50,00", "950,00"],
+      ["16.10.2026", "50,00", "1.000,00"],
+    ];
+    expect(await closingOf(statement([prev, ...pair]))).toEqual({ ok: true, day: "2026-10-16", amountCents: 100000, line: 6 });
+    expect(await closingOf(statement([...pair].reverse().concat([prev])))).toMatchObject({ ok: true, amountCents: 100000 });
+    // Started at 950,00 the other order is the only one: +50 → 1.000,00, then −50 → 950,00.
+    expect(await closingOf(statement([["15.10.2026", "-10,00", "950,00"], ...pair]))).toMatchObject({ ok: true, amountCents: 95000 });
+    const three: Line[] = [
+      ["15.10.2026", "5,00", "1.000,00"],
+      ["16.10.2026", "150,00", "1.000,00"],
+      ["16.10.2026", "-50,00", "850,00"],
+      ["16.10.2026", "-100,00", "900,00"],
+    ];
+    expect(await closingOf(statement(three))).toMatchObject({ ok: true, day: "2026-10-16", amountCents: 100000 });
+    // Without an earlier day, or when it cannot be told where that day ended, nothing is guessed.
+    expect(await closingOf(statement(pair))).toEqual({ ok: false, day: "2026-10-16" });
+    const prevPair: Line[] = [
+      ["15.10.2026", "-5,00", "995,00"],
+      ["15.10.2026", "5,00", "1.000,00"],
+    ];
+    expect(await closingOf(statement([...prevPair, ...pair]))).toEqual({ ok: false, day: "2026-10-16" });
+    // ... and the previous day's balances still rule out a start that is none of them.
+    const single: Line = ["16.10.2026", "-20,00", "975,00"];
+    expect(await closingOf(statement([...prevPair, single]))).toMatchObject({ ok: true, amountCents: 97500 });
+    expect(await closingOf(statement([...prevPair, ["16.10.2026", "-20,00", "123,00"]]))).toEqual({ ok: false, day: "2026-10-16" });
+  });
+
+  it("no check against a previous day that is not fully read", async () => {
+    const t = statement([["16.10.2026", "-20,00", "970,00"]]);
+    const prevMissing = { ...t, rows: [...t.rows.slice(0, 3), ["15.10.2026", "F1", "Ödeme", "-10,00", ""], ...t.rows.slice(3)] };
+    expect(await closingOf(prevMissing)).toMatchObject({ ok: true, day: "2026-10-16", amountCents: 97000 });
+    const prevBlocked = { ...t, rows: [...t.rows.slice(0, 3), ["15.10.2026", "F1", "Ödeme", "abc", "500,00"], ...t.rows.slice(3)] };
+    expect(await closingOf(prevBlocked)).toMatchObject({ ok: true, day: "2026-10-16", amountCents: 97000 });
+  });
+
+  it("a movement whose date cannot be read gives no balance; undated total lines do not matter", async () => {
+    const t = statement([["16.10.2026", "-10,00", "990,00"]]);
+    const undated = { ...t, rows: [...t.rows.slice(0, 4), ["16.10.26", "F2", "Ödeme", "-20,00", "970,00"], ...t.rows.slice(4)] };
+    const parsed = await parseBankTable(undated, mappingOf(undated), "x", rules);
+    expect(parsed.issues.map((i) => i.line)).toContain(5);
+    expect(parsed.closing).toEqual({ ok: false, day: "2026-10-16" });
+    const total = { ...t, rows: [...t.rows.slice(0, 4), ["", "", "Toplam", "-10,00", ""], ...t.rows.slice(4)] };
+    expect(await closingOf(total)).toMatchObject({ ok: true, amountCents: 99000 });
+  });
+
+  it("footer and zero-amount information lines do not block the day; an empty amount does", async () => {
+    const t = statement([["16.10.2026", "-10,00", "990,00"]]);
+    const withRow = (row: unknown[]) => ({ ...t, rows: [...t.rows.slice(0, 4), row, ...t.rows.slice(4)] });
+    expect(await closingOf(withRow(["17.10.2026 10:34", "", "", "", ""]))).toMatchObject({ ok: true, day: "2026-10-16", amountCents: 99000 });
+    expect(await closingOf(withRow(["16.10.2026", "F3", "Faiz oranı bilgisi", "0,00", "990,00"]))).toMatchObject({ ok: true, amountCents: 99000 });
+    expect(await closingOf(withRow(["16.10.2026", "F3", "Ödeme", "", "970,00"]))).toEqual({ ok: false, day: "2026-10-16" });
+    expect(await closingOf(withRow(["16.10.2026", "F3", "", "-20,00", "970,00"]))).toEqual({ ok: false, day: "2026-10-16" });
+  });
+
   it("no balance column or no movement: nothing to offer", async () => {
     const t = statement(OLDEST_FIRST);
     expect(await closingOf(t, { balance: -1 })).toBeNull();
@@ -196,6 +296,31 @@ describe("balance source for the balances card", () => {
     expect(tableBalance(ok, { ...opts, importKey: "  " })).toEqual({ source: null, note: null });
   });
 
+  it("mapper: the account's own key, or a linkable mapper key with the account to link", () => {
+    const base = { file: "ziraat.xlsx", today: "2026-10-17" };
+    const keyed = { id: "a", import_key: "Ziraat:65712345675001" };
+    const free = { id: "b", import_key: null };
+    const accounts = [keyed, free];
+    expect(mapperBalance(ok, { ...base, account: keyed, keyLabel: "başka etiket", accounts }).source).toMatchObject({
+      importKey: "Ziraat:65712345675001",
+      label: "Ziraat · …5001",
+    });
+    expect(mapperBalance(ok, { ...base, account: keyed, keyLabel: "x", accounts }).source?.accountId).toBeUndefined();
+    expect(mapperBalance(ok, { ...base, account: free, keyLabel: " Ziraat:657-5001 ", accounts }).source).toMatchObject({
+      importKey: "Ziraat:657-5001",
+      accountId: "b",
+    });
+    const needsKey = { source: null, note: TABLE_BALANCE_NEEDS_KEY };
+    // Not 'Banka:hesap' (fin_set_account_import_key refuses it) or another account's key.
+    expect(mapperBalance(ok, { ...base, account: free, keyLabel: "Ziraat Bankası Ana Hesap", accounts })).toEqual(needsKey);
+    expect(mapperBalance(ok, { ...base, account: free, keyLabel: "Ziraat:65712345675001", accounts })).toEqual(needsKey);
+    // An unknown balance stays the 'belirlenemedi' note.
+    expect(mapperBalance({ ok: false, day: "2026-10-04" }, { ...base, account: free, keyLabel: "x y", accounts })).toEqual({
+      source: null,
+      note: TABLE_BALANCE_UNKNOWN,
+    });
+  });
+
   it("key labels", () => {
     expect(maskedKeyLabel("TEB:123456789")).toBe("TEB · …6789");
     expect(maskedKeyLabel("Garanti:1234-5678901")).toBe("Garanti · …8901");
@@ -234,6 +359,12 @@ describe.skipIf(!ZIRAAT || !existsSync(ZIRAAT))("real Ziraat statement (DENTOS_Z
     const again = (await parseBankTable(reversed, m, "ziraat.xlsx", rules)).closing;
     const pick = (c: typeof again) => (c?.ok ? [c.day, c.amountCents] : null);
     same("ters sıralı dosya", pick(again), pick(parsed.closing));
+    // The slip-number column chosen as the balance is refused (the last day must start where the day before ended).
+    const slip = t.rows[m.header].findIndex((c) => normB(c).trim() === "fis no");
+    if (slip >= 0) {
+      const wrong = (await parseBankTable(t, { ...m, balance: slip }, "ziraat.xlsx", rules)).closing;
+      expect(wrong?.ok === true, "yanlış bakiye sütunu kabul edildi").toBe(false);
+    }
     const { source, note } = tableBalance(parsed.closing, { importKey: "Ziraat:0000", file: "ziraat.xlsx", today: "9999-12-31" });
     expect(!!source && note === null, "bakiye kaynağı yok").toBe(true);
     if (ZIRAAT_EXPECT) {
