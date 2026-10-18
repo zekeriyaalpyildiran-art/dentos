@@ -1,5 +1,7 @@
 // Hakediş (doctor earnings) v1 client helpers: labels, bp / percent and month helpers, typed RPC wrappers and a pure
-// mirror of fin_hk__compute. Contract: hakediş spec §1 (fin_hk_* / hk_* RPCs, 0030_hakedis.sql) and §2.
+// mirror of fin_hk__compute. Contract: hakediş spec §1 (fin_hk_* / hk_* RPCs, 0030_hakedis.sql) and §2, with the
+// v1.1 additions: child patients by birth date (fin_settings.hk_child_age_limit, fin_hk_patient_marks.birth_date) and
+// the reception's patient marking RPCs (hk_marks_*, hk_save_mark; no amounts).
 // Every rate and amount is data entered by the owner (basis points and integer cents); nothing here is hard-coded.
 // Month arguments are sent as 'YYYY-MM-01' dates; month values read back may be 'YYYY-MM' or 'YYYY-MM-DD', so every
 // helper compares them through monthKey().
@@ -190,6 +192,84 @@ export function normalizePatientRef(name: string | null | undefined): string {
 }
 
 // ---------------------------------------------------------------------------
+// Child patients by age (v1.1 item 2): fin_settings.hk_child_age_limit and fin_hk_patient_marks.birth_date
+// ---------------------------------------------------------------------------
+
+/** fin_settings.hk_child_age_limit default and CHECK range (years). */
+export const HK_DEFAULT_CHILD_AGE_LIMIT = 14;
+export const HK_CHILD_AGE_LIMIT_MIN = 1;
+export const HK_CHILD_AGE_LIMIT_MAX = 18;
+/** fin_hk_patient_marks.birth_date lower bound (CHECK). */
+export const HK_MIN_BIRTH_DATE = "1900-01-01";
+
+/** The child age limit of a settings object; the column default when it is absent. */
+export function childAgeLimitOf(settings: { child_age_limit?: number | null } | null | undefined): number {
+  const v = settings?.child_age_limit;
+  return typeof v === "number" && Number.isFinite(v) ? v : HK_DEFAULT_CHILD_AGE_LIMIT;
+}
+
+/** Client-side mirror of the fin_hk_save_settings check; null when valid. */
+export function validateChildAgeLimit(value: number | null | undefined): string | null {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < HK_CHILD_AGE_LIMIT_MIN ||
+    value > HK_CHILD_AGE_LIMIT_MAX
+  ) {
+    return `Çocuk hasta yaş sınırı ${HK_CHILD_AGE_LIMIT_MIN} ile ${HK_CHILD_AGE_LIMIT_MAX} arasında olmalı.`;
+  }
+  return null;
+}
+
+const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})/;
+const isLeapYear = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+const daysInMonth = (y: number, m: number) =>
+  m === 2 ? (isLeapYear(y) ? 29 : 28) : m === 4 || m === 6 || m === 9 || m === 11 ? 30 : 31;
+
+/** [year, month, day] of a 'YYYY-MM-DD' value (a timestamp's date part too); null when it is not a real date. */
+function parseDay(value: string | null | undefined): [number, number, number] | null {
+  const m = DAY_RE.exec(value ?? "");
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > daysInMonth(y, mo)) return null;
+  return [y, mo, d];
+}
+
+/** Whole years from `from` to `to` (from ≤ to): the year field of PostgreSQL age(to, from). */
+function wholeYears(from: [number, number, number], to: [number, number, number]): number {
+  const beforeAnniversary = to[1] < from[1] || (to[1] === from[1] && to[2] < from[2]);
+  return to[0] - from[0] - (beforeAnniversary ? 1 : 0);
+}
+
+/**
+ * Age in whole years on `day`: date_part('year', age(day, birth)) exactly. PostgreSQL's age() compares the month /
+ * day fields, so a 29 February birthday is reached on 1 March in non-leap years (on 28 February the person is still
+ * a year younger). A day before the birth date gives the negated age (0 within the first year), as age() does. Null
+ * when either value is not a 'YYYY-MM-DD' date.
+ */
+export function ageOn(birth: string | null | undefined, day: string | null | undefined): number | null {
+  const b = parseDay(birth);
+  const d = parseDay(day);
+  if (!b || !d) return null;
+  const dayVsBirth = d[0] - b[0] || d[1] - b[1] || d[2] - b[2];
+  if (dayVsBirth >= 0) return wholeYears(b, d);
+  const years = wholeYears(d, b);
+  return years === 0 ? 0 : -years;
+}
+
+/** Client-side mirror of the birth_date checks (a real date, 1900-01-01 … today); null when valid or empty. */
+export function validateBirthDate(value: string | null | undefined, today: string): string | null {
+  const v = (value ?? "").trim();
+  if (!v) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || !parseDay(v)) return "Doğum tarihi geçersiz.";
+  if (v < HK_MIN_BIRTH_DATE) return "Doğum tarihi 1900'den önce olamaz.";
+  if (parseDay(today) && v > today.slice(0, 10)) return "Doğum tarihi bugünden sonra olamaz.";
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // JSON shapes (§1 RPC list). Money is integer cents (TL unless a currency is named), rates basis points.
 // ---------------------------------------------------------------------------
 
@@ -254,6 +334,14 @@ export interface HkMonthRefJson {
   reopened_by_name: string | null;
 }
 
+/** Hakediş settings on fin_settings (v1.1): fin_hk_reference().settings and the fin_hk_save_settings record. */
+export interface HkSettingsJson {
+  /** fin_settings.version (p_version of fin_hk_save_settings) */
+  version: number;
+  /** fin_settings.hk_child_age_limit: a patient with a birth date is a child while younger than this (1..18) */
+  child_age_limit: number;
+}
+
 export interface HkReferenceJson {
   today: string;
   current_month: string;
@@ -267,6 +355,7 @@ export interface HkReferenceJson {
   months: HkMonthRefJson[];
   /** Lab name picker (datalist): active lab counterparties (Cariler) and names already used in lab costs. */
   lab_names: string[];
+  settings: HkSettingsJson;
 }
 
 interface HkVoidable {
@@ -341,8 +430,45 @@ export interface HkMarkJson extends HkStamped {
   /** this patient is that doctor's own-portfolio patient */
   own_doctor_id: string | null;
   own_doctor_name: string | null;
+  /** 'YYYY-MM-DD'; when set, the child segment follows the age on the payment day and is_child is not used */
+  birth_date: string | null;
+  /** manual child mark: used only while birth_date is null */
   is_child: boolean;
   note: string;
+}
+
+// Reception patient marking (v1.1 item 3: hk_marks_*, hk_save_mark). Patients and doctor names only, never amounts
+// or rates.
+
+export interface HkMarkDoctorJson {
+  id: string;
+  name: string;
+}
+
+/** hk_marks_access(). */
+export interface HkMarksAccessJson {
+  /** active reception / admin / owner user or finance writer */
+  can_mark: boolean;
+  /** doctors with an active 'own' ciro_share rule in the current month (the "Hekimin kendi hastası" choices) */
+  doctors: HkMarkDoctorJson[];
+}
+
+/** A row of hk_marks_list() and the hk_save_mark record. */
+export interface HkMarkRowJson {
+  id: string;
+  version: number;
+  patient_ref: string;
+  patient_name: string;
+  own_doctor_id: string | null;
+  own_doctor_name: string | null;
+  birth_date: string | null;
+  /** finance-only field, shown read-only here */
+  is_child: boolean;
+  /**
+   * the patient has payments in a closed month: own doctor / birth date can be changed only by a finance writer (the
+   * server refuses others)
+   */
+  locked: boolean;
 }
 
 /** One lab invoice / charge for a patient (owner decision 2026-10-18). */
@@ -711,10 +837,17 @@ export interface HkSaveMarkArgs {
   p_own_doctor_id: string | null;
   p_is_child: boolean;
   p_note: string;
+  /** 'YYYY-MM-DD' or null; always sent so that an edit never drops a birth date entered at the reception */
+  p_birth_date: string | null;
 }
 
 export function finHkSaveMark(args: HkSaveMarkArgs) {
   return rpc<HkWriteResult<HkMarkJson>>("fin_hk_save_mark", { ...args });
+}
+
+/** fin_settings.hk_child_age_limit (1..18); 0022 settings conventions: no-op → already_saved, then PT409. */
+export function finHkSaveSettings(args: { p_version: number; p_child_age_limit: number }) {
+  return rpc<HkWriteResult<HkSettingsJson>>("fin_hk_save_settings", { ...args });
 }
 
 export interface HkSaveLabCostArgs {
@@ -762,6 +895,39 @@ export async function hkMyMonths(): Promise<HkMyMonthsJson> {
 
 export function hkMyMonth(month: string) {
   return rpc<HkMyMonthJson>("hk_my_month", { p_month: monthStart(month) });
+}
+
+// Reception patient marking (reception, admin, owner or a finance writer; no finance permission needed).
+
+export async function hkMarksAccess(): Promise<HkMarksAccessJson> {
+  const data = await rpc<Partial<HkMarksAccessJson> | null>("hk_marks_access");
+  return { can_mark: !!data?.can_mark, doctors: data?.doctors ?? [] };
+}
+
+/** Max rows of hk_marks_list (by patient name); a full page means the search should be narrowed. */
+export const HK_MARKS_LIST_LIMIT = 200;
+
+/** Marks whose patient name or patient key contains the query (blank = all), at most HK_MARKS_LIST_LIMIT. */
+export async function hkMarksList(query: string): Promise<HkMarkRowJson[]> {
+  const data = await rpc<HkMarkRowJson[] | null>("hk_marks_list", { p_query: query.trim() });
+  return Array.isArray(data) ? data : [];
+}
+
+export interface HkReceptionSaveMarkArgs {
+  p_id: string;
+  /** 0 = create with the client-generated p_id */
+  p_version: number;
+  /** null → fin__normalize_name(p_patient_name) */
+  p_patient_ref: string | null;
+  p_patient_name: string;
+  p_own_doctor_id: string | null;
+  /** 'YYYY-MM-DD' or null */
+  p_birth_date: string | null;
+}
+
+/** Creates / updates only the name, own doctor and birth date; is_child and note stay with fin_hk_save_mark. */
+export function hkSaveMark(args: HkReceptionSaveMarkArgs) {
+  return rpc<HkWriteResult<HkMarkRowJson>>("hk_save_mark", { ...args });
 }
 
 // ---------------------------------------------------------------------------
@@ -964,6 +1130,8 @@ export interface HkComputeMark {
   patient_ref: string;
   own_doctor_id: string | null;
   is_child: boolean;
+  /** 'YYYY-MM-DD'; when set, the age on the line's day decides the child segment instead of is_child */
+  birth_date?: string | null;
 }
 
 export interface HkComputeInput {
@@ -974,6 +1142,8 @@ export interface HkComputeInput {
   pieces?: readonly HkComputePiece[];
   lab_costs?: readonly HkComputeLabCost[];
   marks?: readonly HkComputeMark[];
+  /** fin_settings hakediş fields; child_age_limit defaults to HK_DEFAULT_CHILD_AGE_LIMIT */
+  settings?: { child_age_limit?: number | null } | null;
   doctors?: readonly { id: string; name: string }[];
   payees?: readonly { user_id: string; name: string }[];
   /** payees that have a physician counterparty; when given, NO_COUNTERPARTY is reported for the others (total ≠ 0) */
@@ -992,14 +1162,33 @@ export interface HkComputeOutput extends HkComputeResult {
   line_results: HkLineResult[];
 }
 
-/** line.segment if set; else 'own' when the mark's own doctor is the line's doctor; else 'child' when marked; else standard. */
+/**
+ * Is the marked patient a child on `day`? With a birth date: younger than the limit on that day (ageOn, whole years);
+ * without one: the manual is_child mark. An unreadable birth date counts as none (the database only holds real dates).
+ */
+export function markIsChildOn(
+  mark: Pick<HkComputeMark, "is_child" | "birth_date"> | null | undefined,
+  day: string,
+  childAgeLimit: number = HK_DEFAULT_CHILD_AGE_LIMIT
+): boolean {
+  if (!mark) return false;
+  const age = mark.birth_date ? ageOn(mark.birth_date, day) : null;
+  if (age !== null) return age < childAgeLimit;
+  return !!mark.is_child;
+}
+
+/**
+ * line.segment if set; else 'own' when the mark's own doctor is the line's doctor; else 'child' when the patient is a
+ * child on the line's day (markIsChildOn); else standard. Same order as fin_hk__compute.
+ */
 export function resolveSegment(
-  line: Pick<HkComputeLine, "segment" | "doctor_id">,
-  mark: Pick<HkComputeMark, "own_doctor_id" | "is_child"> | null | undefined
+  line: Pick<HkComputeLine, "segment" | "doctor_id" | "day">,
+  mark: Pick<HkComputeMark, "own_doctor_id" | "is_child" | "birth_date"> | null | undefined,
+  childAgeLimit: number = HK_DEFAULT_CHILD_AGE_LIMIT
 ): HkSegment {
   if (line.segment) return line.segment;
   if (mark?.own_doctor_id && mark.own_doctor_id === line.doctor_id) return "own";
-  if (mark?.is_child) return "child";
+  if (markIsChildOn(mark, line.day, childAgeLimit)) return "child";
   return "standard";
 }
 
@@ -1092,6 +1281,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const doctorNames = new Map((input.doctors ?? []).map((d) => [d.id, d.name]));
   const payeeNames = new Map((input.payees ?? []).map((p) => [p.user_id, p.name]));
   const marks = new Map((input.marks ?? []).map((m) => [m.patient_ref, m]));
+  const childAgeLimit = childAgeLimitOf(input.settings);
   const doctorName = (id: string | null, fallback?: string | null) =>
     id ? doctorNames.get(id) ?? fallback ?? "" : fallback ?? null;
 
@@ -1145,7 +1335,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const lineResults: HkLineResult[] = [];
   const unruled = new Map<string, { count: number; try_cents: number }>();
   for (const l of monthLines) {
-    const segment = resolveSegment(l, marks.get(l.patient_ref));
+    const segment = resolveSegment(l, marks.get(l.patient_ref), childAgeLimit);
     const rule =
       orthoByDoctor.get(l.doctor_id) ??
       ciroByKey.get(`${l.doctor_id}|${segment}`) ??

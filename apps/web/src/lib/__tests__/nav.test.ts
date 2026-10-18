@@ -224,6 +224,52 @@ describe("Hakedişim (the payee's own hakediş)", () => {
   });
 });
 
+describe("Hasta işaretleri (patient marks at the reception desk)", () => {
+  it("is in the menu of reception, admins and the owner, finance permission or not, right after Hakedişim", () => {
+    for (const role of ["reception", "admin", "owner"]) {
+      for (const perms of [[], ["finance"], ["finance_readonly"]]) {
+        expect(hrefs(menuItemsFor(user(role, perms))), `${role} ${perms}`).toContain("/hasta-isaretleri");
+      }
+    }
+    for (const role of ["assistant", "doctor"]) {
+      expect(hrefs(menuItemsFor(user(role, ["finance"]))), role).not.toContain("/hasta-isaretleri");
+    }
+    const owner = hrefs(menuItemsFor(user("owner", ["finance"])));
+    expect(owner.indexOf("/hasta-isaretleri")).toBe(owner.indexOf("/hakedisim") + 1);
+    const reception = hrefs(menuItemsFor(user("reception")));
+    expect(reception.indexOf("/hasta-isaretleri")).toBe(reception.indexOf("/settings") - 1);
+    expect(MENU_ITEMS.find((i) => i.href === "/hasta-isaretleri")?.name).toBe("🏷️ Hasta işaretleri");
+  });
+
+  it("is closed to assistants and doctors, typed addresses included", () => {
+    expect([...rolesAllowedFor("/hasta-isaretleri")].sort()).toEqual(["admin", "owner", "reception"]);
+    for (const role of ["assistant", "doctor"]) {
+      for (const href of ["/hasta-isaretleri", "/hasta-isaretleri?q=x", "/hasta-isaretleri#liste"]) {
+        expect(canOpenPath(role, href), `${role} ${href}`).toBe(false);
+      }
+    }
+    for (const role of ["reception", "admin", "owner"]) expect(canOpenPath(role, "/hasta-isaretleri"), role).toBe(true);
+    expect(canOpenPath("doctor", "/hasta-isaretlerix")).toBe(true);
+    // The finance marks editor (Hakediş · Satırlar ve hastalar) is gated by the finance permission, not this section.
+    expect(canOpenPath("doctor", "/finance/hakedis/lines")).toBe(true);
+  });
+
+  it("does not change anyone's start page", () => {
+    for (const role of STAFF_ROLES) expect(homePathFor(role).startsWith("/hasta-isaretleri"), role).toBe(false);
+    expect(homePathForUser({ role: "reception", permissions: [] })).toBe(ROLE_HOME.reception);
+  });
+
+  it("uses only the marking RPCs: no finance permission, no hakediş figures, no amounts", () => {
+    const src = pageSource("/hasta-isaretleri");
+    expect(src).not.toBeNull();
+    expect(src).toMatch(/\bhkMarksAccess\(/);
+    expect(src).toMatch(/\bhkMarksList\(/);
+    expect(src).toMatch(/\bhkSaveMark\(/);
+    expect(src).not.toMatch(/\bfinHk[A-Z]\w*\(|\bhkMy[A-Z]\w*\(|FinanceShell|requiredPermission/);
+    expect(src).not.toMatch(/\b(formatTL|formatMoney|parseTL)\b|_cents\b|_bp\b/);
+  });
+});
+
 describe("canOpenPath (links from shared pages)", () => {
   it("refuses assistants every path of CRM, Ekip and Raporlar, query and fragment ignored", () => {
     for (const href of [

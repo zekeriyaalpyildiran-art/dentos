@@ -26,6 +26,8 @@ import {
   type FinanceError,
 } from "@/lib/finance";
 import {
+  HK_CHILD_AGE_LIMIT_MAX,
+  HK_CHILD_AGE_LIMIT_MIN,
   HK_KINDS,
   HK_METHODS,
   HK_SEGMENTS,
@@ -34,11 +36,14 @@ import {
   RULE_FIELDS,
   SEGMENT_LABELS,
   bpToInput,
+  childAgeLimitOf,
   finHkSaveRule,
+  finHkSaveSettings,
   formatBp,
   monthKey,
   parsePercent,
   ruleActiveIn,
+  validateChildAgeLimit,
   validateRule,
   type HkKind,
   type HkMethod,
@@ -134,6 +139,17 @@ function RulesList() {
         </p>
       )}
 
+      <ChildAgeLimitCard
+        key={`${data.settings?.version ?? 0}:${childAgeLimitOf(data.settings)}`}
+        refData={data}
+        canWrite={canWrite}
+        onReload={ref.reload}
+        onSaved={async (alreadySaved) => {
+          setMessage(alreadySaved ? "Değişiklik yok; yaş sınırı aynı kaldı." : "Çocuk hasta yaş sınırı kaydedildi.");
+          await ref.reload();
+        }}
+      />
+
       {dialog && (
         <RuleDialog
           key={dialog.record?.id ?? `new:${dialog.payeeUserId ?? ""}`}
@@ -154,6 +170,82 @@ function RulesList() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * fin_settings.hk_child_age_limit (fin_hk_save_settings): a marked patient with a birth date is in the child group
+ * while younger than this on the payment day. Finance writers change it; read-only holders see it.
+ */
+function ChildAgeLimitCard({
+  refData,
+  canWrite,
+  onSaved,
+  onReload,
+}: {
+  refData: HkReferenceJson;
+  canWrite: boolean;
+  onSaved: (alreadySaved: boolean) => void | Promise<void>;
+  onReload: () => void;
+}) {
+  const limit = childAgeLimitOf(refData.settings);
+  const [value, setValue] = useState(String(limit));
+  const [formError, setFormError] = useState<string | null>(null);
+  const [error, setError] = useState<FinanceError | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (ev: React.FormEvent) => {
+    ev.preventDefault();
+    setFormError(null);
+    setError(null);
+    const n = /^\d{1,2}$/.test(value.trim()) ? Number(value.trim()) : NaN;
+    const invalid = validateChildAgeLimit(n);
+    if (invalid) return setFormError(invalid);
+    setBusy(true);
+    try {
+      const res = await finHkSaveSettings({ p_version: refData.settings?.version ?? 0, p_child_age_limit: n });
+      await onSaved(res.already_saved);
+    } catch (err) {
+      setError(toFinanceError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="Çocuk hasta yaş sınırı">
+      <p className="text-sm text-gray-700">
+        Doğum tarihi girilmiş hasta, ödeme gününde <strong>{limit} yaşından küçükse</strong> “Çocuk hasta” grubuna girer
+        (doğum tarihi yoksa hasta işaretindeki “Çocuk hasta” seçimine bakılır). Değişiklik açık ayların hesabına hemen
+        yansır; kapatılmış ayların dökümleri değişmez.
+      </p>
+      {canWrite && (
+        <form onSubmit={submit} className="mt-4 flex flex-wrap items-end gap-3">
+          <Field label="Yaş sınırı" hint={`${HK_CHILD_AGE_LIMIT_MIN} ile ${HK_CHILD_AGE_LIMIT_MAX} arasında, tam yıl.`}>
+            <input
+              className={`${inputClass} w-28`}
+              type="number"
+              inputMode="numeric"
+              min={HK_CHILD_AGE_LIMIT_MIN}
+              max={HK_CHILD_AGE_LIMIT_MAX}
+              step={1}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              required
+            />
+          </Field>
+          <button type="submit" className={`${buttonPrimary} mb-5`} disabled={busy || value.trim() === String(limit)}>
+            {busy ? "Kaydediliyor..." : "Kaydet"}
+          </button>
+        </form>
+      )}
+      {formError && <div className="mt-3 p-3 rounded bg-red-50 text-red-700 text-sm">{formError}</div>}
+      {error && (
+        <div className="mt-3">
+          <ErrorBox error={error} onReload={onReload} />
+        </div>
+      )}
+    </Card>
   );
 }
 

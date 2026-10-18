@@ -43,6 +43,9 @@ export const MENU_ITEMS: readonly MenuItem[] = [
   { name: "💰 Finans", href: "/finance", match: "/finance", visible: canSeeFinance },
   // The doctor's own hakediş (hk_my_* RPCs: only the caller's figures). Doctors and the owner; see SECTIONS_CLOSED_FOR.
   { name: "💼 Hakedişim", href: "/hakedisim" },
+  // Own-portfolio doctor and birth date of patients, entered at the reception (hk_marks_* RPCs: no amounts). Reception,
+  // admins and the owner; see SECTIONS_CLOSED_FOR.
+  { name: "🏷️ Hasta işaretleri", href: "/hasta-isaretleri" },
   { name: "⚙️ Ayarlar", href: "/settings" },
 ];
 
@@ -51,12 +54,15 @@ export const MENU_ITEMS: readonly MenuItem[] = [
  * implants, not on CRM, staff or reports). Such a section is left out of that role's menu, and the section's own
  * layout (app/(panel)/<section>/layout.tsx) refuses the role, so a typed address does not open it either.
  * Hakedişim is for the payees only: doctors and the owner (management share); reception has no hakediş.
+ * Hasta işaretleri (owner's decision 2026-10-18) is for the reception desk: reception, admins and the owner mark the
+ * patients; assistants and doctors (the payees) do not.
  */
 export const SECTIONS_CLOSED_FOR: Readonly<Record<string, readonly UserRole[]>> = {
   "/crm": ["assistant"],
   "/team": ["assistant"],
   "/reports": ["assistant"],
   "/hakedisim": ["reception", "assistant", "admin"],
+  "/hasta-isaretleri": ["assistant", "doctor"],
 };
 
 function sectionOf(href: string): string | undefined {

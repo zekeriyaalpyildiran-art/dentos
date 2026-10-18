@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FinanceShell, useCanWriteFinance } from "@/components/finance/FinanceShell";
 import {
   HakedisTabs,
@@ -35,11 +35,14 @@ import {
 } from "@/lib/finance";
 import {
   HK_METHODS,
+  HK_MIN_BIRTH_DATE,
   HK_SEGMENTS,
   KIND_LABELS,
   METHOD_LABELS,
   SEGMENT_LABELS,
   SOURCE_LABELS,
+  ageOn,
+  childAgeLimitOf,
   finHkMarks,
   finHkMonth,
   finHkSaveLabCost,
@@ -49,9 +52,11 @@ import {
   finHkVoidLabCost,
   finHkVoidLine,
   finHkVoidPiece,
+  markIsChildOn,
   monthKey,
   normalizePatientRef,
   ruleActiveIn,
+  validateBirthDate,
   type HkCurrency,
   type HkLabCostJson,
   type HkLineJson,
@@ -92,19 +97,25 @@ const LATER_CLOSED_TEXT =
 interface KnownPatient {
   ref: string;
   name: string;
+  /** the key comes from a mark only (no line, piece or lab cost of the month uses it) */
+  fromMark?: boolean;
 }
 
-/** Patients seen in the month's records and in the marks, by normalized name (the manual patient key). */
+/**
+ * Patients seen in the month's records and in the marks, by normalized name (the manual patient key). The month's
+ * lines, pieces and lab costs come first and the marks last: a key that already holds payments, implant pieces or lab
+ * costs wins over a key only a mark uses (a reception "Hasta no" must not split the patient's records over two keys).
+ */
 function knownPatients(data: HkMonthPayload | null, marks: HkMarkJson[] | null): Map<string, KnownPatient> {
   const map = new Map<string, KnownPatient>();
-  const add = (ref: string, name: string) => {
+  const add = (ref: string, name: string, fromMark = false) => {
     const key = normalizePatientRef(name);
-    if (key && !map.has(key)) map.set(key, { ref, name });
+    if (key && !map.has(key)) map.set(key, fromMark ? { ref, name, fromMark } : { ref, name });
   };
-  for (const m of marks ?? []) add(m.patient_ref, m.patient_name);
   for (const l of data?.lines ?? []) add(l.patient_ref, l.patient_name);
   for (const p of data?.pieces ?? []) add(p.patient_ref, p.patient_name);
   for (const c of data?.lab_costs ?? []) add(c.patient_ref, c.patient_name);
+  for (const m of marks ?? []) add(m.patient_ref, m.patient_name, true);
   return map;
 }
 
@@ -120,6 +131,34 @@ function patientRefFor(
   const key = normalizePatientRef(name);
   if (original && normalizePatientRef(original.patient_name) === key) return original.patient_ref;
   return known.get(key)?.ref ?? null;
+}
+
+/** The patient no of a record whose key is not its normalized name (e.g. a "Hasta no" entered at the reception), else "". */
+function customPatientNo(o: { patient_name: string; patient_ref: string } | null | undefined): string {
+  return o && o.patient_ref !== normalizePatientRef(o.patient_name) ? o.patient_ref : "";
+}
+
+/**
+ * Hint under a patient field when the record will be saved under a patient no rather than the name, so finance sees
+ * the key (it decides which mark applies and which payments a lab cost is recovered from).
+ */
+function patientNoHint(ref: string | null, name: string, known: Map<string, KnownPatient>): string | null {
+  const key = normalizePatientRef(name);
+  if (!ref || ref === key) return null;
+  const k = known.get(key);
+  return `Hasta no: ${ref}${k?.fromMark && k.ref === ref ? " (hasta işaretinden)" : ""}`;
+}
+
+/** Several hints of one field, one per line. */
+function hintLines(...items: (string | null | undefined)[]): ReactNode {
+  const list = items.filter((t): t is string => !!t);
+  return list.length === 0
+    ? undefined
+    : list.map((t) => (
+        <span key={t} className="block">
+          {t}
+        </span>
+      ));
 }
 
 /** Day range a new record of `month` may take: the month, never after today. */
@@ -143,7 +182,7 @@ function checkPatient(name: string): string | null {
 
 /**
  * The month's revenue lines (add / edit / void), implants placed (add / void), lab costs per lab invoice
- * (add / void) and the patient marks (own-portfolio doctor, child patient; add / edit, any month).
+ * (add / void) and the patient marks (own-portfolio doctor, birth date, child patient, note; add / edit, any month).
  * A closed month shows its records without write buttons.
  */
 function LinesPage() {
@@ -274,6 +313,8 @@ function LinesPage() {
         marks ? (
           <MarksTab
             marks={marks}
+            today={refData.today}
+            childAgeLimit={childAgeLimitOf(refData.settings)}
             canWrite={canWrite}
             onAdd={() => setDialog({ kind: "mark", record: null })}
             onEdit={(m) => setDialog({ kind: "mark", record: m })}
@@ -795,20 +836,30 @@ function LabTab({
   );
 }
 
+/** Child patient column of a mark: by age (today) when there is a birth date, else the manual mark. */
+function markChildText(m: HkMarkJson, today: string, childAgeLimit: number): string {
+  if (m.birth_date) return markIsChildOn(m, today, childAgeLimit) ? "Evet (yaşa göre)" : "Hayır (yaşa göre)";
+  return m.is_child ? "Evet" : "—";
+}
+
 function MarksTab({
   marks,
+  today,
+  childAgeLimit,
   canWrite,
   onAdd,
   onEdit,
 }: {
   marks: HkMarkJson[];
+  today: string;
+  childAgeLimit: number;
   canWrite: boolean;
   onAdd: () => void;
   onEdit: (m: HkMarkJson) => void;
 }) {
   const [query, setQuery] = useState("");
   const q = searchKey(query);
-  const rows = marks.filter((m) => !q || searchKey(m.patient_name).includes(q));
+  const rows = marks.filter((m) => !q || searchKey(m.patient_name).includes(q) || searchKey(m.patient_ref).includes(q));
   return (
     <Card
       title="Hasta işaretleri"
@@ -821,7 +872,14 @@ function MarksTab({
       }
     >
       <div className="mb-3 max-w-sm">
-        <input className={inputClass} placeholder="Hasta ara" aria-label="Hasta ara" maxLength={100} value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input
+          className={inputClass}
+          placeholder="Hasta adı veya hasta no"
+          aria-label="Hasta ara"
+          maxLength={100}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -829,6 +887,8 @@ function MarksTab({
             <tr className="text-left text-gray-700 border-b">
               <th className="py-2 pr-3 font-semibold">Hasta</th>
               <th className="py-2 pr-3 font-semibold">Kendi hastası olduğu hekim</th>
+              <th className="py-2 pr-3 font-semibold">Doğum tarihi</th>
+              <th className="py-2 pr-3 font-semibold text-right">Yaş</th>
               <th className="py-2 pr-3 font-semibold">Çocuk hasta</th>
               <th className="py-2 pr-3 font-semibold">Not</th>
               <th className="py-2" />
@@ -837,34 +897,45 @@ function MarksTab({
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-6 text-center text-gray-500">
+                <td colSpan={7} className="py-6 text-center text-gray-500">
                   İşaretli hasta yok.
                 </td>
               </tr>
             ) : (
-              rows.map((m) => (
-                <tr key={m.id} className="border-b last:border-b-0 align-top">
-                  <td className="py-2 pr-3 font-medium">{m.patient_name}</td>
-                  <td className="py-2 pr-3">{m.own_doctor_name ?? "—"}</td>
-                  <td className="py-2 pr-3">{m.is_child ? "Evet" : "—"}</td>
-                  <td className="py-2 pr-3 text-xs text-gray-600">{m.note || "—"}</td>
-                  <td className="py-2 text-right">
-                    {canWrite && (
-                      <button type="button" className="text-blue-600 hover:underline" onClick={() => onEdit(m)}>
-                        Düzenle
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))
+              rows.map((m) => {
+                const age = m.birth_date ? ageOn(m.birth_date, today) : null;
+                return (
+                  <tr key={m.id} className="border-b last:border-b-0 align-top">
+                    <td className="py-2 pr-3">
+                      <div className="font-medium">{m.patient_name}</div>
+                      {customPatientNo(m) && <div className="text-xs text-gray-500">Hasta no: {m.patient_ref}</div>}
+                      {m.updated_by_name && <div className="text-xs text-gray-500">Son değiştiren: {m.updated_by_name}</div>}
+                    </td>
+                    <td className="py-2 pr-3">{m.own_doctor_name ?? "—"}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{formatDay(m.birth_date)}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{age === null ? "—" : Math.max(age, 0)}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{markChildText(m, today, childAgeLimit)}</td>
+                    <td className="py-2 pr-3 text-xs text-gray-600">{m.note || "—"}</td>
+                    <td className="py-2 text-right">
+                      {canWrite && (
+                        <button type="button" className="text-blue-600 hover:underline" onClick={() => onEdit(m)}>
+                          Düzenle
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
       <p className="text-xs text-gray-500 mt-3">
         İşaret, satırda hasta grubu elle seçilmediyse kullanılır: hasta o hekimin kendi hastasıysa “Hekimin kendi hastası”,
-        değilse ve çocuk hastaysa “Çocuk hasta”, ikisi de değilse “Standart”. Değişiklik açık ayların hesabına hemen
-        yansır; kapatılmış ayların dökümleri değişmez.
+        değilse ve ödeme gününde {childAgeLimit} yaşından küçükse “Çocuk hasta” (doğum tarihi yoksa “Çocuk hasta”
+        işaretine bakılır), hiçbiri değilse “Standart”. Yaş bugüne göredir; hesapta her ödemenin günündeki yaş kullanılır.
+        Doğum tarihi ve kendi hastası olduğu hekim resepsiyonda “Hasta işaretleri” sayfasından da girilebilir. Değişiklik
+        açık ayların hesabına hemen yansır; kapatılmış ayların dökümleri değişmez.
       </p>
     </Card>
   );
@@ -965,9 +1036,20 @@ function LineDialog({
 
   const foreign = form.currency !== "TRY";
   const patientRef = patientRefFor(form.patient_name, known, record);
-  const mark = marksByRef.get(patientRef ?? normalizePatientRef(form.patient_name));
+  const patientKey = patientRef ?? normalizePatientRef(form.patient_name);
+  const mark = marksByRef.get(patientKey);
+  // A mark of the same name under another key (e.g. a reception "Hasta no") does not apply to this record.
+  const otherMark = mark
+    ? undefined
+    : Array.from(marksByRef.values()).find((m) => normalizePatientRef(m.patient_name) === normalizePatientRef(form.patient_name));
+  // With a birth date the child group follows the age on the line's day (fin_hk__compute), not the manual mark.
+  const markAge = mark?.birth_date ? ageOn(mark.birth_date, form.day) : null;
   const markText = mark
-    ? [mark.own_doctor_name ? `${mark.own_doctor_name} hekiminin kendi hastası` : null, mark.is_child ? "çocuk hasta" : null]
+    ? [
+        mark.own_doctor_name ? `${mark.own_doctor_name} hekiminin kendi hastası` : null,
+        markIsChildOn(mark, form.day, childAgeLimitOf(refData.settings)) ? "çocuk hasta" : null,
+        markAge !== null ? `ödeme gününde ${Math.max(markAge, 0)} yaşında` : null,
+      ]
         .filter(Boolean)
         .join(", ")
     : "";
@@ -1044,7 +1126,17 @@ function LineDialog({
           <Field label="Hekim">
             <DoctorSelect refData={refData} value={form.doctor_id} onChange={(v) => set("doctor_id", v)} />
           </Field>
-          <Field label="Hasta" className="md:col-span-2" hint={markText ? `Hasta işareti: ${markText}.` : undefined}>
+          <Field
+            label="Hasta"
+            className="md:col-span-2"
+            hint={hintLines(
+              patientNoHint(patientRef, form.patient_name, known),
+              markText ? `Hasta işareti: ${markText}.` : null,
+              otherMark
+                ? `Bu adla hasta no “${otherMark.patient_ref}” ile kayıtlı bir hasta işareti var; bu kayda uygulanmaz.`
+                : null
+            )}
+          >
             <input
               className={inputClass}
               list="hk-patients"
@@ -1133,6 +1225,7 @@ function PieceDialog({
   const [formError, setFormError] = useState<string | null>(null);
   const [error, setError] = useState<FinanceError | null>(null);
   const [busy, setBusy] = useState(false);
+  const patientRef = patientRefFor(patient, known);
 
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -1156,7 +1249,7 @@ function PieceDialog({
         p_day: day,
         p_doctor_id: doctorId,
         p_patient_name: patient.trim(),
-        p_patient_ref: patientRefFor(patient, known),
+        p_patient_ref: patientRef,
         p_qty: n,
         p_description: description.trim(),
       });
@@ -1176,7 +1269,7 @@ function PieceDialog({
         <Field label="İmplantı takan hekim">
           <DoctorSelect refData={refData} value={doctorId} onChange={setDoctorId} />
         </Field>
-        <Field label="Hasta">
+        <Field label="Hasta" hint={patientNoHint(patientRef, patient, known)}>
           <input className={inputClass} list="hk-patients" maxLength={200} value={patient} onChange={(e) => setPatient(e.target.value)} required />
         </Field>
         <Field label="Adet" hint="Düzeltme için eksi adet girin (ör. -1).">
@@ -1233,6 +1326,7 @@ function LabCostDialog({
   const [busy, setBusy] = useState(false);
 
   const labKeys = useMemo(() => new Set(refData.lab_names.map((n) => normalizePatientRef(n))), [refData.lab_names]);
+  const patientRef = patientRefFor(patient, known);
   const labTyped = labName.trim();
   const newLab = labTyped !== "" && !labKeys.has(normalizePatientRef(labTyped));
 
@@ -1257,7 +1351,7 @@ function LabCostDialog({
         p_day: day,
         p_doctor_id: doctorId,
         p_patient_name: patient.trim(),
-        p_patient_ref: patientRefFor(patient, known),
+        p_patient_ref: patientRef,
         p_lab_name: labTyped,
         p_amount_cents: a.cents,
         p_description: description.trim(),
@@ -1285,7 +1379,7 @@ function LabCostDialog({
         >
           <DoctorSelect refData={refData} value={doctorId} onChange={setDoctorId} preferred={ortho} />
         </Field>
-        <Field label="Hasta">
+        <Field label="Hasta" hint={patientNoHint(patientRef, patient, known)}>
           <input className={inputClass} list="hk-patients" maxLength={200} value={patient} onChange={(e) => setPatient(e.target.value)} required />
         </Field>
         <Field
@@ -1343,7 +1437,11 @@ function LabCostDialog({
   );
 }
 
-/** Patient mark (fin_hk_save_mark): own-portfolio doctor and / or child patient; one per patient. */
+/**
+ * Patient mark (fin_hk_save_mark): patient no, own-portfolio doctor, birth date and / or child patient, note; one per
+ * patient. The birth date and the patient no are always sent, so an edit here keeps those entered at the reception
+ * (Hasta işaretleri).
+ */
 function MarkDialog({
   refData,
   record,
@@ -1365,19 +1463,27 @@ function MarkDialog({
   onReload: () => void;
   onOpenExisting: (m: HkMarkJson) => void;
 }) {
+  const original = record ?? (patient ? { patient_name: patient.name, patient_ref: patient.ref } : null);
+  // A patient no (a key that is not the normalized name, e.g. entered at the reception) is shown and kept on a rename;
+  // clearing it keys the mark by the name again, as on the reception page.
+  const originalNo = customPatientNo(original);
   const [id] = useState(() => record?.id ?? newId());
   const [name, setName] = useState(record?.patient_name ?? patient?.name ?? "");
+  const [no, setNo] = useState(originalNo);
   const [ownDoctorId, setOwnDoctorId] = useState(record?.own_doctor_id ?? "");
+  const [birth, setBirth] = useState(record?.birth_date ?? "");
   const [isChild, setIsChild] = useState(record?.is_child ?? false);
   const [note, setNote] = useState(record?.note ?? "");
   const [formError, setFormError] = useState<string | null>(null);
   const [error, setError] = useState<FinanceError | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const original = record ?? (patient ? { patient_name: patient.name, patient_ref: patient.ref } : null);
   const existing =
     error?.isConflict && error.details && UUID_RE.test(error.details) ? marks.find((m) => m.id === error.details) : undefined;
   const doctors = refData.doctors.filter((d) => d.is_active || d.id === ownDoctorId);
+  const childAgeLimit = childAgeLimitOf(refData.settings);
+  const birthError = birth ? validateBirthDate(birth, refData.today) : null;
+  const age = birth && !birthError ? ageOn(birth, refData.today) : null;
 
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -1385,17 +1491,21 @@ function MarkDialog({
     setError(null);
     const patientError = checkPatient(name);
     if (patientError) return setFormError(patientError);
+    if (no.trim().length > 200) return setFormError("Hasta no en fazla 200 karakter olabilir.");
+    const bError = validateBirthDate(birth, refData.today);
+    if (bError) return setFormError(bError);
     if (note.trim().length > 500) return setFormError("Not en fazla 500 karakter olabilir.");
     setBusy(true);
     try {
       const res = await finHkSaveMark({
         p_id: id,
         p_version: record?.version ?? 0,
-        p_patient_ref: patientRefFor(name, known, original),
+        p_patient_ref: no.trim() || (originalNo ? null : patientRefFor(name, known, original)),
         p_patient_name: name.trim(),
         p_own_doctor_id: ownDoctorId || null,
         p_is_child: isChild,
         p_note: note.trim(),
+        p_birth_date: birth || null,
       });
       await onSaved(res.already_saved);
     } catch (err) {
@@ -1410,6 +1520,12 @@ function MarkDialog({
         <Field label="Hasta" hint="Satırlardaki hasta adıyla aynı yazılmalı (büyük / küçük harf ve boşluk fark etmez).">
           <input className={inputClass} list="hk-patients" maxLength={200} value={name} onChange={(e) => setName(e.target.value)} required />
         </Field>
+        <Field
+          label="Hasta no (isteğe bağlı)"
+          hint="Yalnız satırlar hasta numarasıyla kayıtlıysa girin; boş bırakılırsa hasta adı kullanılır. İşaret yalnız aynı hasta no / adla kayıtlı satırlara uygulanır."
+        >
+          <input className={inputClass} maxLength={200} value={no} onChange={(e) => setNo(e.target.value)} />
+        </Field>
         <Field label="Kendi hastası olduğu hekim" hint="Bu hekimin satırlarında hasta “Hekimin kendi hastası” grubuna girer.">
           <select className={inputClass} value={ownDoctorId} onChange={(e) => setOwnDoctorId(e.target.value)}>
             <option value="">Yok</option>
@@ -1421,9 +1537,27 @@ function MarkDialog({
             ))}
           </select>
         </Field>
-        <label className="flex items-center gap-2 text-sm text-gray-800">
-          <input type="checkbox" checked={isChild} onChange={(e) => setIsChild(e.target.checked)} />
-          Çocuk hasta
+        <Field
+          label="Doğum tarihi"
+          hint={
+            birthError ??
+            (age !== null
+              ? `Bugün ${Math.max(age, 0)} yaşında. Ödeme gününde ${childAgeLimit} yaşından küçükse “Çocuk hasta” grubuna girer.`
+              : "Bilinmiyorsa boş bırakın; o zaman aşağıdaki “Çocuk hasta” işaretine bakılır.")
+          }
+        >
+          <input
+            className={inputClass}
+            type="date"
+            min={HK_MIN_BIRTH_DATE}
+            max={refData.today}
+            value={birth}
+            onChange={(e) => setBirth(e.target.value)}
+          />
+        </Field>
+        <label className={`flex items-center gap-2 text-sm ${birth ? "text-gray-400" : "text-gray-800"}`}>
+          <input type="checkbox" checked={isChild} onChange={(e) => setIsChild(e.target.checked)} disabled={!!birth} />
+          Çocuk hasta{birth ? " (doğum tarihi varken yaşa göre belirlenir)" : ""}
         </label>
         <Field label="Not">
           <textarea className={inputClass} rows={2} maxLength={500} value={note} onChange={(e) => setNote(e.target.value)} />

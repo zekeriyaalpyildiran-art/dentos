@@ -2,9 +2,12 @@
 -- dated payee rules, the monthly calculation, month close into the 0020 entitlement ledger entry, and the doctor's
 -- own read-only view (Hakedişim). Safe to re-run.
 --
--- Contract: hakedis_spec.md §1 (+ v1.1 item 1: the lab name picker reads only active lab counterparties and names
--- already used). Requires 0019, 0020 and 0022 (fin__harden_privileges over every fin_* table, fin__trg_touch,
--- fin_audit_list / fin_export_manifest bodies extended below). Independent of 0029 (no object of it is used).
+-- Contract: hakedis_spec.md §1 + the v1.1 owner decisions: item 1, the lab name picker reads only active lab
+-- counterparties and names already used; item 2, child patients by age (fin_settings.hk_child_age_limit,
+-- fin_hk_patient_marks.birth_date); item 3, the reception marks patients (hk_marks_access / hk_marks_list /
+-- hk_save_mark, no money). Requires 0019, 0020 and 0022 (fin__harden_privileges over every fin_* table,
+-- fin__trg_touch, fin_audit_list / fin_export_manifest bodies extended below). Independent of 0029 (no object of it is
+-- used).
 --
 --  * No names, rates or amounts in this file: every rate is a rule row the owner enters (basis points and cents).
 --  * Seven tables fin_hk_*: rules, lines (revenue), pieces (implants placed), patient_marks, lab_costs, months,
@@ -20,7 +23,9 @@
 --  * fin__hk_compute(clinic, month) is the single source of truth of the calculation (mirrored in apps/web
 --    lib/hakedis.ts computeMonth). Money is integer cents, rounding is round(numeric) = half away from zero.
 --      - segment of a line: line.segment, else 'own' when the patient mark names the line's doctor, else 'child' when
---        the mark says child, else 'standard';
+--        the mark has a birth date and the patient is younger than fin_settings.hk_child_age_limit (default 14) on the
+--        line's day (whole years of PostgreSQL age(): a 29 February birthday is reached on 1 March in other years),
+--        or the mark has no birth date and says child, else 'standard';
 --      - rule of a line: the doctor's active ortho_lab_first rule, else ciro_share for (doctor, segment), else
 --        ciro_share 'standard', else unruled (warning, not paid);
 --      - ciro_share / ortho_lab_first: per method bucket S = Σ (try − implant − lab part), D = round(S × deduct_bp /
@@ -38,6 +43,13 @@
 --    fin__harden_privileges): fin__require_read for reads, fin__require_write for writes; reopening a month also
 --    needs the owner role. Self-service hk_my_months / hk_my_month need only an active session and return nothing
 --    but the caller's own payee figures, own lines / pieces / lab costs and own entitlement entry.
+--  * Reception marking (hk_marks_access / hk_marks_list / hk_save_mark, SECURITY DEFINER, no finance permission):
+--    active reception, admin or owner users, or finance writers. Patient name / key, own-portfolio doctor and birth
+--    date only (is_child and note stay with fin_hk_save_mark); never an amount or a rate. A newly chosen own doctor
+--    (also a kept one when the patient key changes) must have an 'own' ciro_share rule this month. A patient with a
+--    live line in a closed month keeps its own doctor (when the old or new one has such a line) and its birth date
+--    (any such line) unless a finance writer changes it.
+--  * The child age limit is fin_settings.hk_child_age_limit (1..18, default 14), changed by fin_hk_save_settings.
 --  * Month close writes one statement per payee and creates or updates the payee's entitlement entry
 --    ('entitlement:<counterparty>:<YYYY-MM>', created through fin_add_entitlement), creating or linking the
 --    physician counterparty when missing. A live entry left by an earlier close of the month that the new close does
@@ -57,8 +69,13 @@
 --   PieceJson     {id, version, source, source_key, day, doctor_id, doctor_name, patient_ref, patient_name, qty,
 --                  description, is_voided, voided_at, voided_by_name, void_reason, created_at, created_by_name,
 --                  updated_at, updated_by_name}
---   MarkJson      {id, version, patient_ref, patient_name, own_doctor_id, own_doctor_name, is_child, note,
+--   MarkJson      {id, version, patient_ref, patient_name, own_doctor_id, own_doctor_name, birth_date, is_child, note,
 --                  created_at, created_by_name, updated_at, updated_by_name}
+--   DeskMarkJson  {id, version, patient_ref, patient_name, own_doctor_id, own_doctor_name, birth_date, is_child,
+--                  locked} (no note; locked = the caller is not a finance writer and the patient has a live line in a
+--                  closed month: the birth date cannot be changed, nor the own doctor to or from a doctor of such a
+--                  line)
+--   SettingsJson  {version (fin_settings.version, 0 = no row), child_age_limit}
 --   LabCostJson   {id, version, day, doctor_id, doctor_name, patient_ref, patient_name, lab_name, amount_cents,
 --                  description, is_voided, voided_at, voided_by_name, void_reason, created_at, created_by_name,
 --                  updated_at, updated_by_name}
@@ -79,14 +96,18 @@
 --                  created_at, created_by_name, superseded_at}
 --   fin_hk_reference()  {today, current_month, can_write, is_owner, doctors: [{id, name, user_id, specialty,
 --                        is_active}], payees: [{user_id, name, role, is_active, doctor_id}], rules: [RuleJson],
---                        months: [MonthRowJson], lab_names: [text]}
+--                        months: [MonthRowJson], lab_names: [text], settings: SettingsJson}
 --   fin_hk_month(), fin_hk_close_month(), fin_hk_reopen_month()
 --                       Compute + MonthRowJson + {today, current_month, can_write, is_owner, is_closable,
 --                       statements: [StatementJson] (active only), lines: [LineJson + {resolved_segment, rule_id,
 --                       rule_kind, payee_user_id, lab_part}], pieces: [PieceJson], lab_costs: [LabCostJson]}
 --                       (close / reopen add already_saved)
---   fin_hk_save_*(), fin_hk_void_*()  {already_saved, record}
+--   fin_hk_save_*(), fin_hk_void_*()  {already_saved, record} (fin_hk_save_settings: record = SettingsJson)
 --   fin_hk_marks()      [MarkJson]
+--   hk_marks_access()   {can_mark, doctors: [{id, name}]} (doctors with an 'own' ciro_share rule this month; for a
+--                       caller who may not mark {can_mark: false, doctors: []})
+--   hk_marks_list()     [DeskMarkJson] (patient name or key contains the query, at most 200, by name)
+--   hk_save_mark()      {already_saved, record: DeskMarkJson}
 --   hk_my_months()      {has_rules, today, current_month, months: [{month, status, is_estimate, total_cents,
 --                        paid_cents, remaining_cents (closed months only, else null)}]} newest first
 --   hk_my_month()       {has_rules: false} | {has_rules: true, today, current_month, month, status, is_estimate,
@@ -104,8 +125,9 @@
 --   1. SQL editor → New query → paste this file ALONE → Run. One transaction; the self-checks at the end (including a
 --      replay in a temporary clinic that is always rolled back) undo everything on any failure.
 --   2. Deploy the web build with the Hakediş pages afterwards (before step 1 they show the RPC error).
---   Rollback after COMMIT: DROP FUNCTION the fin_hk_* / fin__hk_* / fin__trg_hk_* / hk_my_* functions, DROP TABLE the
---   seven fin_hk_* tables (statements first), re-run 0022's fin_audit_list / fin_export_manifest definitions.
+--   Rollback after COMMIT: DROP FUNCTION the fin_hk_* / fin__hk_* / fin__trg_hk_* / hk_my_* / hk_marks_* / hk_save_mark
+--   functions, DROP TABLE the seven fin_hk_* tables (statements first), ALTER TABLE fin_settings DROP COLUMN
+--   hk_child_age_limit, re-run 0022's fin_audit_list / fin_export_manifest definitions.
 --   Entitlement entries created by a month close stay in the ledger (they are ordinary 0020 entries).
 
 BEGIN;
@@ -141,7 +163,8 @@ BEGIN
   SELECT string_agg(t.tbl, ', ')
     INTO v_missing
   FROM unnest(ARRAY['clinics', 'users', 'doctors', 'audit_logs', 'staff_permissions', 'fin_entries', 'fin_payments',
-                    'fin_counterparties', 'fin_categories', 'fin_import_batches', 'fin_patient_financing'])
+                    'fin_counterparties', 'fin_categories', 'fin_import_batches', 'fin_patient_financing',
+                    'fin_settings'])
     AS t(tbl)
   WHERE to_regclass(format('public.%I', t.tbl)) IS NULL;
   IF v_missing IS NOT NULL THEN
@@ -162,7 +185,8 @@ BEGIN
     ('fin_entries', 'counterparty_id'), ('fin_entries', 'counterparty_text'), ('fin_entries', 'description'),
     ('fin_entries', 'amount_cents'), ('fin_entries', 'cancelled_at'), ('fin_entries', 'source_key'),
     ('fin_entries', 'version'),
-    ('fin_categories', 'id'), ('fin_categories', 'clinic_id'), ('fin_categories', 'report_bucket')
+    ('fin_categories', 'id'), ('fin_categories', 'clinic_id'), ('fin_categories', 'report_bucket'),
+    ('fin_settings', 'id'), ('fin_settings', 'clinic_id'), ('fin_settings', 'version')
   ) AS e(tbl, col)
   WHERE NOT EXISTS (
     SELECT 1 FROM information_schema.columns c
@@ -202,7 +226,8 @@ BEGIN
     ('fin_hk_pieces', 'created_at'), ('fin_hk_pieces', 'updated_by'), ('fin_hk_pieces', 'updated_at'),
     ('fin_hk_patient_marks', 'id'), ('fin_hk_patient_marks', 'clinic_id'), ('fin_hk_patient_marks', 'patient_ref'),
     ('fin_hk_patient_marks', 'patient_name'), ('fin_hk_patient_marks', 'own_doctor_id'),
-    ('fin_hk_patient_marks', 'is_child'), ('fin_hk_patient_marks', 'note'), ('fin_hk_patient_marks', 'version'),
+    ('fin_hk_patient_marks', 'birth_date'), ('fin_hk_patient_marks', 'is_child'), ('fin_hk_patient_marks', 'note'),
+    ('fin_hk_patient_marks', 'version'),
     ('fin_hk_patient_marks', 'created_by'), ('fin_hk_patient_marks', 'created_at'),
     ('fin_hk_patient_marks', 'updated_by'), ('fin_hk_patient_marks', 'updated_at'),
     ('fin_hk_lab_costs', 'id'), ('fin_hk_lab_costs', 'clinic_id'), ('fin_hk_lab_costs', 'day'),
@@ -304,6 +329,43 @@ BEGIN
   END IF;
   RETURN btrim(coalesce(p, ''));
 END;
+$$;
+
+-- Age in whole years on p_day (the years of PostgreSQL age(), as in the spec): a 29 February birthday is reached on
+-- 1 March in other years. A day before the birth date gives a negative age (younger than any limit).
+CREATE OR REPLACE FUNCTION public.fin__hk_age(p_birth date, p_day date)
+RETURNS integer
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT pg_catalog.date_part('year', pg_catalog.age(p_day::timestamp, p_birth::timestamp))::integer
+$$;
+
+-- Segment of a revenue line (v1.1 item 2), the only place it is resolved: the line's own segment, else 'own' when the
+-- patient mark names the line's doctor, else by the mark's birth date ('child' while younger than the clinic's limit
+-- on the line's day), else the mark's manual child flag (used only without a birth date), else 'standard'. A line
+-- without a mark passes NULLs.
+CREATE OR REPLACE FUNCTION public.fin__hk_segment(
+  p_line_segment text,
+  p_doctor uuid,
+  p_day date,
+  p_own_doctor uuid,
+  p_birth date,
+  p_is_child boolean,
+  p_child_age_limit integer)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT coalesce(p_line_segment,
+                  CASE WHEN p_own_doctor = p_doctor THEN 'own'
+                       WHEN p_birth IS NOT NULL THEN
+                         CASE WHEN public.fin__hk_age(p_birth, p_day) < p_child_age_limit THEN 'child'
+                              ELSE 'standard' END
+                       WHEN coalesce(p_is_child, false) THEN 'child'
+                       ELSE 'standard' END)
 $$;
 
 -- Advisory lock key of one clinic month. Line / piece / lab cost writes take it shared, close / reopen exclusive (after
@@ -457,13 +519,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS fin_hk_pieces_source_key
 CREATE INDEX IF NOT EXISTS idx_fin_hk_pieces_doctor_day ON public.fin_hk_pieces (clinic_id, doctor_id, day);
 CREATE INDEX IF NOT EXISTS idx_fin_hk_pieces_day ON public.fin_hk_pieces (clinic_id, day);
 
--- Patient marks: own-portfolio patient of a doctor and / or child patient. One per patient key.
+-- Patient marks: own-portfolio patient of a doctor and / or child patient. One per patient key. With a birth date the
+-- child segment follows the age on each line's day and is_child is not used; is_child is the manual fallback.
+-- Reception users write patient_ref / patient_name / own_doctor_id / birth_date through hk_save_mark.
 CREATE TABLE IF NOT EXISTS public.fin_hk_patient_marks (
   id uuid PRIMARY KEY,                      -- client-supplied
   clinic_id uuid NOT NULL REFERENCES public.clinics(id) ON DELETE RESTRICT,
   patient_ref text NOT NULL CHECK (char_length(patient_ref) BETWEEN 1 AND 200),
   patient_name text NOT NULL CHECK (char_length(btrim(patient_name)) BETWEEN 1 AND 200),
   own_doctor_id uuid REFERENCES public.doctors(id) ON DELETE RESTRICT,          -- same clinic: fin_hk_refs
+  birth_date date CHECK (birth_date IS NULL OR birth_date BETWEEN DATE '1900-01-01' AND DATE '2100-12-31'),
   is_child boolean NOT NULL DEFAULT false,
   note text NOT NULL DEFAULT '' CHECK (char_length(note) <= 500),
   version integer NOT NULL DEFAULT 1,
@@ -547,6 +612,12 @@ CREATE INDEX IF NOT EXISTS idx_fin_hk_statements_payee ON public.fin_hk_statemen
 CREATE INDEX IF NOT EXISTS idx_fin_hk_statements_entry
   ON public.fin_hk_statements (fin_entry_id) WHERE fin_entry_id IS NOT NULL;
 
+-- Child age limit (v1.1 item 2, data, default for every clinic from the column default): a patient whose mark has a
+-- birth date is a child while younger than this on the line's day. Changed by fin_hk_save_settings.
+ALTER TABLE public.fin_settings
+  ADD COLUMN IF NOT EXISTS hk_child_age_limit integer NOT NULL DEFAULT 14
+    CHECK (hk_child_age_limit BETWEEN 1 AND 18);
+
 -- ---------------------------------------------------------------------------
 -- 1.3 Internal helpers that read tables (SECURITY INVOKER, never granted).
 -- ---------------------------------------------------------------------------
@@ -562,6 +633,86 @@ AS $$
   FROM public.doctors d
   JOIN public.users u ON u.id = d.user_id
   WHERE d.id = p_doctor
+$$;
+
+-- The clinic's child age limit (fin_settings.hk_child_age_limit; the column default when the clinic has no row).
+CREATE OR REPLACE FUNCTION public.fin__hk_child_age_limit(p_clinic uuid)
+RETURNS integer
+LANGUAGE sql
+STABLE
+SET search_path = public
+AS $$
+  SELECT coalesce((SELECT s.hk_child_age_limit FROM public.fin_settings s WHERE s.clinic_id = p_clinic), 14)
+$$;
+
+-- Birth date of a patient mark: NULL, or a day from 1900-01-01 to the clinic's today.
+CREATE OR REPLACE FUNCTION public.fin__hk_birth_date(p date)
+RETURNS date
+LANGUAGE plpgsql
+STABLE
+SET search_path = public
+AS $$
+BEGIN
+  IF p IS NOT NULL AND (p < DATE '1900-01-01' OR p > public.clinic_today()) THEN
+    RAISE EXCEPTION 'Doğum tarihi 01.01.1900 ile bugün arasında olmalı.';
+  END IF;
+  RETURN p;
+END;
+$$;
+
+-- Whether the patient key has a live line in a closed month: of the doctor p_doctor, or of any doctor when NULL.
+CREATE OR REPLACE FUNCTION public.fin__hk_closed_lines(p_clinic uuid, p_ref text, p_doctor uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.fin_hk_lines l
+    JOIN public.fin_hk_months mo
+      ON mo.clinic_id = l.clinic_id AND mo.month = public.fin__month_start(l.day) AND mo.status = 'closed'
+    WHERE l.clinic_id = p_clinic
+      AND l.patient_ref = p_ref
+      AND l.voided_at IS NULL
+      AND (p_doctor IS NULL OR l.doctor_id = p_doctor))
+$$;
+
+-- Lock of a reception mark change for one patient key (v1.1 item 3), from the mark's state before and after: a new
+-- own doctor is locked when the old or the new own doctor has a live line of the patient in a closed month; a new
+-- birth date (or child flag, which only moves with a changed patient key) when the patient has any live line in a
+-- closed month. Finance writers are not checked (fin_hk_save_mark, hk_save_mark).
+CREATE OR REPLACE FUNCTION public.fin__hk_mark_locked(
+  p_clinic uuid,
+  p_ref text,
+  p_own_before uuid,
+  p_own_after uuid,
+  p_birth_before date,
+  p_birth_after date,
+  p_child_before boolean,
+  p_child_after boolean)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = public
+AS $$
+  SELECT (p_own_before IS DISTINCT FROM p_own_after
+          AND ((p_own_before IS NOT NULL AND public.fin__hk_closed_lines(p_clinic, p_ref, p_own_before))
+               OR (p_own_after IS NOT NULL AND public.fin__hk_closed_lines(p_clinic, p_ref, p_own_after))))
+      OR ((p_birth_before IS DISTINCT FROM p_birth_after
+           OR coalesce(p_child_before, false) IS DISTINCT FROM coalesce(p_child_after, false))
+          AND public.fin__hk_closed_lines(p_clinic, p_ref, NULL))
+$$;
+
+-- Who may use the reception marking RPCs: an active reception, admin or owner user, or a finance writer.
+CREATE OR REPLACE FUNCTION public.fin__hk_can_mark()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SET search_path = public
+AS $$
+  SELECT coalesce(public.current_app_role() IN ('reception', 'admin', 'owner'), false)
+      OR public.has_permission('finance')
 $$;
 
 -- Refuses a write into a closed month, or into an open month before a closed one (the write would change the closed
@@ -837,8 +988,9 @@ END;
 $$;
 
 -- Every live line of the month with its resolved segment, its rule (NULL = unruled) and its lab part.
---   segment: line.segment, else 'own' when the patient mark names the line's doctor, else 'child' when the mark says
---            child, else 'standard';
+--   segment: fin__hk_segment: line.segment, else 'own' when the patient mark names the line's doctor, else 'child'
+--            when the mark's birth date makes the patient younger than the clinic's child age limit on the line's day
+--            (without a birth date: when the mark says child), else 'standard';
 --   rule:    the doctor's active ortho_lab_first rule, else ciro_share (doctor, segment), else ciro_share 'standard'.
 CREATE OR REPLACE FUNCTION public.fin__hk_eval_lines(p_clinic uuid, p_month date)
 RETURNS TABLE (line_id uuid, doctor_id uuid, patient_ref text, method text, try_cents bigint, implant_cents bigint,
@@ -861,11 +1013,10 @@ AS $$
   ),
   ln AS (
     SELECT l.id, l.doctor_id, l.patient_ref, l.method, l.try_cents, l.implant_cents, l.created_at, l.day,
-           coalesce(l.segment,
-                    CASE WHEN m.own_doctor_id = l.doctor_id THEN 'own'
-                         WHEN m.is_child THEN 'child'
-                         ELSE 'standard' END) AS seg
+           public.fin__hk_segment(l.segment, l.doctor_id, l.day, m.own_doctor_id, m.birth_date, m.is_child,
+                                  lim.age_limit) AS seg
     FROM public.fin_hk_lines l
+    CROSS JOIN (SELECT public.fin__hk_child_age_limit(p_clinic) AS age_limit) lim
     LEFT JOIN public.fin_hk_patient_marks m ON m.clinic_id = l.clinic_id AND m.patient_ref = l.patient_ref
     WHERE l.clinic_id = p_clinic
       AND l.voided_at IS NULL
@@ -1357,6 +1508,7 @@ AS $$
            'patient_name', m.patient_name,
            'own_doctor_id', m.own_doctor_id,
            'own_doctor_name', public.fin__hk_doctor_name(m.own_doctor_id),
+           'birth_date', m.birth_date,
            'is_child', m.is_child,
            'note', m.note,
            'created_at', m.created_at,
@@ -1365,6 +1517,42 @@ AS $$
            'updated_by_name', public.fin__user_name(m.updated_by))
   FROM public.fin_hk_patient_marks m
   WHERE m.clinic_id = p_clinic AND m.id = p_id
+$$;
+
+-- Reception view of a mark (hk_marks_list, hk_save_mark): no note, no stamps; locked for a caller who is not a
+-- finance writer while the patient has a live line in a closed month.
+CREATE OR REPLACE FUNCTION public.fin__hk_mark_desk_json(p_clinic uuid, p_id uuid, p_finance boolean)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SET search_path = public
+AS $$
+  SELECT jsonb_build_object(
+           'id', m.id,
+           'version', m.version,
+           'patient_ref', m.patient_ref,
+           'patient_name', m.patient_name,
+           'own_doctor_id', m.own_doctor_id,
+           'own_doctor_name', public.fin__hk_doctor_name(m.own_doctor_id),
+           'birth_date', m.birth_date,
+           'is_child', m.is_child,
+           'locked', NOT coalesce(p_finance, false) AND public.fin__hk_closed_lines(p_clinic, m.patient_ref, NULL))
+  FROM public.fin_hk_patient_marks m
+  WHERE m.clinic_id = p_clinic AND m.id = p_id
+$$;
+
+-- Hakediş settings on fin_settings; version 0 when the clinic has no row (fin_hk_save_settings then says not found).
+CREATE OR REPLACE FUNCTION public.fin__hk_settings_json(p_clinic uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SET search_path = public
+AS $$
+  SELECT jsonb_build_object(
+           'version', coalesce(s.version, 0),
+           'child_age_limit', public.fin__hk_child_age_limit(p_clinic))
+  FROM (SELECT 1) AS one
+  LEFT JOIN public.fin_settings s ON s.clinic_id = p_clinic
 $$;
 
 CREATE OR REPLACE FUNCTION public.fin__hk_lab_cost_json(p_clinic uuid, p_id uuid)
@@ -1507,7 +1695,8 @@ $$;
 --    Each returns { already_saved, record }.
 -- ---------------------------------------------------------------------------
 
--- Everything the Hakediş screens need besides the month figures. Inactive doctors and payees are included (flagged).
+-- Everything the Hakediş screens need besides the month figures, incl. the hakediş settings (child age limit and the
+-- fin_settings version fin_hk_save_settings expects). Inactive doctors and payees are included (flagged).
 CREATE OR REPLACE FUNCTION public.fin_hk_reference()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -1561,7 +1750,8 @@ BEGIN
       SELECT jsonb_agg(public.fin__hk_month_row_json(v_clinic, m.month) ORDER BY m.month DESC)
       FROM public.fin_hk_months m
       WHERE m.clinic_id = v_clinic), '[]'::jsonb),
-    'lab_names', public.fin__hk_lab_names(v_clinic));
+    'lab_names', public.fin__hk_lab_names(v_clinic),
+    'settings', public.fin__hk_settings_json(v_clinic));
 END;
 $$;
 
@@ -1583,7 +1773,7 @@ BEGIN
 END;
 $$;
 
--- Patient marks (own-portfolio doctor / child), sorted by patient name.
+-- Patient marks (own-portfolio doctor / birth date / child), sorted by patient name.
 CREATE OR REPLACE FUNCTION public.fin_hk_marks()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -2116,8 +2306,9 @@ BEGIN
 END;
 $$;
 
--- Patient mark (one per patient key). Changes apply to every month that is computed afterwards; closed months keep
--- their statements.
+-- Patient mark (one per patient key), every field. Changes apply to every month that is computed afterwards; closed
+-- months keep their statements (a finance writer is not held by the reception's closed-month lock). p_birth_date has
+-- no default: a client that omits it must not clear a birth date entered at the reception.
 CREATE OR REPLACE FUNCTION public.fin_hk_save_mark(
   p_id uuid,
   p_version integer,
@@ -2125,7 +2316,8 @@ CREATE OR REPLACE FUNCTION public.fin_hk_save_mark(
   p_patient_name text,
   p_own_doctor_id uuid,
   p_is_child boolean,
-  p_note text)
+  p_note text,
+  p_birth_date date)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -2137,6 +2329,7 @@ DECLARE
   v_row public.fin_hk_patient_marks%ROWTYPE;
   v_name text;
   v_ref text;
+  v_birth date;
   v_child boolean := coalesce(p_is_child, false);
   v_note text;
   v_other uuid;
@@ -2150,6 +2343,7 @@ BEGIN
   END IF;
   v_name := public.fin__hk_patient_name(p_patient_name);
   v_ref := public.fin__hk_patient_ref(p_patient_ref, v_name);
+  v_birth := public.fin__hk_birth_date(p_birth_date);
   IF p_own_doctor_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM public.doctors d WHERE d.id = p_own_doctor_id AND d.clinic_id = v_clinic
   ) THEN
@@ -2169,8 +2363,8 @@ BEGIN
     IF v_row.id IS NULL THEN
       RAISE EXCEPTION 'Kayıt bulunamadı.' USING ERRCODE = 'PT404';
     END IF;
-    IF (v_row.patient_ref, v_row.patient_name, v_row.own_doctor_id, v_row.is_child, v_row.note)
-       IS NOT DISTINCT FROM (v_ref, v_name, p_own_doctor_id, v_child, v_note) THEN
+    IF (v_row.patient_ref, v_row.patient_name, v_row.own_doctor_id, v_row.birth_date, v_row.is_child, v_row.note)
+       IS NOT DISTINCT FROM (v_ref, v_name, p_own_doctor_id, v_birth, v_child, v_note) THEN
       RETURN jsonb_build_object('already_saved', true, 'record', public.fin__hk_mark_json(v_clinic, p_id));
     END IF;
     IF p_version IS DISTINCT FROM v_row.version THEN
@@ -2188,9 +2382,9 @@ BEGIN
 
   IF p_version = 0 THEN
     BEGIN
-      INSERT INTO public.fin_hk_patient_marks (id, clinic_id, patient_ref, patient_name, own_doctor_id, is_child, note,
-                                               created_by, updated_by)
-      VALUES (p_id, v_clinic, v_ref, v_name, p_own_doctor_id, v_child, v_note, v_user, v_user)
+      INSERT INTO public.fin_hk_patient_marks (id, clinic_id, patient_ref, patient_name, own_doctor_id, birth_date,
+                                               is_child, note, created_by, updated_by)
+      VALUES (p_id, v_clinic, v_ref, v_name, p_own_doctor_id, v_birth, v_child, v_note, v_user, v_user)
       ON CONFLICT (id) DO NOTHING;
       GET DIAGNOSTICS v_n = ROW_COUNT;
     EXCEPTION WHEN unique_violation THEN
@@ -2208,6 +2402,7 @@ BEGIN
       SET patient_ref = v_ref,
           patient_name = v_name,
           own_doctor_id = p_own_doctor_id,
+          birth_date = v_birth,
           is_child = v_child,
           note = v_note
       WHERE m.clinic_id = v_clinic AND m.id = p_id;
@@ -2217,6 +2412,47 @@ BEGIN
   END IF;
 
   RETURN jsonb_build_object('already_saved', false, 'record', public.fin__hk_mark_json(v_clinic, p_id));
+END;
+$$;
+
+-- Hakediş settings on fin_settings (v1.1 item 2): the child age limit, 1..18 years. 0022 settings conventions
+-- (fin_save_import_settings): no-op → already_saved before the version check, then the version (fin_settings.version,
+-- shared with the other settings screens), then the value. Applies to every month computed afterwards; closed months
+-- keep their statements.
+CREATE OR REPLACE FUNCTION public.fin_hk_save_settings(
+  p_version integer,
+  p_child_age_limit integer)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_clinic uuid := public.fin__require_write();
+  v_row public.fin_settings%ROWTYPE;
+BEGIN
+  SELECT * INTO v_row FROM public.fin_settings s WHERE s.clinic_id = v_clinic FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Kayıt bulunamadı.' USING ERRCODE = 'PT404';
+  END IF;
+
+  IF v_row.hk_child_age_limit IS NOT DISTINCT FROM p_child_age_limit THEN
+    RETURN jsonb_build_object('already_saved', true, 'record', public.fin__hk_settings_json(v_clinic));
+  END IF;
+
+  IF p_version IS DISTINCT FROM v_row.version THEN
+    RAISE EXCEPTION 'Kayıt başka bir ekranda değişti. Listeyi yenileyin.' USING ERRCODE = 'PT409';
+  END IF;
+
+  IF p_child_age_limit IS NULL OR p_child_age_limit NOT BETWEEN 1 AND 18 THEN
+    RAISE EXCEPTION 'Çocuk hasta yaş sınırı 1 ile 18 arasında olmalı.';
+  END IF;
+
+  UPDATE public.fin_settings s
+  SET hk_child_age_limit = p_child_age_limit
+  WHERE s.id = v_row.id;
+
+  RETURN jsonb_build_object('already_saved', false, 'record', public.fin__hk_settings_json(v_clinic));
 END;
 $$;
 
@@ -2953,6 +3189,237 @@ END;
 $$;
 
 -- ---------------------------------------------------------------------------
+-- 5b. Reception patient marking (v1.1 item 3, page Hasta işaretleri). SECURITY DEFINER, no finance permission:
+--     active reception / admin / owner users or finance writers (fin__hk_can_mark). Patient names, patient keys,
+--     own-portfolio doctors (ids and names) and birth dates only: never an amount, a rate, a line or a note.
+-- ---------------------------------------------------------------------------
+
+-- Whether the caller may mark, and the "Hekimin kendi hastası" choices: doctors with an 'own' ciro_share rule active
+-- in the current month (ids and names only). A caller who may not mark gets {can_mark: false, doctors: []}.
+CREATE OR REPLACE FUNCTION public.hk_marks_access()
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_clinic uuid := public.current_clinic_id();
+  v_month date := public.fin__month_start(public.clinic_today());
+BEGIN
+  IF v_clinic IS NULL OR public.current_app_user_id() IS NULL THEN
+    RAISE EXCEPTION 'Oturum bulunamadı. Lütfen yeniden giriş yapın.' USING ERRCODE = '42501';
+  END IF;
+  IF NOT public.fin__hk_can_mark() THEN
+    RETURN jsonb_build_object('can_mark', false, 'doctors', '[]'::jsonb);
+  END IF;
+
+  RETURN jsonb_build_object(
+    'can_mark', true,
+    'doctors', coalesce((
+      SELECT jsonb_agg(jsonb_build_object('id', x.doctor_id, 'name', x.name)
+                       ORDER BY x.name COLLATE "tr-x-icu", x.doctor_id)
+      FROM (
+        SELECT DISTINCT r.doctor_id, public.fin__hk_doctor_name(r.doctor_id) AS name
+        FROM public.fin_hk_rules r
+        WHERE r.clinic_id = v_clinic
+          AND r.kind = 'ciro_share'
+          AND r.segment = 'own'
+          AND r.from_month <= v_month
+          AND (r.to_month IS NULL OR r.to_month >= v_month)
+      ) x), '[]'::jsonb));
+END;
+$$;
+
+-- Marks whose patient name or patient key contains the query (fin__normalize_name on both sides; blank = all), at
+-- most 200, by patient name.
+CREATE OR REPLACE FUNCTION public.hk_marks_list(p_query text)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_clinic uuid := public.current_clinic_id();
+  v_finance boolean := public.has_permission('finance');
+  v_q text := coalesce(public.fin__normalize_name(left(coalesce(p_query, ''), 200)), '');
+BEGIN
+  IF v_clinic IS NULL OR public.current_app_user_id() IS NULL THEN
+    RAISE EXCEPTION 'Oturum bulunamadı. Lütfen yeniden giriş yapın.' USING ERRCODE = '42501';
+  END IF;
+  IF NOT public.fin__hk_can_mark() THEN
+    RAISE EXCEPTION 'Hasta işaretlerini görme yetkiniz yok.' USING ERRCODE = '42501';
+  END IF;
+
+  RETURN coalesce((
+    SELECT jsonb_agg(public.fin__hk_mark_desk_json(v_clinic, x.id, v_finance)
+                     ORDER BY x.patient_name COLLATE "tr-x-icu", x.id)
+    FROM (
+      SELECT m.id, m.patient_name
+      FROM public.fin_hk_patient_marks m
+      WHERE m.clinic_id = v_clinic
+        AND (v_q = ''
+             OR strpos(public.fin__normalize_name(m.patient_name), v_q) > 0
+             OR strpos(public.fin__normalize_name(m.patient_ref), v_q) > 0)
+      ORDER BY m.patient_name COLLATE "tr-x-icu", m.id
+      LIMIT 200
+    ) x), '[]'::jsonb);
+END;
+$$;
+
+-- Reception mark: creates or updates only patient key / name, own doctor and birth date (a new mark gets is_child
+-- false and an empty note; both stay with fin_hk_save_mark). patient_ref NULL → normalized patient name, as in lines.
+-- Save conventions as fin_hk_save_mark (version 0 = create, already_saved, PT404, PT409, one mark per patient key).
+-- A caller who is not a finance writer may newly choose only a doctor of hk_marks_access().doctors, and is refused a
+-- change that would move a closed month's figures (fin__hk_mark_locked; a changed patient key is checked as the mark
+-- leaving the old key and arriving at the new one). That check runs under the clinic's close lock (shared), so a
+-- month close in progress either sees the change or makes it refused.
+CREATE OR REPLACE FUNCTION public.hk_save_mark(
+  p_id uuid,
+  p_version integer,
+  p_patient_ref text,
+  p_patient_name text,
+  p_own_doctor_id uuid,
+  p_birth_date date)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_clinic uuid := public.current_clinic_id();
+  v_user uuid := public.current_app_user_id();
+  v_finance boolean := public.has_permission('finance');
+  v_month date := public.fin__month_start(public.clinic_today());
+  v_row public.fin_hk_patient_marks%ROWTYPE;
+  v_name text;
+  v_ref text;
+  v_birth date;
+  v_other uuid;
+  v_locked boolean;
+  v_n integer;
+BEGIN
+  IF v_clinic IS NULL OR v_user IS NULL THEN
+    RAISE EXCEPTION 'Oturum bulunamadı. Lütfen yeniden giriş yapın.' USING ERRCODE = '42501';
+  END IF;
+  IF NOT public.fin__hk_can_mark() THEN
+    RAISE EXCEPTION 'Hasta işaretlerini değiştirme yetkiniz yok.' USING ERRCODE = '42501';
+  END IF;
+  IF p_id IS NULL THEN
+    RAISE EXCEPTION 'Kayıt numarası eksik.';
+  END IF;
+  IF p_version IS NULL OR p_version < 0 THEN
+    RAISE EXCEPTION 'Kayıt başka bir ekranda değişti. Listeyi yenileyin.' USING ERRCODE = 'PT409';
+  END IF;
+  v_name := public.fin__hk_patient_name(p_patient_name);
+  v_ref := public.fin__hk_patient_ref(p_patient_ref, v_name);
+  v_birth := public.fin__hk_birth_date(p_birth_date);
+  IF p_own_doctor_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM public.doctors d WHERE d.id = p_own_doctor_id AND d.clinic_id = v_clinic
+  ) THEN
+    RAISE EXCEPTION 'Hekim bulunamadı.';
+  END IF;
+
+  SELECT * INTO v_row FROM public.fin_hk_patient_marks m WHERE m.clinic_id = v_clinic AND m.id = p_id FOR UPDATE;
+
+  IF p_version = 0 AND v_row.id IS NOT NULL THEN
+    RETURN jsonb_build_object('already_saved', true,
+                              'record', public.fin__hk_mark_desk_json(v_clinic, p_id, v_finance));
+  END IF;
+  IF p_version > 0 THEN
+    IF v_row.id IS NULL THEN
+      RAISE EXCEPTION 'Kayıt bulunamadı.' USING ERRCODE = 'PT404';
+    END IF;
+    IF (v_row.patient_ref, v_row.patient_name, v_row.own_doctor_id, v_row.birth_date)
+       IS NOT DISTINCT FROM (v_ref, v_name, p_own_doctor_id, v_birth) THEN
+      RETURN jsonb_build_object('already_saved', true,
+                                'record', public.fin__hk_mark_desk_json(v_clinic, p_id, v_finance));
+    END IF;
+    IF p_version IS DISTINCT FROM v_row.version THEN
+      RAISE EXCEPTION 'Kayıt başka bir ekranda değişti. Listeyi yenileyin.' USING ERRCODE = 'PT409';
+    END IF;
+  END IF;
+
+  SELECT m.id INTO v_other
+  FROM public.fin_hk_patient_marks m
+  WHERE m.clinic_id = v_clinic AND m.patient_ref = v_ref AND m.id <> p_id
+  LIMIT 1;
+  IF v_other IS NOT NULL THEN
+    RAISE EXCEPTION 'Bu hasta için zaten bir işaret kaydı var.' USING ERRCODE = 'PT409', DETAIL = v_other::text;
+  END IF;
+
+  IF NOT v_finance THEN
+    -- A newly chosen own doctor must be one of hk_marks_access().doctors; an unchanged one on the same patient key is
+    -- kept even if the rule ended since; a changed key is a new choice for the patient it arrives at. Another doctor
+    -- would move that doctor's lines of the patient out of their child segment.
+    IF p_own_doctor_id IS NOT NULL
+       AND (p_own_doctor_id IS DISTINCT FROM v_row.own_doctor_id OR v_row.patient_ref IS DISTINCT FROM v_ref)
+       AND NOT EXISTS (
+      SELECT 1
+      FROM public.fin_hk_rules r
+      WHERE r.clinic_id = v_clinic
+        AND r.kind = 'ciro_share'
+        AND r.segment = 'own'
+        AND r.doctor_id = p_own_doctor_id
+        AND r.from_month <= v_month
+        AND (r.to_month IS NULL OR r.to_month >= v_month)
+    ) THEN
+      RAISE EXCEPTION 'Bu hekim için bu ay "hekimin kendi hastası" kuralı yok; seçilemez.';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock_shared(public.fin__hk_close_lock(v_clinic));
+    IF v_row.id IS NOT NULL AND v_row.patient_ref IS DISTINCT FROM v_ref THEN
+      -- A changed patient key: the mark leaves the old key and arrives at the new one (its child flag goes with it).
+      v_locked := public.fin__hk_mark_locked(v_clinic, v_row.patient_ref, v_row.own_doctor_id, NULL,
+                                             v_row.birth_date, NULL, v_row.is_child, false)
+                  OR public.fin__hk_mark_locked(v_clinic, v_ref, NULL, p_own_doctor_id,
+                                                NULL, v_birth, false, v_row.is_child);
+    ELSE
+      v_locked := public.fin__hk_mark_locked(v_clinic, v_ref, v_row.own_doctor_id, p_own_doctor_id,
+                                             v_row.birth_date, v_birth, v_row.is_child, v_row.is_child);
+    END IF;
+    IF v_locked THEN
+      RAISE EXCEPTION 'Bu hastanın kapanmış ayda ödemesi var; değişikliği klinik sahibi yapabilir.';
+    END IF;
+  END IF;
+
+  IF p_version = 0 THEN
+    BEGIN
+      INSERT INTO public.fin_hk_patient_marks (id, clinic_id, patient_ref, patient_name, own_doctor_id, birth_date,
+                                               created_by, updated_by)
+      VALUES (p_id, v_clinic, v_ref, v_name, p_own_doctor_id, v_birth, v_user, v_user)
+      ON CONFLICT (id) DO NOTHING;
+      GET DIAGNOSTICS v_n = ROW_COUNT;
+    EXCEPTION WHEN unique_violation THEN
+      RAISE EXCEPTION 'Bu hasta için zaten bir işaret kaydı var.' USING ERRCODE = 'PT409';
+    END;
+    IF v_n = 0 THEN
+      IF EXISTS (SELECT 1 FROM public.fin_hk_patient_marks m WHERE m.id = p_id AND m.clinic_id = v_clinic) THEN
+        RETURN jsonb_build_object('already_saved', true,
+                                  'record', public.fin__hk_mark_desk_json(v_clinic, p_id, v_finance));
+      END IF;
+      RAISE EXCEPTION 'Kayıt kaydedilemedi.' USING ERRCODE = 'PT409';
+    END IF;
+  ELSE
+    BEGIN
+      UPDATE public.fin_hk_patient_marks m
+      SET patient_ref = v_ref,
+          patient_name = v_name,
+          own_doctor_id = p_own_doctor_id,
+          birth_date = v_birth
+      WHERE m.clinic_id = v_clinic AND m.id = p_id;
+    EXCEPTION WHEN unique_violation THEN
+      RAISE EXCEPTION 'Bu hasta için zaten bir işaret kaydı var.' USING ERRCODE = 'PT409';
+    END;
+  END IF;
+
+  RETURN jsonb_build_object('already_saved', false,
+                            'record', public.fin__hk_mark_desk_json(v_clinic, p_id, v_finance));
+END;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- 6. 0022 functions replaced with the same signature (CREATE OR REPLACE keeps the ACL; no overload): the seven
 --    fin_hk_* tables join the 'Finans geçmişi' entity filter and the owner JSON export. Bodies otherwise verbatim.
 -- ---------------------------------------------------------------------------
@@ -3124,15 +3591,23 @@ $$;
 
 -- ---------------------------------------------------------------------------
 -- 7. Privileges. fin__harden_privileges() (0022): every fin_* function revoked from PUBLIC / anon / authenticated,
---    public RPCs (fin_hk_*) granted to authenticated, internals (fin__hk_*, fin__trg_hk_*) never; plus its
---    self-checks over every fin_* function and table. The hk_* self-service RPCs are outside its name pattern.
+--    public RPCs (fin_hk_*, incl. fin_hk_save_settings) granted to authenticated, internals (fin__hk_*,
+--    fin__trg_hk_*) never; plus its self-checks over every fin_* function and table. The hk_* RPCs (self-service and
+--    reception marking) are outside its name pattern: revoked from PUBLIC / anon and granted to authenticated here,
+--    and checked in 8.1.
 -- ---------------------------------------------------------------------------
 SELECT public.fin__harden_privileges();
 
 REVOKE EXECUTE ON FUNCTION public.hk_my_months() FROM PUBLIC, anon;
 REVOKE EXECUTE ON FUNCTION public.hk_my_month(date) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.hk_marks_access() FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.hk_marks_list(text) FROM PUBLIC, anon;
+REVOKE EXECUTE ON FUNCTION public.hk_save_mark(uuid, integer, text, text, uuid, date) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.hk_my_months() TO authenticated;
 GRANT EXECUTE ON FUNCTION public.hk_my_month(date) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.hk_marks_access() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.hk_marks_list(text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.hk_save_mark(uuid, integer, text, text, uuid, date) TO authenticated;
 
 -- ---------------------------------------------------------------------------
 -- 8.1 Structural self-checks. Any failure rolls the whole migration back.
@@ -3179,13 +3654,17 @@ BEGIN
     'public.fin_hk_void_line(uuid,integer,text)',
     'public.fin_hk_save_piece(uuid,integer,date,uuid,text,text,integer,text)',
     'public.fin_hk_void_piece(uuid,integer,text)',
-    'public.fin_hk_save_mark(uuid,integer,text,text,uuid,boolean,text)',
+    'public.fin_hk_save_mark(uuid,integer,text,text,uuid,boolean,text,date)',
+    'public.fin_hk_save_settings(integer,integer)',
     'public.fin_hk_save_lab_cost(uuid,integer,date,uuid,text,text,text,bigint,text)',
     'public.fin_hk_void_lab_cost(uuid,integer,text)',
     'public.fin_hk_close_month(date,integer,boolean)',
     'public.fin_hk_reopen_month(date,integer)',
     'public.hk_my_months()',
     'public.hk_my_month(date)',
+    'public.hk_marks_access()',
+    'public.hk_marks_list(text)',
+    'public.hk_save_mark(uuid,integer,text,text,uuid,date)',
     'public.fin_audit_list(jsonb,jsonb)',
     'public.fin_export_manifest()',
     'public.fin__harden_privileges()',
@@ -3196,10 +3675,12 @@ BEGIN
     RAISE EXCEPTION 'Hakediş fonksiyon imzaları beklenen gibi değil: %', v_bad;
   END IF;
 
-  -- 3. Self-service RPCs: one version each, SECURITY DEFINER + search_path, EXECUTE for authenticated only.
+  -- 3. hk_* RPCs (self-service and reception marking): one version each, SECURITY DEFINER + search_path, EXECUTE for
+  --    authenticated only.
   SELECT string_agg(p.proname, ', ') INTO v_bad
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-  WHERE n.nspname = 'public' AND p.proname IN ('hk_my_months', 'hk_my_month')
+  WHERE n.nspname = 'public'
+    AND p.proname IN ('hk_my_months', 'hk_my_month', 'hk_marks_access', 'hk_marks_list', 'hk_save_mark')
     AND (NOT p.prosecdef
          OR p.proconfig IS NULL OR NOT ('search_path=public' = ANY (p.proconfig))
          OR p.proacl IS NULL
@@ -3213,7 +3694,8 @@ BEGIN
   FROM (
     SELECT p.proname
     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'public' AND p.proname IN ('hk_my_months', 'hk_my_month')
+    WHERE n.nspname = 'public'
+      AND p.proname IN ('hk_my_months', 'hk_my_month', 'hk_marks_access', 'hk_marks_list', 'hk_save_mark')
     GROUP BY p.proname
     HAVING count(*) > 1
   ) x;
@@ -3240,6 +3722,49 @@ BEGIN
      OR public.fin__hk_patient_ref(NULL, '  Öz  Denetim ') IS DISTINCT FROM 'öz denetim' THEN
     RAISE EXCEPTION 'Hakediş yardımcı fonksiyonları beklenen sonucu vermiyor.';
   END IF;
+
+  -- Age in whole years (PostgreSQL age()): the birthday itself counts, a 29 February birthday is reached on 1 March
+  -- in other years and on 29 February in leap years; a day before the birth is negative. Segment precedence: line
+  -- segment, own doctor, birth date (the child flag is then ignored), child flag, standard.
+  IF public.fin__hk_age(DATE '2010-04-10', DATE '2024-04-10') IS DISTINCT FROM 14
+     OR public.fin__hk_age(DATE '2010-04-10', DATE '2024-04-09') IS DISTINCT FROM 13
+     OR public.fin__hk_age(DATE '2012-02-29', DATE '2026-02-28') IS DISTINCT FROM 13
+     OR public.fin__hk_age(DATE '2012-02-29', DATE '2026-03-01') IS DISTINCT FROM 14
+     OR public.fin__hk_age(DATE '2012-02-29', DATE '2024-02-28') IS DISTINCT FROM 11
+     OR public.fin__hk_age(DATE '2012-02-29', DATE '2024-02-29') IS DISTINCT FROM 12
+     OR public.fin__hk_age(DATE '2010-12-31', DATE '2011-01-01') IS DISTINCT FROM 0
+     OR public.fin__hk_age(DATE '2020-05-01', DATE '2019-01-01') >= 0 THEN
+    RAISE EXCEPTION 'Hakediş yaş hesabı beklenen sonucu vermiyor.';
+  END IF;
+  IF public.fin__hk_segment(NULL, '00000000-0000-0000-0000-00000000000a', DATE '2024-04-09',
+                            '00000000-0000-0000-0000-00000000000a', DATE '2010-04-10', true, 14)
+       IS DISTINCT FROM 'own'
+     OR public.fin__hk_segment('standard', '00000000-0000-0000-0000-00000000000a', DATE '2024-04-09',
+                               NULL, DATE '2010-04-10', true, 14) IS DISTINCT FROM 'standard'
+     OR public.fin__hk_segment(NULL, '00000000-0000-0000-0000-00000000000a', DATE '2024-04-09',
+                               '00000000-0000-0000-0000-00000000000b', DATE '2010-04-10', false, 14)
+          IS DISTINCT FROM 'child'
+     OR public.fin__hk_segment(NULL, '00000000-0000-0000-0000-00000000000a', DATE '2024-04-10',
+                               NULL, DATE '2010-04-10', true, 14) IS DISTINCT FROM 'standard'
+     OR public.fin__hk_segment(NULL, '00000000-0000-0000-0000-00000000000a', DATE '2024-04-09',
+                               NULL, DATE '2010-04-10', false, 13) IS DISTINCT FROM 'standard'
+     OR public.fin__hk_segment(NULL, '00000000-0000-0000-0000-00000000000a', DATE '2024-04-09',
+                               NULL, NULL, true, 14) IS DISTINCT FROM 'child'
+     OR public.fin__hk_segment(NULL, '00000000-0000-0000-0000-00000000000a', DATE '2024-04-09',
+                               NULL, NULL, NULL, 14) IS DISTINCT FROM 'standard' THEN
+    RAISE EXCEPTION 'Hakediş hasta grubu çözümü beklenen sonucu vermiyor.';
+  END IF;
+
+  -- fin_settings.hk_child_age_limit: NOT NULL, default 14, CHECK 1..18.
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns c
+    WHERE c.table_schema = 'public' AND c.table_name = 'fin_settings' AND c.column_name = 'hk_child_age_limit'
+      AND c.is_nullable = 'NO' AND c.column_default = '14'
+  ) OR EXISTS (
+    SELECT 1 FROM public.fin_settings s WHERE s.hk_child_age_limit IS NULL OR s.hk_child_age_limit NOT BETWEEN 1 AND 18
+  ) THEN
+    RAISE EXCEPTION 'fin_settings.hk_child_age_limit beklenen yapıda değil.';
+  END IF;
   v_j := public.fin__hk_compute(gen_random_uuid(), DATE '2024-01-15');
   IF v_j IS DISTINCT FROM jsonb_build_object('month', DATE '2024-01-01', 'payees', '[]'::jsonb,
                                              'clinic_total_cents', 0, 'warnings', '[]'::jsonb) THEN
@@ -3255,8 +3780,11 @@ END $$;
 --     that matters runs once here (rules, overlap, lines, marks, pieces, lab costs, month figures, close with and
 --     without unruled lines, lock, reopen, re-close updating the ledger amount, doctor self-service and its
 --     boundary incl. a line of B counted under the owner's rule, month order of close / reopen / writes, a payee
---     dropping out on re-close), so a runtime error or a wrong figure fails the migration instead of production.
---     Nothing survives.
+--     dropping out on re-close; v1.1: a reception user marking patients without finance permission and without
+--     seeing money, assistant / doctor refused, the closed-month lock of a mark, an own doctor without an 'own' rule
+--     kept on the same patient key but refused on a changed one, child by age incl. the birthday on the payment day
+--     and a 29 February birthday, the child age limit setting), so a runtime error or a wrong figure fails the
+--     migration instead of production. Nothing survives.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -3274,6 +3802,10 @@ DECLARE
   v_b_doc uuid := gen_random_uuid();
   v_c uuid := gen_random_uuid();
   v_c_doc uuid := gen_random_uuid();
+  v_r uuid := gen_random_uuid();
+  v_r_auth uuid := gen_random_uuid();
+  v_s uuid := gen_random_uuid();
+  v_s_auth uuid := gen_random_uuid();
   v_rule_bs uuid := gen_random_uuid();
   v_rule_bc uuid := gen_random_uuid();
   v_rule_bi uuid := gen_random_uuid();
@@ -3288,6 +3820,16 @@ DECLARE
   v_l6 uuid := gen_random_uuid();
   v_l7 uuid := gen_random_uuid();
   v_l8 uuid := gen_random_uuid();
+  v_l9 uuid := gen_random_uuid();
+  v_l10 uuid := gen_random_uuid();
+  v_l11 uuid := gen_random_uuid();
+  v_l12 uuid := gen_random_uuid();
+  v_l13 uuid := gen_random_uuid();
+  v_mk1 uuid := gen_random_uuid();
+  v_mk2 uuid := gen_random_uuid();
+  v_mk3 uuid := gen_random_uuid();
+  v_auth uuid;
+  v_sql text;
   v_j jsonb;
   v_err text;
   v_state text;
@@ -3307,7 +3849,10 @@ BEGIN
       (v_own, v_clinic, v_own_auth, 'owner', 'Öz denetim sahip', 'p30-sc-own-' || v_tag || '@example.invalid', true),
       (v_a, v_clinic, v_a_auth, 'doctor', 'Öz denetim Hekim A', 'p30-sc-a-' || v_tag || '@example.invalid', true),
       (v_b, v_clinic, v_b_auth, 'doctor', 'Öz denetim Hekim B', 'p30-sc-b-' || v_tag || '@example.invalid', true),
-      (v_c, v_clinic, NULL, 'doctor', 'Öz denetim Hekim C', 'p30-sc-c-' || v_tag || '@example.invalid', true);
+      (v_c, v_clinic, NULL, 'doctor', 'Öz denetim Hekim C', 'p30-sc-c-' || v_tag || '@example.invalid', true),
+      (v_r, v_clinic, v_r_auth, 'reception', 'Öz denetim Banko', 'p30-sc-r-' || v_tag || '@example.invalid', true),
+      (v_s, v_clinic, v_s_auth, 'assistant', 'Öz denetim Asistan', 'p30-sc-s-' || v_tag || '@example.invalid',
+       true);
     INSERT INTO public.doctors (id, clinic_id, user_id) VALUES
       (v_own_doc, v_clinic, v_own), (v_a_doc, v_clinic, v_a), (v_b_doc, v_clinic, v_b), (v_c_doc, v_clinic, v_c);
     INSERT INTO public.staff_permissions (clinic_id, user_id, permission, granted_by)
@@ -3347,7 +3892,7 @@ BEGIN
     END IF;
 
     -- Child mark, lines, pieces, lab costs.
-    PERFORM public.fin_hk_save_mark(gen_random_uuid(), 0, NULL, 'Hasta Çocuk', NULL, true, '');
+    PERFORM public.fin_hk_save_mark(gen_random_uuid(), 0, NULL, 'Hasta Çocuk', NULL, true, '', NULL);
     PERFORM public.fin_hk_save_line(v_l1, 0, DATE '2024-01-08', v_b_doc, 'Hasta Bir', NULL, 'card', 'TRY',
                                     80000, NULL, NULL, NULL, '');
     PERFORM public.fin_hk_save_line(v_l2, 0, DATE '2024-01-09', v_b_doc, 'Hasta Çocuk', NULL, 'transfer', 'TRY',
@@ -3678,6 +4223,295 @@ BEGIN
        OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'statements') st
                   WHERE (st ->> 'payee_user_id') = v_a::text) THEN
       v_fail := array_append(v_fail, 'iptal sonrası yeniden kapatma: ' || left(v_j::text, 500));
+    END IF;
+
+    -- v1.1 item 3: the reception marks patients without finance permission and never sees money. The only own doctor
+    -- on offer is B (the owner's 'own' rule on B, open-ended). Locks: 'Hasta Bir' and 'Hasta Çocuk' have payments
+    -- of B in closed January, 'Hasta Orto' payments of A in closed January / February. 'Kişi Eski' is set by finance
+    -- with A as own doctor although A has no 'own' rule (fin_hk_save_mark allows any doctor).
+    PERFORM public.fin_hk_save_mark(v_mk3, 0, NULL, 'Kişi Eski', v_a_doc, false, '', NULL);
+    PERFORM set_config('request.jwt.claims',
+                       json_build_object('sub', v_r_auth, 'role', 'authenticated')::text, true);
+    PERFORM set_config('request.jwt.claim.sub', v_r_auth::text, true);
+    v_j := public.hk_marks_access();
+    IF v_j IS DISTINCT FROM jsonb_build_object(
+         'can_mark', true,
+         'doctors', jsonb_build_array(jsonb_build_object('id', v_b_doc, 'name', 'Öz denetim Hekim B'))) THEN
+      v_fail := array_append(v_fail, 'banko erişimi: ' || left(v_j::text, 300));
+    END IF;
+
+    v_j := public.hk_save_mark(v_mk1, 0, NULL, 'Hasta Banko', v_b_doc, DATE '2015-06-01');
+    IF (v_j -> 'record') IS DISTINCT FROM jsonb_build_object(
+         'id', v_mk1, 'version', 1, 'patient_ref', 'hasta banko', 'patient_name', 'Hasta Banko',
+         'own_doctor_id', v_b_doc, 'own_doctor_name', 'Öz denetim Hekim B', 'birth_date', DATE '2015-06-01',
+         'is_child', false, 'locked', false)
+       OR coalesce((v_j ->> 'already_saved')::boolean, true)
+       OR NOT coalesce((public.hk_save_mark(v_mk1, 0, NULL, 'Hasta Banko', v_b_doc, DATE '2015-06-01')
+                        ->> 'already_saved')::boolean, false)
+       OR NOT EXISTS (SELECT 1 FROM public.fin_hk_patient_marks m
+                      WHERE m.clinic_id = v_clinic AND m.id = v_mk1 AND NOT m.is_child AND m.note = ''
+                        AND m.created_by = v_r) THEN
+      v_fail := array_append(v_fail, 'banko işaret: ' || left(v_j::text, 300));
+    END IF;
+    v_err := NULL;
+    BEGIN
+      PERFORM public.hk_save_mark(gen_random_uuid(), 0, NULL, 'Hasta Yeni', v_a_doc, NULL);
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    END;
+    IF v_err IS NULL OR v_err NOT LIKE 'Bu hekim için bu ay%' THEN
+      v_fail := array_append(v_fail, 'banko kuralsız hekim: ' || coalesce(v_err, '-'));
+    END IF;
+    v_err := NULL;
+    BEGIN
+      PERFORM public.hk_save_mark(gen_random_uuid(), 0, NULL, 'Hasta Yeni', NULL, public.clinic_today() + 1);
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    END;
+    IF v_err IS NULL OR v_err NOT LIKE 'Doğum tarihi%' THEN
+      v_fail := array_append(v_fail, 'banko gelecek doğum tarihi: ' || coalesce(v_err, '-'));
+    END IF;
+
+    -- Locked for the reception: moving 'Hasta Banko' (with its birth date) onto 'Hasta Orto'; a birth date, or B as
+    -- own doctor, for 'Hasta Bir'. Allowed: a plain mark for 'Hasta Bir', and B as own doctor of 'Hasta Orto' (its
+    -- closed payments are A's, the birth date is unchanged).
+    v_err := NULL;
+    BEGIN
+      PERFORM public.hk_save_mark(v_mk1, 1, NULL, 'Hasta Orto', v_b_doc, DATE '2015-06-01');
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    END;
+    IF v_err IS DISTINCT FROM 'Bu hastanın kapanmış ayda ödemesi var; değişikliği klinik sahibi yapabilir.' THEN
+      v_fail := array_append(v_fail, 'banko kilit (hasta değişimi): ' || coalesce(v_err, '-'));
+    END IF;
+    v_err := NULL;
+    BEGIN
+      PERFORM public.hk_save_mark(v_mk2, 0, NULL, 'Hasta Bir', NULL, DATE '2010-01-01');
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    END;
+    IF v_err IS DISTINCT FROM 'Bu hastanın kapanmış ayda ödemesi var; değişikliği klinik sahibi yapabilir.' THEN
+      v_fail := array_append(v_fail, 'banko kilit (doğum tarihi): ' || coalesce(v_err, '-'));
+    END IF;
+    v_err := NULL;
+    BEGIN
+      PERFORM public.hk_save_mark(v_mk2, 0, NULL, 'Hasta Bir', v_b_doc, NULL);
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    END;
+    IF v_err IS DISTINCT FROM 'Bu hastanın kapanmış ayda ödemesi var; değişikliği klinik sahibi yapabilir.' THEN
+      v_fail := array_append(v_fail, 'banko kilit (kendi hekimi): ' || coalesce(v_err, '-'));
+    END IF;
+    v_j := public.hk_save_mark(v_mk2, 0, NULL, 'Hasta Bir', NULL, NULL);
+    IF coalesce((v_j ->> 'already_saved')::boolean, true)
+       OR (v_j #>> '{record,locked}')::boolean IS DISTINCT FROM true THEN
+      v_fail := array_append(v_fail, 'banko kilitli işaret: ' || left(v_j::text, 300));
+    END IF;
+    v_j := public.hk_save_mark(gen_random_uuid(), 0, NULL, 'Hasta Orto', v_b_doc, NULL);
+    IF coalesce((v_j ->> 'already_saved')::boolean, true)
+       OR (v_j #>> '{record,own_doctor_id}') IS DISTINCT FROM v_b_doc::text THEN
+      v_fail := array_append(v_fail, 'banko başka hekimin kapalı ödemesi: ' || left(v_j::text, 300));
+    END IF;
+    -- A kept own doctor without an 'own' rule: allowed on the same patient key, refused when the key changes (a new
+    -- choice for the patient the mark arrives at).
+    v_err := NULL;
+    BEGIN
+      PERFORM public.hk_save_mark(v_mk3, 1, NULL, 'Kişi Yeni', v_a_doc, NULL);
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    END;
+    IF v_err IS NULL OR v_err NOT LIKE 'Bu hekim için bu ay%' THEN
+      v_fail := array_append(v_fail, 'banko kuralsız hekim (hasta değişimi): ' || coalesce(v_err, '-'));
+    END IF;
+    v_j := public.hk_save_mark(v_mk3, 1, NULL, 'Kişi Eski', v_a_doc, DATE '2015-06-01');
+    IF coalesce((v_j ->> 'already_saved')::boolean, true)
+       OR (v_j #>> '{record,patient_ref}') IS DISTINCT FROM 'kişi eski'
+       OR (v_j #>> '{record,own_doctor_id}') IS DISTINCT FROM v_a_doc::text
+       OR (v_j #>> '{record,birth_date}') IS DISTINCT FROM '2015-06-01' THEN
+      v_fail := array_append(v_fail, 'banko kuralsız hekim (aynı hasta): ' || left(v_j::text, 300));
+    END IF;
+
+    v_j := public.hk_marks_list('  HASTA ');
+    IF jsonb_array_length(v_j) <> 4
+       OR (SELECT string_agg(e.x ->> 'patient_name', ',' ORDER BY e.o)
+           FROM jsonb_array_elements(v_j) WITH ORDINALITY AS e(x, o))
+          IS DISTINCT FROM 'Hasta Banko,Hasta Bir,Hasta Çocuk,Hasta Orto'
+       OR (SELECT string_agg((e.x ->> 'locked') || '/' || (e.x ->> 'is_child'), ',' ORDER BY e.o)
+           FROM jsonb_array_elements(v_j) WITH ORDINALITY AS e(x, o))
+          IS DISTINCT FROM 'false/false,true/false,true/true,true/false'
+       OR EXISTS (SELECT 1
+                  FROM jsonb_array_elements(v_j) AS e(x)
+                  CROSS JOIN LATERAL jsonb_object_keys(e.x) AS k(name)
+                  WHERE k.name NOT IN ('id', 'version', 'patient_ref', 'patient_name', 'own_doctor_id',
+                                       'own_doctor_name', 'birth_date', 'is_child', 'locked'))
+       OR jsonb_array_length(public.hk_marks_list('banko')) <> 1
+       OR jsonb_array_length(public.hk_marks_list('böyle bir hasta yok')) <> 0 THEN
+      v_fail := array_append(v_fail, 'banko listesi: ' || left(v_j::text, 800));
+    END IF;
+
+    -- No finance RPC and no money through hk_my_* for the reception.
+    FOREACH v_sql IN ARRAY ARRAY[
+      'SELECT public.fin_hk_reference()',
+      'SELECT public.fin_hk_month(DATE ''2024-01-01'')',
+      'SELECT public.fin_hk_marks()',
+      'SELECT public.fin_hk_save_mark(gen_random_uuid(), 0, NULL, ''Hasta Yeni'', NULL, true, '''', NULL)',
+      'SELECT public.fin_hk_save_settings(1, 13)']
+    LOOP
+      v_state := NULL;
+      BEGIN
+        EXECUTE v_sql;
+      EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_state = RETURNED_SQLSTATE;
+      END;
+      IF v_state IS DISTINCT FROM '42501' THEN
+        v_fail := array_append(v_fail, 'banko finans çağrısı: ' || v_sql || ' / ' || coalesce(v_state, '-'));
+      END IF;
+    END LOOP;
+    IF public.hk_my_month(DATE '2024-01-01') IS DISTINCT FROM jsonb_build_object('has_rules', false)
+       OR public.hk_my_months() IS DISTINCT FROM jsonb_build_object(
+            'has_rules', false, 'today', public.clinic_today(),
+            'current_month', public.fin__month_start(public.clinic_today()), 'months', '[]'::jsonb) THEN
+      v_fail := array_append(v_fail, 'banko hk_my_*');
+    END IF;
+
+    -- Assistant and doctor: no marking (the page is closed for them, and the RPCs refuse).
+    FOREACH v_auth IN ARRAY ARRAY[v_s_auth, v_b_auth]
+    LOOP
+      PERFORM set_config('request.jwt.claims',
+                         json_build_object('sub', v_auth, 'role', 'authenticated')::text, true);
+      PERFORM set_config('request.jwt.claim.sub', v_auth::text, true);
+      IF public.hk_marks_access() IS DISTINCT FROM jsonb_build_object('can_mark', false, 'doctors', '[]'::jsonb) THEN
+        v_fail := array_append(v_fail, 'işaret erişimi açık: ' || v_auth::text);
+      END IF;
+      FOREACH v_sql IN ARRAY ARRAY[
+        'SELECT public.hk_marks_list(NULL)',
+        format('SELECT public.hk_save_mark(%L, 1, NULL, %L, NULL, NULL)', v_mk1, 'Hasta Banko')]
+      LOOP
+        v_state := NULL;
+        BEGIN
+          EXECUTE v_sql;
+        EXCEPTION WHEN OTHERS THEN
+          GET STACKED DIAGNOSTICS v_state = RETURNED_SQLSTATE;
+        END;
+        IF v_state IS DISTINCT FROM '42501' THEN
+          v_fail := array_append(v_fail, 'işaret yazma açık: ' || v_sql || ' / ' || coalesce(v_state, '-'));
+        END IF;
+      END LOOP;
+    END LOOP;
+
+    -- Owner (finance writer): not held by the lock. v1.1 item 2 through the real calculation.
+    PERFORM set_config('request.jwt.claims',
+                       json_build_object('sub', v_own_auth, 'role', 'authenticated')::text, true);
+    PERFORM set_config('request.jwt.claim.sub', v_own_auth::text, true);
+    v_j := public.hk_save_mark(v_mk2, 1, NULL, 'Hasta Bir', NULL, DATE '1980-05-05');
+    IF coalesce((v_j ->> 'already_saved')::boolean, true)
+       OR (v_j #>> '{record,birth_date}') IS DISTINCT FROM '1980-05-05'
+       OR (v_j #>> '{record,locked}')::boolean IS DISTINCT FROM false
+       OR (SELECT bool_or((e ->> 'locked')::boolean) FROM jsonb_array_elements(public.hk_marks_list('hasta bir')) e)
+          IS DISTINCT FROM false THEN
+      v_fail := array_append(v_fail, 'sahip kilitli işaret: ' || left(v_j::text, 300));
+    END IF;
+    v_err := NULL;
+    BEGIN
+      PERFORM public.fin_hk_save_mark(gen_random_uuid(), 0, NULL, 'Hasta Yeni', NULL, false, '',
+                                      public.clinic_today() + 1);
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    END;
+    IF v_err IS NULL OR v_err NOT LIKE 'Doğum tarihi%' THEN
+      v_fail := array_append(v_fail, 'gelecek doğum tarihi: ' || coalesce(v_err, '-'));
+    END IF;
+
+    PERFORM public.fin_hk_save_mark(gen_random_uuid(), 0, NULL, 'Hasta Yaş', NULL, true, '', DATE '2010-04-10');
+    PERFORM public.fin_hk_save_mark(gen_random_uuid(), 0, NULL, 'Hasta Artık Gün', NULL, false, '',
+                                    DATE '2012-02-29');
+    PERFORM public.fin_hk_save_line(v_l9, 0, DATE '2024-04-09', v_b_doc, 'Hasta Yaş', NULL, 'cash', 'TRY',
+                                    10000, NULL, NULL, NULL, '');
+    PERFORM public.fin_hk_save_line(v_l10, 0, DATE '2024-04-10', v_b_doc, 'Hasta Yaş', NULL, 'cash', 'TRY',
+                                    10000, NULL, NULL, NULL, '');
+    PERFORM public.fin_hk_save_line(v_l11, 0, DATE '2024-04-12', v_b_doc, 'Hasta Banko', NULL, 'cash', 'TRY',
+                                    20000, NULL, NULL, NULL, '');
+    PERFORM public.fin_hk_save_line(v_l12, 0, DATE '2026-02-28', v_b_doc, 'Hasta Artık Gün', NULL, 'cash', 'TRY',
+                                    10000, NULL, NULL, NULL, '');
+    PERFORM public.fin_hk_save_line(v_l13, 0, DATE '2026-03-01', v_b_doc, 'Hasta Artık Gün', NULL, 'cash', 'TRY',
+                                    10000, NULL, NULL, NULL, '');
+
+    -- April 2024: 'Hasta Yaş' (born 2010-04-10, also flagged child: the birth date wins) is 13 the day before the
+    -- 14th birthday (child 40 %) and 14 on the payment day (standard 25 %); 'Hasta Banko' (marked at the reception,
+    -- a child by age) is B's own-portfolio patient under the owner's rule. B 4000 + 2500 = 6500; owner 30 % of
+    -- 20000 + 3 % of the gross 40000 = 7200.
+    v_j := public.fin_hk_month(DATE '2024-04-01');
+    IF (SELECT string_agg((l ->> 'resolved_segment') || '/' || coalesce(l ->> 'rule_id', '-'), ','
+                          ORDER BY l ->> 'day')
+        FROM jsonb_array_elements(v_j -> 'lines') l)
+         IS DISTINCT FROM 'child/' || v_rule_bc::text || ',standard/' || v_rule_bs::text || ',own/' || v_rule_ob::text
+       OR (SELECT (p ->> 'total_cents')::bigint FROM jsonb_array_elements(v_j -> 'payees') p
+           WHERE (p ->> 'payee_user_id') = v_b::text) IS DISTINCT FROM 6500
+       OR (SELECT (p ->> 'total_cents')::bigint FROM jsonb_array_elements(v_j -> 'payees') p
+           WHERE (p ->> 'payee_user_id') = v_own::text) IS DISTINCT FROM 7200 THEN
+      v_fail := array_append(v_fail, 'nisan yaş hesabı: ' || left(v_j::text, 800));
+    END IF;
+    -- Born on 29 February 2012: 13 on 28 February 2026 (child), 14 on 1 March 2026 (standard).
+    IF (SELECT l ->> 'resolved_segment'
+        FROM jsonb_array_elements(public.fin_hk_month(DATE '2026-02-01') -> 'lines') l
+        WHERE (l ->> 'id') = v_l12::text) IS DISTINCT FROM 'child'
+       OR (SELECT l ->> 'resolved_segment'
+           FROM jsonb_array_elements(public.fin_hk_month(DATE '2026-03-01') -> 'lines') l
+           WHERE (l ->> 'id') = v_l13::text) IS DISTINCT FROM 'standard'
+       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(public.fin_hk_marks()) m
+                      WHERE (m ->> 'patient_name') = 'Hasta Artık Gün' AND (m ->> 'birth_date') = '2012-02-29') THEN
+      v_fail := array_append(v_fail, '29 şubat doğum günü');
+    END IF;
+
+    -- Doctor B sees the age-based segments on own lines, never a birth date or the owner's own-portfolio line.
+    PERFORM set_config('request.jwt.claims',
+                       json_build_object('sub', v_b_auth, 'role', 'authenticated')::text, true);
+    PERFORM set_config('request.jwt.claim.sub', v_b_auth::text, true);
+    v_j := public.hk_my_month(DATE '2024-04-01');
+    IF (v_j #>> '{payees,0,total_cents}')::bigint IS DISTINCT FROM 6500
+       OR (SELECT string_agg(l ->> 'segment', ',' ORDER BY l ->> 'day') FROM jsonb_array_elements(v_j -> 'lines') l)
+          IS DISTINCT FROM 'child,standard'
+       OR position('2010-04-10' IN v_j::text) > 0
+       OR position('Hasta Banko' IN v_j::text) > 0 THEN
+      v_fail := array_append(v_fail, 'hekim B nisan: ' || left(v_j::text, 800));
+    END IF;
+
+    -- Child age limit (fin_settings): no-op before the version, stale version, range, then 13: 'Hasta Yaş' at 13 on
+    -- 2024-04-09 is no longer a child.
+    PERFORM set_config('request.jwt.claims',
+                       json_build_object('sub', v_own_auth, 'role', 'authenticated')::text, true);
+    PERFORM set_config('request.jwt.claim.sub', v_own_auth::text, true);
+    v_j := public.fin_hk_reference();
+    v_ver := (v_j #>> '{settings,version}')::integer;
+    IF (v_j #>> '{settings,child_age_limit}')::integer IS DISTINCT FROM 14 OR coalesce(v_ver, 0) < 1
+       OR NOT coalesce((public.fin_hk_save_settings(v_ver + 5, 14) ->> 'already_saved')::boolean, false) THEN
+      v_fail := array_append(v_fail, 'hakediş ayarları: ' || coalesce(v_j ->> 'settings', '-'));
+    END IF;
+    v_state := NULL;
+    BEGIN
+      PERFORM public.fin_hk_save_settings(v_ver + 5, 13);
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_state = RETURNED_SQLSTATE;
+    END;
+    IF v_state IS DISTINCT FROM 'PT409' THEN
+      v_fail := array_append(v_fail, 'ayar eski sürüm: ' || coalesce(v_state, '-'));
+    END IF;
+    v_err := NULL;
+    BEGIN
+      PERFORM public.fin_hk_save_settings(v_ver, 19);
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    END;
+    IF v_err IS NULL OR v_err NOT LIKE 'Çocuk hasta yaş sınırı%' THEN
+      v_fail := array_append(v_fail, 'ayar aralığı: ' || coalesce(v_err, '-'));
+    END IF;
+    v_j := public.fin_hk_save_settings(v_ver, 13);
+    IF coalesce((v_j ->> 'already_saved')::boolean, true)
+       OR (v_j -> 'record') IS DISTINCT FROM jsonb_build_object('version', v_ver + 1, 'child_age_limit', 13)
+       OR (SELECT l ->> 'resolved_segment'
+           FROM jsonb_array_elements(public.fin_hk_month(DATE '2024-04-01') -> 'lines') l
+           WHERE (l ->> 'id') = v_l9::text) IS DISTINCT FROM 'standard' THEN
+      v_fail := array_append(v_fail, 'yaş sınırı 13: ' || left(v_j::text, 300));
     END IF;
 
     PERFORM set_config('request.jwt.claims', '', true);

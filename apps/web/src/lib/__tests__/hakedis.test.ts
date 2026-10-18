@@ -1,13 +1,23 @@
-// Hakediş engine mirror (spec §1 "Calculation", §2). Made-up doctors, patients, rates and amounts only.
+// Hakediş engine mirror (spec §1 "Calculation", §2; v1.1 child patients by age). Made-up doctors, patients, rates
+// and amounts only.
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addMonths,
+  ageOn,
   applyBp,
   bpToInput,
+  childAgeLimitOf,
   componentTitle,
   computeMonth,
+  finHkSaveMark,
+  finHkSaveSettings,
   formatBp,
+  HK_DEFAULT_CHILD_AGE_LIMIT,
+  hkMarksAccess,
+  hkMarksList,
+  hkSaveMark,
+  markIsChildOn,
   monthKey,
   monthStart,
   monthStatus,
@@ -18,17 +28,24 @@ import {
   roundHalfAwayDiv,
   ruleActiveIn,
   summarizePayee,
+  validateBirthDate,
+  validateChildAgeLimit,
   validateRule,
   warningText,
   type HkComponentJson,
   type HkComputeInput,
   type HkComputeLabCost,
   type HkComputeLine,
+  type HkComputeMark,
   type HkComputeOutput,
   type HkComputePiece,
   type HkComputeRule,
   type HkRuleInput,
 } from "../hakedis";
+
+// RPC wrappers are checked against a stub client (argument names are the SQL contract).
+const rpcMock = vi.hoisted(() => vi.fn());
+vi.mock("../supabase", () => ({ createClient: () => ({ rpc: rpcMock }) }));
 
 const TL = (n: number) => Math.round(n * 100);
 
@@ -285,10 +302,11 @@ describe("segments", () => {
   });
 
   it("resolveSegment order: override, own doctor, child, standard", () => {
-    expect(resolveSegment({ segment: "standard", doctor_id: "doc-c" }, marks[1])).toBe("standard");
-    expect(resolveSegment({ segment: null, doctor_id: "doc-c" }, marks[2])).toBe("own");
-    expect(resolveSegment({ segment: null, doctor_id: "doc-b" }, marks[2])).toBe("child");
-    expect(resolveSegment({ segment: null, doctor_id: "doc-b" }, null)).toBe("standard");
+    const day = "2026-11-10";
+    expect(resolveSegment({ segment: "standard", doctor_id: "doc-c", day }, marks[1])).toBe("standard");
+    expect(resolveSegment({ segment: null, doctor_id: "doc-c", day }, marks[2])).toBe("own");
+    expect(resolveSegment({ segment: null, doctor_id: "doc-b", day }, marks[2])).toBe("child");
+    expect(resolveSegment({ segment: null, doctor_id: "doc-b", day }, null)).toBe("standard");
   });
 
   it("orders components by kind, then doctor, then segment (SQL kind_ord, doctor_name, seg_ord)", () => {
@@ -306,6 +324,201 @@ describe("segments", () => {
     const implant = rule({ kind: "implant_piece", payee_user_id: "u-a", doctor_id: "doc-a", piece_cents: TL(100) });
     const multi = run({ month: "2026-11", rules: [implant, cChild, bOwn, cStd], lines: [] });
     expect(multi.payees[0].components.map((c) => c.rule_id)).toEqual([bOwn.id, cStd.id, cChild.id, implant.id]);
+  });
+});
+
+// Independent port of PostgreSQL timestamp_age() on the date fields (dt1 = day, dt2 = birth), the year field of
+// date_part('year', age(day, birth)): field differences, sign flip when dt1 < dt2, day borrow from the earlier date's
+// month, month borrow from the year.
+function pgAgeYears(birth: string, day: string): number {
+  const [y2, m2, d2] = birth.split("-").map(Number);
+  const [y1, m1, d1] = day.split("-").map(Number);
+  const dim = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const negative = day < birth;
+  let year = y1 - y2;
+  let mon = m1 - m2;
+  let mday = d1 - d2;
+  if (negative) {
+    year = -year;
+    mon = -mon;
+    mday = -mday;
+  }
+  while (mday < 0) {
+    mday += negative ? dim(y1, m1) : dim(y2, m2);
+    mon -= 1;
+  }
+  while (mon < 0) {
+    mon += 12;
+    year -= 1;
+  }
+  return negative ? -year || 0 : year;
+}
+
+function eachDay(from: string, to: string): string[] {
+  const out: string[] = [];
+  for (let t = Date.parse(`${from}T00:00:00Z`); t <= Date.parse(`${to}T00:00:00Z`); t += 86_400_000) {
+    out.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+describe("child patients by age (v1.1)", () => {
+  it("ageOn counts whole years like PostgreSQL age(): the birthday itself and the day before", () => {
+    expect(ageOn("2012-06-15", "2026-06-15")).toBe(14);
+    expect(ageOn("2012-06-15", "2026-06-14")).toBe(13);
+    expect(ageOn("2012-06-15", "2026-06-15T10:30:00Z")).toBe(14);
+    expect(ageOn("2000-01-31", "2014-01-30")).toBe(13);
+    expect(ageOn("2000-01-31", "2014-01-31")).toBe(14);
+    expect(ageOn("2012-12-31", "2026-12-30")).toBe(13);
+    expect(ageOn("2012-12-31", "2027-01-01")).toBe(14);
+    expect(ageOn("2026-03-01", "2026-03-01")).toBe(0);
+  });
+
+  it("ageOn reaches a 29 February birthday on 1 March in non-leap years", () => {
+    expect(ageOn("2012-02-29", "2026-02-28")).toBe(13);
+    expect(ageOn("2012-02-29", "2026-03-01")).toBe(14);
+    expect(ageOn("2012-02-29", "2028-02-28")).toBe(15);
+    expect(ageOn("2012-02-29", "2028-02-29")).toBe(16);
+    expect(ageOn("2011-03-01", "2024-02-29")).toBe(12);
+    expect(ageOn("2011-02-28", "2024-02-29")).toBe(13);
+  });
+
+  it("ageOn before the birth date is the negated age (0 within the first year); bad dates give null", () => {
+    expect(ageOn("2026-06-01", "2026-01-01")).toBe(0);
+    expect(ageOn("2026-06-01", "2025-06-02")).toBe(0);
+    expect(ageOn("2026-06-01", "2025-06-01")).toBe(-1);
+    expect(ageOn("2026-06-01", "2024-01-01")).toBe(-2);
+    expect(ageOn("2026-02-30", "2026-03-01")).toBeNull();
+    expect(ageOn("2025-02-29", "2026-03-01")).toBeNull();
+    expect(ageOn("15.06.2012", "2026-06-15")).toBeNull();
+    expect(ageOn(null, "2026-06-15")).toBeNull();
+    expect(ageOn("2012-06-15", "")).toBeNull();
+  });
+
+  it("ageOn equals the PostgreSQL age() port day by day around month ends and leap days", () => {
+    const births = [
+      "2000-02-29", "2012-02-29", "2011-02-28", "2011-03-01", "2012-01-31", "2012-03-31", "2012-04-30",
+      "2012-12-31", "2013-01-01", "2012-11-20", "2025-02-28", "2026-02-28", "2026-03-01", "2027-02-28",
+      "2028-02-29",
+    ];
+    const days = eachDay("2023-12-01", "2028-03-31");
+    let checked = 0;
+    for (const birth of births) {
+      for (const day of days) {
+        const expected = pgAgeYears(birth, day);
+        if (ageOn(birth, day) !== expected) throw new Error(`ageOn(${birth}, ${day}) ≠ ${expected}`);
+        checked += 1;
+      }
+    }
+    expect(checked).toBe(births.length * days.length);
+  });
+
+  it("a birth date decides by the age on the payment day; without one the is_child mark is used", () => {
+    const born = (birth_date: string | null, is_child = false, own_doctor_id: string | null = null) => ({
+      own_doctor_id,
+      is_child,
+      birth_date,
+    });
+    const seg = (day: string, mark: Parameters<typeof resolveSegment>[1], limit?: number) =>
+      resolveSegment({ segment: null, doctor_id: "doc-b", day }, mark, limit);
+
+    // Turns 14 on the payment day: no longer a child that day, still one the day before.
+    expect(seg("2026-06-14", born("2012-06-15"))).toBe("child");
+    expect(seg("2026-06-15", born("2012-06-15"))).toBe("standard");
+    // 29 February birthday in a non-leap year: still 13 on 28 February, 14 on 1 March.
+    expect(seg("2026-02-28", born("2012-02-29"))).toBe("child");
+    expect(seg("2026-03-01", born("2012-02-29"))).toBe("standard");
+    // is_child fallback only without a birth date; a birth date wins over the manual mark either way.
+    expect(seg("2026-11-10", born(null, true))).toBe("child");
+    expect(seg("2026-11-10", born(null, false))).toBe("standard");
+    expect(seg("2026-11-10", born("2000-01-01", true))).toBe("standard");
+    expect(seg("2026-11-10", born("2020-01-01", false))).toBe("child");
+    // The limit is data.
+    expect(seg("2026-04-30", born("2013-05-01"))).toBe("child");
+    expect(seg("2026-04-30", born("2013-05-01"), 12)).toBe("standard");
+    expect(seg("2026-04-29", born("2013-04-30"), 13)).toBe("child");
+    // Override and own doctor still come first.
+    const day = "2026-11-10";
+    const ownChild = born("2020-01-01", false, "doc-c");
+    expect(resolveSegment({ segment: "standard", doctor_id: "doc-b", day }, born("2020-01-01"))).toBe("standard");
+    expect(resolveSegment({ segment: null, doctor_id: "doc-c", day }, ownChild)).toBe("own");
+    expect(resolveSegment({ segment: null, doctor_id: "doc-b", day }, ownChild)).toBe("child");
+    expect(markIsChildOn(null, "2026-11-10")).toBe(false);
+    expect(markIsChildOn({ is_child: true }, "2026-11-10")).toBe(true);
+  });
+
+  it("splits one patient's payments around the birthday in computeMonth (default limit)", () => {
+    const bStd = rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "standard", share_bp: 2500 });
+    const bChild = rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "child", share_bp: 3200 });
+    const marks: HkComputeMark[] = [
+      { patient_ref: "cocuk yas 1", own_doctor_id: null, is_child: false, birth_date: "2012-11-20" },
+      { patient_ref: "cocuk isaret 1", own_doctor_id: null, is_child: true, birth_date: null },
+      { patient_ref: "yetiskin 1", own_doctor_id: null, is_child: true, birth_date: "1990-05-05" },
+    ];
+    const t = TL(10_000);
+    const dayBefore = line({ doctor_id: "doc-b", patient_ref: "cocuk yas 1", day: "2026-11-19", try_cents: t });
+    const birthday = line({ doctor_id: "doc-b", patient_ref: "cocuk yas 1", day: "2026-11-20", try_cents: t });
+    const marked = line({ doctor_id: "doc-b", patient_ref: "cocuk isaret 1", day: "2026-11-21", try_cents: t });
+    const adult = line({ doctor_id: "doc-b", patient_ref: "yetiskin 1", day: "2026-11-22", try_cents: t });
+    const lines = [dayBefore, birthday, marked, adult];
+
+    const defaults = [undefined, null, {}, { child_age_limit: null }, { child_age_limit: HK_DEFAULT_CHILD_AGE_LIMIT }];
+    for (const settings of defaults) {
+      const out = run({ month: "2026-11", rules: [bStd, bChild], lines, marks, settings });
+      expect(out.line_results.map((r) => [r.id, r.segment, r.rule_id])).toEqual([
+        [dayBefore.id, "child", bChild.id],
+        [birthday.id, "standard", bStd.id],
+        [marked.id, "child", bChild.id],
+        [adult.id, "standard", bStd.id],
+      ]);
+      expect(component(out, bChild.id)).toMatchObject({ lines_count: 2, base_cents: TL(20_000), amount_cents: TL(6_400) });
+      expect(component(out, bStd.id)).toMatchObject({ lines_count: 2, base_cents: TL(20_000), amount_cents: TL(5_000) });
+      expect(payeeTotal(out, "u-b")).toBe(TL(11_400));
+    }
+    expect(HK_DEFAULT_CHILD_AGE_LIMIT).toBe(14);
+  });
+
+  it("uses settings.child_age_limit, with 29 February birthdays reached on 1 March", () => {
+    const bStd = rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "standard", share_bp: 2500 });
+    const bChild = rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "child", share_bp: 3200 });
+    const marks: HkComputeMark[] = [
+      { patient_ref: "subat 1", own_doctor_id: null, is_child: false, birth_date: "2012-02-29" },
+    ];
+    const feb = line({ doctor_id: "doc-b", patient_ref: "subat 1", day: "2027-02-28", try_cents: TL(1_000) });
+    const mar = line({ doctor_id: "doc-b", patient_ref: "subat 1", day: "2027-03-01", try_cents: TL(1_000) });
+    const at = (month: string, child_age_limit?: number) =>
+      run({ month, rules: [bStd, bChild], lines: [feb, mar], marks, settings: { child_age_limit } });
+
+    // Limit 15: 14 on 28 February 2027 (child), 15 on 1 March 2027 (standard).
+    expect(at("2027-02", 15).line_results).toEqual([{ id: feb.id, segment: "child", rule_id: bChild.id, lab_part: 0 }]);
+    expect(at("2027-03", 15).line_results).toEqual([{ id: mar.id, segment: "standard", rule_id: bStd.id, lab_part: 0 }]);
+    expect(payeeTotal(at("2027-02", 15), "u-b")).toBe(TL(320));
+    expect(payeeTotal(at("2027-03", 15), "u-b")).toBe(TL(250));
+    // Default 14: both are standard.
+    expect(at("2027-02").line_results[0].segment).toBe("standard");
+    // A child line without a child rule falls back to the standard rule.
+    const out = run({ month: "2027-02", rules: [bStd], lines: [feb], marks, settings: { child_age_limit: 15 } });
+    expect(out.line_results[0]).toMatchObject({ segment: "child", rule_id: bStd.id });
+  });
+
+  it("checks the limit and birth date inputs", () => {
+    expect(childAgeLimitOf(undefined)).toBe(14);
+    expect(childAgeLimitOf({ child_age_limit: null })).toBe(14);
+    expect(childAgeLimitOf({ child_age_limit: 12 })).toBe(12);
+    expect(validateChildAgeLimit(1)).toBeNull();
+    expect(validateChildAgeLimit(18)).toBeNull();
+    for (const bad of [0, 19, 12.5, Number.NaN, null]) expect(validateChildAgeLimit(bad)).not.toBeNull();
+
+    const today = "2026-10-18";
+    expect(validateBirthDate("", today)).toBeNull();
+    expect(validateBirthDate(null, today)).toBeNull();
+    expect(validateBirthDate("2026-10-18", today)).toBeNull();
+    expect(validateBirthDate("1900-01-01", today)).toBeNull();
+    expect(validateBirthDate("2024-02-29", today)).toBeNull();
+    expect(validateBirthDate("2026-10-19", today)).toBe("Doğum tarihi bugünden sonra olamaz.");
+    expect(validateBirthDate("1899-12-31", today)).toBe("Doğum tarihi 1900'den önce olamaz.");
+    expect(validateBirthDate("2025-02-29", today)).toBe("Doğum tarihi geçersiz.");
+    expect(validateBirthDate("18.10.2020", today)).toBe("Doğum tarihi geçersiz.");
   });
 });
 
@@ -742,5 +955,65 @@ describe("validateRule", () => {
       })
     ).toBeNull();
     expect(validateRule({ ...base, kind: "ortho_lab_first", doctor_id: null })).toBe("Hekimi seçin.");
+  });
+});
+
+describe("RPC wrappers (v1.1)", () => {
+  beforeEach(() => {
+    rpcMock.mockReset();
+    rpcMock.mockResolvedValue({ data: { already_saved: false, record: {} }, error: null });
+  });
+
+  it("sends the settings, mark and reception marking arguments by name", async () => {
+    await finHkSaveSettings({ p_version: 3, p_child_age_limit: 12 });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_settings", { p_version: 3, p_child_age_limit: 12 });
+
+    const mark = {
+      p_id: "m-1",
+      p_version: 0,
+      p_patient_ref: null,
+      p_patient_name: "Hasta Bir",
+      p_own_doctor_id: "doc-c",
+      p_birth_date: "2015-04-01",
+    };
+    await hkSaveMark(mark);
+    expect(rpcMock).toHaveBeenLastCalledWith("hk_save_mark", mark);
+
+    await finHkSaveMark({ ...mark, p_is_child: false, p_note: "" });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_mark", { ...mark, p_is_child: false, p_note: "" });
+
+    rpcMock.mockResolvedValueOnce({ data: [{ id: "m-1" }], error: null });
+    expect(await hkMarksList("  Hasta ")).toEqual([{ id: "m-1" }]);
+    expect(rpcMock).toHaveBeenLastCalledWith("hk_marks_list", { p_query: "Hasta" });
+    rpcMock.mockResolvedValueOnce({ data: [{ id: "m-2" }], error: null });
+    expect(await hkMarksList("")).toEqual([{ id: "m-2" }]);
+    expect(rpcMock).toHaveBeenLastCalledWith("hk_marks_list", { p_query: "" });
+    rpcMock.mockResolvedValueOnce({ data: null, error: null });
+    expect(await hkMarksList("x")).toEqual([]);
+
+    const access = { can_mark: true, doctors: [{ id: "doc-c", name: "Hekim C" }] };
+    rpcMock.mockResolvedValueOnce({ data: access, error: null });
+    expect(await hkMarksAccess()).toEqual(access);
+    expect(rpcMock).toHaveBeenLastCalledWith("hk_marks_access");
+    rpcMock.mockResolvedValueOnce({ data: null, error: null });
+    expect(await hkMarksAccess()).toEqual({ can_mark: false, doctors: [] });
+  });
+
+  it("turns a refusal into a FinanceError with the server text", async () => {
+    const message = "Bu hastanın kapanmış ayda ödemesi var; değişikliği klinik sahibi yapabilir.";
+    // hk_save_mark raises the closed-month lock with the default code (P0001), a missing right with 42501.
+    rpcMock.mockResolvedValueOnce({ data: null, error: { message, code: "P0001" } });
+    const args = {
+      p_id: "m-1",
+      p_version: 2,
+      p_patient_ref: "hasta bir",
+      p_patient_name: "Hasta Bir",
+      p_own_doctor_id: null,
+      p_birth_date: null,
+    };
+    await expect(hkSaveMark(args)).rejects.toMatchObject({ message, code: "P0001", isForbidden: false });
+    const forbidden = "Hasta işaretlerini değiştirme yetkiniz yok.";
+    rpcMock.mockResolvedValueOnce({ data: null, error: { message: forbidden, code: "42501" } });
+    await expect(hkSaveMark(args)).rejects.toMatchObject({ message: forbidden, isForbidden: true });
   });
 });
