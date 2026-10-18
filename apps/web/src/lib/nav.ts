@@ -41,6 +41,8 @@ export const MENU_ITEMS: readonly MenuItem[] = [
   { name: "📈 Raporlar", href: "/reports" },
   // Finance pages require 'finance' or 'finance_readonly' (FinanceShell); the role alone gives nothing.
   { name: "💰 Finans", href: "/finance", match: "/finance", visible: canSeeFinance },
+  // The doctor's own hakediş (hk_my_* RPCs: only the caller's figures). Doctors and the owner; see SECTIONS_CLOSED_FOR.
+  { name: "💼 Hakedişim", href: "/hakedisim" },
   { name: "⚙️ Ayarlar", href: "/settings" },
 ];
 
@@ -48,11 +50,13 @@ export const MENU_ITEMS: readonly MenuItem[] = [
  * Sections a role does not use (owner's choice, 2026-10-16: assistants work on the agenda, patients, stock, lab and
  * implants, not on CRM, staff or reports). Such a section is left out of that role's menu, and the section's own
  * layout (app/(panel)/<section>/layout.tsx) refuses the role, so a typed address does not open it either.
+ * Hakedişim is for the payees only: doctors and the owner (management share); reception has no hakediş.
  */
 export const SECTIONS_CLOSED_FOR: Readonly<Record<string, readonly UserRole[]>> = {
   "/crm": ["assistant"],
   "/team": ["assistant"],
   "/reports": ["assistant"],
+  "/hakedisim": ["reception", "assistant", "admin"],
 };
 
 function sectionOf(href: string): string | undefined {

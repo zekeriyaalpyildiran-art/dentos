@@ -132,6 +132,7 @@ describe("formatAuditValue", () => {
 
   it("labels", () => {
     expect(entityLabel("fin_entries")).toBe("Finans kaydı");
+    expect(entityLabel("fin_hk_lines")).toBe("Hakediş tahsilat satırı");
     expect(entityLabel("something_new")).toBe("something_new");
     expect(fieldLabel("payments", "status")).toBe("Ödeme durumu");
     expect(fieldLabel("users", "status")).toBe("Durum");

@@ -1,0 +1,334 @@
+"use client";
+
+// Shared pieces of the finance Hakediş pages (/finance/hakedis, /rules, /lines): reference data, the month in the
+// address (?month=YYYY-MM, kept when switching between the three pages), the sub-tabs, the month picker and the
+// void dialog of lines / pieces / lab costs.
+
+import Link from "next/link";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+import {
+  HK_METHODS,
+  METHOD_LABELS,
+  addMonths,
+  componentTitle,
+  finHkReference,
+  formatBp,
+  monthKey,
+  pickDefaultMonth,
+  type HkMonthStatus,
+  type HkMyComponentJson,
+  type HkReferenceJson,
+} from "@/lib/hakedis";
+import { formatMonth, formatTL, isMonth, toFinanceError, type FinanceError } from "@/lib/finance";
+import { ErrorBox, Field, Modal, buttonDanger, buttonSecondary, inputClass } from "./ui";
+
+/** Loads fin_hk_reference (doctors, payees, rules, month rows, lab names). */
+export function useHkReference() {
+  const [data, setData] = useState<HkReferenceJson | null>(null);
+  const [error, setError] = useState<FinanceError | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const next = await finHkReference();
+      setData(next);
+      setError(null);
+      return next;
+    } catch (err) {
+      setError(toFinanceError(err));
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  return { data, error, loading, reload };
+}
+
+/**
+ * The month of the page ('YYYY-MM'): ?month= when valid, else the §2 default (the previous month while it is open,
+ * else the current one). null until the reference data is loaded. Needs a Suspense boundary (useSearchParams).
+ */
+export function useHkMonth(ref: HkReferenceJson | null): [string | null, (month: string) => void] {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const raw = searchParams.get("month");
+  const fallback = ref ? pickDefaultMonth(ref.current_month, ref.months) : null;
+  const month = raw && isMonth(raw) ? raw : fallback;
+
+  const setMonth = useCallback(
+    (next: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("month", monthKey(next));
+      router.replace(`${pathname}?${params.toString()}`);
+    },
+    [router, pathname, searchParams]
+  );
+  return [month, setMonth];
+}
+
+const SUB_TABS = [
+  { href: "/finance/hakedis", label: "Ay özeti", keepMonth: true },
+  { href: "/finance/hakedis/lines", label: "Satırlar ve hastalar", keepMonth: true },
+  { href: "/finance/hakedis/rules", label: "Kurallar", keepMonth: false },
+];
+
+/** Ay özeti / Satırlar ve hastalar / Kurallar; the chosen month travels along. */
+export function HakedisTabs({ month }: { month?: string | null }) {
+  const pathname = usePathname();
+  return (
+    <div className="flex flex-wrap gap-2" role="navigation" aria-label="Hakediş sayfaları">
+      {SUB_TABS.map((tab) => {
+        const active = pathname === tab.href;
+        const href = tab.keepMonth && month ? `${tab.href}?month=${monthKey(month)}` : tab.href;
+        return (
+          <Link
+            key={tab.href}
+            href={href}
+            aria-current={active ? "page" : undefined}
+            className={`px-3 py-1.5 rounded border text-sm ${
+              active ? "bg-gray-900 text-white border-gray-900" : "bg-white text-gray-800 border-gray-300 hover:bg-gray-50"
+            }`}
+          >
+            {tab.label}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+/** ← month → with a native month input; never after `max` (the current month). */
+export function MonthPicker({
+  month,
+  max,
+  onChange,
+  disabled,
+}: {
+  month: string;
+  max?: string;
+  onChange: (month: string) => void;
+  disabled?: boolean;
+}) {
+  const maxKey = max ? monthKey(max) : undefined;
+  const nextMonth = addMonths(month, 1);
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        className="px-3 py-2 border border-gray-300 text-gray-800 rounded hover:bg-gray-50 disabled:opacity-40"
+        onClick={() => onChange(addMonths(month, -1))}
+        disabled={disabled}
+        aria-label="Önceki ay"
+      >
+        ←
+      </button>
+      <label className="flex items-center gap-2">
+        <span className="sr-only">Ay</span>
+        <input
+          type="month"
+          className="px-3 py-2 border rounded bg-white text-gray-900"
+          value={monthKey(month)}
+          max={maxKey}
+          disabled={disabled}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (isMonth(v) && (!maxKey || v <= maxKey)) onChange(v);
+          }}
+        />
+      </label>
+      <button
+        type="button"
+        className="px-3 py-2 border border-gray-300 text-gray-800 rounded hover:bg-gray-50 disabled:opacity-40"
+        onClick={() => onChange(nextMonth)}
+        disabled={disabled || (!!maxKey && nextMonth > maxKey)}
+        aria-label="Sonraki ay"
+      >
+        →
+      </button>
+      <span className="text-sm text-gray-600 capitalize">{formatMonth(monthKey(month))}</span>
+    </div>
+  );
+}
+
+export function MonthStatusBadge({ status }: { status: HkMonthStatus }) {
+  return status === "closed" ? (
+    <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Kapatıldı</span>
+  ) : (
+    <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">Açık</span>
+  );
+}
+
+/** 'İptal et' for a line, a piece or a lab cost: a reason of 3..500 characters; the row stays, struck through. */
+export function HkVoidDialog({
+  title,
+  body,
+  onVoid,
+  onDone,
+  onClose,
+  onReload,
+}: {
+  title: string;
+  body: string;
+  onVoid: (reason: string) => Promise<{ already_saved: boolean }>;
+  onDone: (message: string) => void | Promise<void>;
+  onClose: () => void;
+  onReload: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
+  const [error, setError] = useState<FinanceError | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (ev: React.FormEvent) => {
+    ev.preventDefault();
+    setFormError(null);
+    setError(null);
+    const trimmed = reason.trim();
+    if (trimmed.length < 3 || trimmed.length > 500) return setFormError("Gerekçe en az 3, en fazla 500 karakter olmalı.");
+    setBusy(true);
+    try {
+      const res = await onVoid(trimmed);
+      await onDone(res.already_saved ? "Kayıt zaten iptal edilmişti." : "Kayıt iptal edildi.");
+    } catch (err) {
+      setError(toFinanceError(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={title} onClose={onClose} busy={busy}>
+      <form onSubmit={submit} className="space-y-4">
+        <p className="text-sm text-gray-700">{body}</p>
+        <Field label="Gerekçe" hint="En az 3, en fazla 500 karakter.">
+          <textarea className={inputClass} rows={3} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} required />
+        </Field>
+        {formError && <div className="p-3 rounded bg-red-50 text-red-700 text-sm">{formError}</div>}
+        <ErrorBox error={error} onReload={onReload} />
+        <div className="flex gap-2">
+          <button type="submit" className={buttonDanger} disabled={busy}>
+            {busy ? "Kaydediliyor..." : "İptal et"}
+          </button>
+          <button type="button" className={buttonSecondary} onClick={onClose} disabled={busy}>
+            Vazgeç
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * How one component of a payee was computed: per payment method gross → implant part → lab part → deduction → net,
+ * then matrah × rate; implants qty × amount; management share on the clinic's gross ciro; ortho lab totals per patient.
+ * Used by the finance month page and by Hakedişim (where the management component carries base and amount only).
+ */
+export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
+  const methods = c.by_method ? HK_METHODS.filter((m) => c.by_method && (c.by_method[m].gross !== 0 || c.by_method[m].lab !== 0)) : [];
+  return (
+    <div className="rounded border bg-gray-50 p-3 text-sm text-gray-900 space-y-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="font-semibold">{componentTitle(c)}</span>
+        <span className="font-semibold tabular-nums">{formatTL(c.amount_cents)}</span>
+      </div>
+      {c.by_method && (
+        <>
+          {methods.length === 0 ? (
+            <p className="text-gray-500">Bu ay bu kurala giren tahsilat yok.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs md:text-sm">
+                <thead>
+                  <tr className="text-left text-gray-600 border-b">
+                    <th className="py-1 pr-3 font-medium">Ödeme şekli</th>
+                    <th className="py-1 pr-3 font-medium text-right">Brüt</th>
+                    <th className="py-1 pr-3 font-medium text-right">İmplant payı</th>
+                    <th className="py-1 pr-3 font-medium text-right">Lab</th>
+                    <th className="py-1 pr-3 font-medium text-right">Hesaba giren</th>
+                    <th className="py-1 pr-3 font-medium text-right">Kesinti</th>
+                    <th className="py-1 font-medium text-right">Net</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {methods.map((m) => {
+                    const b = c.by_method![m];
+                    return (
+                      <tr key={m} className="border-b last:border-b-0">
+                        <td className="py-1 pr-3 whitespace-nowrap">{METHOD_LABELS[m]}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{formatTL(b.gross)}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{b.implant ? formatTL(-b.implant) : "—"}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{b.lab ? formatTL(-b.lab) : "—"}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{formatTL(b.eligible)}</td>
+                        <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">
+                          {b.deduction ? `${formatTL(-b.deduction)} (${formatBp(b.deduct_bp)})` : formatBp(b.deduct_bp)}
+                        </td>
+                        <td className="py-1 text-right tabular-nums whitespace-nowrap">{formatTL(b.eligible - b.deduction)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="text-gray-700">
+            Matrah {formatTL(c.base_cents ?? 0)} × {formatBp(c.share_bp)} = <strong>{formatTL(c.amount_cents)}</strong>
+            {typeof c.lines_count === "number" ? ` · ${c.lines_count} satır` : ""}
+          </p>
+        </>
+      )}
+      {c.kind === "implant_piece" && (
+        <p className="text-gray-700">
+          {c.qty ?? 0} implant × {formatTL(c.piece_cents)} = <strong>{formatTL(c.amount_cents)}</strong>
+        </p>
+      )}
+      {c.kind === "clinic_ciro_share" && (
+        <p className="text-gray-700">
+          Klinik cirosu (brüt, tüm hekimler) {formatTL(c.base_cents ?? 0)} × {formatBp(c.share_bp)} ={" "}
+          <strong>{formatTL(c.amount_cents)}</strong>
+        </p>
+      )}
+      {c.kind === "ortho_lab_first" && c.lab_patients && c.lab_patients.length > 0 && <LabPatientsTable rows={c.lab_patients} />}
+    </div>
+  );
+}
+
+/** Ortho lab-first: per patient, lab costs to date, recovered from payments so far, still to recover. */
+export function LabPatientsTable({
+  rows,
+}: {
+  rows: readonly { patient_ref: string; patient_name: string; lab_total_cents: number; recovered_cents: number; remaining_cents: number }[];
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs md:text-sm">
+        <thead>
+          <tr className="text-left text-gray-600 border-b">
+            <th className="py-1 pr-3 font-medium">Hasta</th>
+            <th className="py-1 pr-3 font-medium text-right">Toplam lab</th>
+            <th className="py-1 pr-3 font-medium text-right">Karşılanan</th>
+            <th className="py-1 font-medium text-right">Kalan</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.patient_ref} className="border-b last:border-b-0">
+              <td className="py-1 pr-3">{r.patient_name}</td>
+              <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{formatTL(r.lab_total_cents)}</td>
+              <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{formatTL(r.recovered_cents)}</td>
+              <td className={`py-1 text-right tabular-nums whitespace-nowrap ${r.remaining_cents > 0 ? "text-amber-700 font-medium" : ""}`}>
+                {formatTL(r.remaining_cents)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}

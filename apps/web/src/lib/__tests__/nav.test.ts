@@ -188,6 +188,42 @@ describe("sections closed for a role", () => {
   });
 });
 
+describe("Hakedişim (the payee's own hakediş)", () => {
+  it("is in the menu of doctors and the owner only, right after Finans", () => {
+    for (const role of ["doctor", "owner"]) expect(hrefs(menuItemsFor(user(role))), role).toContain("/hakedisim");
+    for (const role of ["reception", "assistant", "admin"]) {
+      expect(hrefs(menuItemsFor(user(role, ["finance"]))), role).not.toContain("/hakedisim");
+    }
+    const list = hrefs(menuItemsFor(user("owner", ["finance"])));
+    expect(list.indexOf("/hakedisim")).toBe(list.indexOf("/finance") + 1);
+    expect(MENU_ITEMS.find((i) => i.href === "/hakedisim")?.name).toBe("💼 Hakedişim");
+  });
+
+  it("is closed to reception, assistants and admins, typed addresses included", () => {
+    expect([...rolesAllowedFor("/hakedisim")].sort()).toEqual(["doctor", "owner"]);
+    for (const role of ["reception", "assistant", "admin"]) {
+      for (const href of ["/hakedisim", "/hakedisim?month=2026-11"]) expect(canOpenPath(role, href), `${role} ${href}`).toBe(false);
+    }
+    for (const role of ["doctor", "owner"]) expect(canOpenPath(role, "/hakedisim"), role).toBe(true);
+    // The finance Hakediş pages are gated by the finance permission, not by this section.
+    expect(canOpenPath("reception", "/finance/hakedis")).toBe(true);
+    expect(canOpenPath("assistant", "/hakedisimx")).toBe(true);
+  });
+
+  it("does not change anyone's start page", () => {
+    for (const role of STAFF_ROLES) expect(homePathFor(role).startsWith("/hakedisim"), role).toBe(false);
+    expect(homePathForUser({ role: "doctor", permissions: [] })).toBe(ROLE_HOME.doctor);
+  });
+
+  it("reads only the self-service RPCs (no finance permission needed, only the caller's figures)", () => {
+    const src = pageSource("/hakedisim");
+    expect(src).not.toBeNull();
+    expect(src).toMatch(/\bhkMyMonths\(/);
+    expect(src).toMatch(/\bhkMyMonth\(/);
+    expect(src).not.toMatch(/\bfinHk[A-Z]\w*\(|FinanceShell|requiredPermission/);
+  });
+});
+
 describe("canOpenPath (links from shared pages)", () => {
   it("refuses assistants every path of CRM, Ekip and Raporlar, query and fragment ignored", () => {
     for (const href of [

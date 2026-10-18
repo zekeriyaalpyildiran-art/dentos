@@ -123,6 +123,13 @@ export const AUDIT_ENTITY_LABELS: Record<string, string> = {
   fin_classification_rules: "Sınıflandırma kuralı",
   fin_import_layouts: "Sütun eşleştirmesi",
   fin_patient_financing: "Hasta finansmanı",
+  fin_hk_rules: "Hakediş kuralı",
+  fin_hk_lines: "Hakediş tahsilat satırı",
+  fin_hk_pieces: "Hakediş implant adedi",
+  fin_hk_patient_marks: "Hakediş hasta işareti",
+  fin_hk_lab_costs: "Hakediş lab gideri",
+  fin_hk_months: "Hakediş ayı",
+  fin_hk_statements: "Hakediş dökümü",
 };
 
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
@@ -766,7 +773,14 @@ export type AuditEntityType =
   | "fin_import_sources"
   | "fin_classification_rules"
   | "fin_import_layouts"
-  | "fin_patient_financing";
+  | "fin_patient_financing"
+  | "fin_hk_rules"
+  | "fin_hk_lines"
+  | "fin_hk_pieces"
+  | "fin_hk_patient_marks"
+  | "fin_hk_lab_costs"
+  | "fin_hk_months"
+  | "fin_hk_statements";
 
 export interface AuditFilters {
   entity_type?: AuditEntityType;
