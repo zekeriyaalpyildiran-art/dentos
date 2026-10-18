@@ -1,7 +1,9 @@
 // Hakediş (doctor earnings) v1 client helpers: labels, bp / percent and month helpers, typed RPC wrappers and a pure
 // mirror of fin_hk__compute. Contract: hakediş spec §1 (fin_hk_* / hk_* RPCs, 0030_hakedis.sql) and §2, with the
 // v1.1 additions: child patients by birth date (fin_settings.hk_child_age_limit, fin_hk_patient_marks.birth_date) and
-// the reception's patient marking RPCs (hk_marks_*, hk_save_mark; no amounts).
+// the reception's patient marking RPCs (hk_marks_*, hk_save_mark; no amounts), and v1.2 (0031_hakedis_payroll.sql):
+// staff payroll (rule kind fixed_monthly = monthly net salary, monthly bonus / other adjustments in
+// fin_hk_adjustments) and the 'hakedis_prepare' permission (fin_hk_* data entry without the ledger).
 // Every rate and amount is data entered by the owner (basis points and integer cents); nothing here is hard-coded.
 // Month arguments are sent as 'YYYY-MM-01' dates; month values read back may be 'YYYY-MM' or 'YYYY-MM-DD', so every
 // helper compares them through monthKey().
@@ -16,7 +18,12 @@ import { createClient } from "./supabase";
 
 export type HkMethod = PaymentMethod;
 export type HkCurrency = Currency;
-export type HkKind = "ciro_share" | "ortho_lab_first" | "implant_piece" | "clinic_ciro_share";
+/** Rule kinds (fin_hk_rules.kind). fixed_monthly (0031): monthly net salary of any active user, in piece_cents. */
+export type HkKind = "ciro_share" | "ortho_lab_first" | "implant_piece" | "clinic_ciro_share" | "fixed_monthly";
+/** Component kinds of a payee: one per active rule, plus one 'adjustments' component (no rule) for the month's bonuses. */
+export type HkComponentKind = HkKind | "adjustments";
+/** fin_hk_adjustments.kind (0031): bonus, or anything else (negative = deduction). */
+export type HkAdjustmentKind = "bonus" | "other";
 export type HkSegment = "standard" | "child" | "own";
 /** Lines: manual / import / burgan; pieces: manual / import / clinical (0030 CHECKs). */
 export type HkSource = "manual" | "import" | "burgan" | "clinical";
@@ -25,7 +32,15 @@ export type HkMonthStatus = "open" | "closed";
 /** Display order everywhere (tables, by_method columns). */
 export const HK_METHODS: readonly HkMethod[] = ["cash", "card", "transfer", "financing"];
 export const HK_SEGMENTS: readonly HkSegment[] = ["standard", "child", "own"];
-export const HK_KINDS: readonly HkKind[] = ["ciro_share", "ortho_lab_first", "implant_piece", "clinic_ciro_share"];
+/** Rule kinds in display order; also the component order of a payee (the 'adjustments' component comes last). */
+export const HK_KINDS: readonly HkKind[] = [
+  "ciro_share",
+  "ortho_lab_first",
+  "implant_piece",
+  "clinic_ciro_share",
+  "fixed_monthly",
+];
+export const HK_ADJUSTMENT_KINDS: readonly HkAdjustmentKind[] = ["bonus", "other"];
 
 export const METHOD_LABELS: Record<HkMethod, string> = {
   cash: "Nakit",
@@ -45,7 +60,16 @@ export const KIND_LABELS: Record<HkKind, string> = {
   ortho_lab_first: "Ortodonti (önce lab)",
   implant_piece: "İmplant (adet başı)",
   clinic_ciro_share: "Yönetim payı (klinik cirosu)",
+  fixed_monthly: "Sabit aylık maaş",
 };
+
+export const ADJUSTMENT_KIND_LABELS: Record<HkAdjustmentKind, string> = {
+  bonus: "Prim",
+  other: "Diğer",
+};
+
+/** Title of a payee's 'adjustments' component (the month's bonus / other rows together). */
+export const ADJUSTMENTS_COMPONENT_LABEL = "Prim ve diğer";
 
 export const MONTH_STATUS_LABELS: Record<HkMonthStatus, string> = {
   open: "Açık",
@@ -68,7 +92,14 @@ export const RULE_FIELDS: Record<
   ortho_lab_first: { doctor: true, segment: false, share: true, piece: false, deductions: true },
   implant_piece: { doctor: true, segment: false, share: false, piece: true, deductions: false },
   clinic_ciro_share: { doctor: false, segment: false, share: true, piece: false, deductions: false },
+  // piece_cents holds the monthly net salary; the payee may be any active user of the clinic (staff or doctor).
+  fixed_monthly: { doctor: false, segment: false, share: false, piece: true, deductions: false },
 };
+
+/** Label of the piece_cents field of a rule kind that uses it (rules editor). */
+export function pieceFieldLabel(kind: HkKind): string {
+  return kind === "fixed_monthly" ? "Aylık net maaş (TL)" : "İmplant başı tutar (TL)";
+}
 
 const DEDUCT_FIELD: Record<
   HkMethod,
@@ -281,7 +312,10 @@ export interface HkDoctorRefJson {
   is_active: boolean;
 }
 
-/** Users of the clinic that have a doctors row, plus the owner. */
+/**
+ * Possible payees: users of the clinic that have a doctors row, plus the owner; from 0031 any active user may be a
+ * payroll payee (fixed_monthly rule, bonus). doctor_id null = staff without a doctors row.
+ */
 export interface HkPayeeRefJson {
   user_id: string;
   name: string;
@@ -304,7 +338,7 @@ export interface HkRuleJson {
   segment: HkSegment | null;
   /** ciro_share / ortho_lab_first / clinic_ciro_share: 1..10000 */
   share_bp: number | null;
-  /** implant_piece only */
+  /** implant_piece: amount per implant; fixed_monthly: monthly net salary; null otherwise */
   piece_cents: number | null;
   /** 0 unless ciro_share / ortho_lab_first */
   deduct_cash_bp: number;
@@ -345,11 +379,16 @@ export interface HkSettingsJson {
 export interface HkReferenceJson {
   today: string;
   current_month: string;
-  /** 'finance' (write controls) */
+  /** 'finance': rules, settings, month close (write controls of the finance pages) */
   can_write: boolean;
+  /** 'finance' or 'hakedis_prepare' (0031): lines, pieces, marks, lab costs and adjustments in open months */
+  can_prepare: boolean;
+  /** 'finance' or 'finance_readonly' (0031): ledger data (statement entries, paid / remaining) is in the month payload */
+  ledger_visible: boolean;
   /** clinic owner (reopen) */
   is_owner: boolean;
   doctors: HkDoctorRefJson[];
+  /** every user of the clinic (0031), inactive ones flagged; hakediş rules need a doctors row or the owner role */
   payees: HkPayeeRefJson[];
   rules: HkRuleJson[];
   months: HkMonthRefJson[];
@@ -486,6 +525,28 @@ export interface HkLabCostJson extends HkVoidable, HkStamped {
   description: string;
 }
 
+/** A monthly bonus / other row of a payee (fin_hk_adjustments, 0031). */
+export interface HkAdjustmentJson extends HkVoidable, HkStamped {
+  id: string;
+  version: number;
+  /** 1st of month */
+  month: string;
+  payee_user_id: string;
+  payee_name: string;
+  kind: HkAdjustmentKind;
+  /** TL cents, never 0; negative = deduction */
+  amount_cents: number;
+  description: string;
+}
+
+/** A live adjustment inside a payee's 'adjustments' component. */
+export interface HkAdjustmentItemJson {
+  id: string;
+  kind: HkAdjustmentKind;
+  amount_cents: number;
+  description: string;
+}
+
 /** by_method bucket of a ciro_share / ortho_lab_first component (all cents except deduct_bp). */
 export interface HkMethodBucketJson {
   gross: number;
@@ -514,35 +575,69 @@ export interface HkLabPatientJson {
   recovered_in_month_cents?: number;
 }
 
-export interface HkComponentJson {
+/** A component computed from one active rule (every kind, fixed_monthly included: 13 keys in the SQL payload). */
+export interface HkRuleComponentJson {
   rule_id: string;
   kind: HkKind;
   doctor_id: string | null;
   doctor_name: string | null;
   segment: HkSegment | null;
   share_bp: number | null;
+  /** implant_piece: amount per implant; fixed_monthly: the monthly net salary */
   piece_cents: number | null;
   /** ciro_share / ortho_lab_first only */
   by_method: HkByMethodJson | null;
   /**
    * matrah: Σ(eligible − deduction) for ciro / ortho, gross clinic ciro for clinic_ciro_share; implant_piece: null in
-   * the SQL payload, 0 from computeMonth
+   * the SQL payload, 0 from computeMonth; fixed_monthly: null
    */
   base_cents: number | null;
+  /** fixed_monthly: the salary (= piece_cents) */
   amount_cents: number;
   /** implant_piece only: Σ qty */
   qty: number | null;
+  /** fixed_monthly: 0 */
   lines_count: number;
   /** ortho_lab_first only (null / absent otherwise) */
   lab_patients?: HkLabPatientJson[] | null;
+  items?: undefined;
 }
+
+/**
+ * The month's live bonus / other rows of a payee (0031), one component after the rule components. The SQL payload
+ * carries exactly these three keys (no rule_id, no lines_count); computeMonth builds the same object.
+ */
+export interface HkAdjustmentsComponentJson {
+  kind: "adjustments";
+  /** Σ items (may be 0 when the rows cancel out) */
+  amount_cents: number;
+  /** oldest first (created_at, id) */
+  items: HkAdjustmentItemJson[];
+  rule_id?: undefined;
+  doctor_id?: undefined;
+  doctor_name?: undefined;
+  segment?: undefined;
+  share_bp?: undefined;
+  piece_cents?: undefined;
+  by_method?: undefined;
+  base_cents?: undefined;
+  qty?: undefined;
+  lines_count?: undefined;
+  lab_patients?: undefined;
+}
+
+/** One component of a payee: one per active rule, plus one 'adjustments' component when the month has live rows. */
+export type HkComponentJson = HkRuleComponentJson | HkAdjustmentsComponentJson;
 
 export interface HkPayeeJson {
   payee_user_id: string;
   payee_name: string;
-  /** the payee's doctors row (SQL payload; not in hk_my_month) */
+  /** the payee's doctors row; null for staff (SQL payload; not in hk_my_month) */
   doctor_id?: string | null;
-  /** the payee's physician counterparty (SQL payload; not in hk_my_month) */
+  /**
+   * the payee's physician counterparty, or for staff (0031) the staff counterparty linked to the user (SQL payload;
+   * left out when ledger_visible is false, and not in hk_my_month)
+   */
   counterparty_id?: string | null;
   total_cents: number;
   components: HkComponentJson[];
@@ -577,7 +672,10 @@ export interface HkStatementJson {
   /** the payee object frozen at close */
   breakdown: HkPayeeJson;
   fin_entry_id: string | null;
-  /** the linked entitlement entry now (null when the total was 0) */
+  /**
+   * the linked ledger entry now: the doctor's entitlement entry, or the staff payroll entry (0031, personnel bucket).
+   * Null when the total was 0, and always null for callers without a finance permission ('hakedis_prepare' only).
+   */
   entry: {
     id: string;
     version: number;
@@ -597,6 +695,13 @@ export interface HkMonthPayload extends HkComputeResult {
   today: string;
   current_month: string;
   can_write: boolean;
+  /** 'finance' or 'hakedis_prepare' (0031) */
+  can_prepare: boolean;
+  /**
+   * 'finance' or 'finance_readonly' (0031). False ('hakedis_prepare' only): no counterparty ids, no NO_COUNTERPARTY
+   * warnings, statement entries null (fin_entry_id stays).
+   */
+  ledger_visible: boolean;
   is_owner: boolean;
   /** the month is before the current month */
   is_closable: boolean;
@@ -614,6 +719,8 @@ export interface HkMonthPayload extends HkComputeResult {
   lines: HkLineJson[];
   pieces: HkPieceJson[];
   lab_costs: HkLabCostJson[];
+  /** the month's bonus / other rows of every payee, voided ones included (0031) */
+  adjustments: HkAdjustmentJson[];
 }
 
 /** Save / void result (fin_save_account pattern: a retry with the same id returns already_saved). */
@@ -680,7 +787,10 @@ export interface HkMyLabCostJson {
   amount_cents: number;
 }
 
-/** hk_my_month component: a clinic_ciro_share one carries only rule_id, kind, share_bp, base_cents, amount_cents. */
+/**
+ * hk_my_month component: a clinic_ciro_share one carries only rule_id, kind, share_bp, base_cents, amount_cents; the
+ * others (fixed_monthly and adjustments included, 0031) come whole.
+ */
 export type HkMyComponentJson = Pick<HkComponentJson, "rule_id" | "kind" | "amount_cents"> &
   Partial<Omit<HkComponentJson, "rule_id" | "kind" | "amount_cents">>;
 
@@ -707,7 +817,10 @@ export interface HkMyMonthData {
   lab_costs: HkMyLabCostJson[];
   /** closed months: the caller's active statement */
   statement: { total_cents: number; closed_at: string } | null;
-  /** the caller's entitlement entry of the month, when one exists */
+  /**
+   * the caller's ledger entry of the month, when one exists: the entitlement entry, or for a payee without a doctors
+   * row the payroll entry (0031)
+   */
   entitlement: { amount_cents: number; paid_cents: number; remaining_cents: number; is_cancelled: boolean } | null;
 }
 
@@ -734,7 +847,8 @@ async function rpc<T>(name: string, args?: Record<string, unknown>): Promise<T> 
   return result.data as T;
 }
 
-// Finance holders (fin__require_read): 'finance' or 'finance_readonly'.
+// Readers: 'finance' or 'finance_readonly', and from 0031 'hakedis_prepare' (fin__hk_require_prep_read; without the
+// ledger: no paid / remaining amounts, no entry details).
 
 export function finHkReference() {
   return rpc<HkReferenceJson>("fin_hk_reference");
@@ -750,7 +864,8 @@ export async function finHkMarks(): Promise<HkMarkJson[]> {
   return Array.isArray(data) ? data : data?.marks ?? [];
 }
 
-// Writes (fin__require_write: 'finance'). p_version 0 = create with the client-generated p_id.
+// Writes. p_version 0 = create with the client-generated p_id. Lines, pieces, marks, lab costs and adjustments:
+// 'finance' or 'hakedis_prepare' (0031, open months only); rules, settings, close: 'finance'; reopen: the owner.
 
 export interface HkSaveRuleArgs {
   p_id: string;
@@ -870,7 +985,33 @@ export function finHkVoidLabCost(args: HkVoidArgs) {
   return rpc<HkWriteResult<HkLabCostJson>>("fin_hk_void_lab_cost", { ...args });
 }
 
-/** Closes a past open month; refuses UNRULED warnings unless p_accept_unruled. Creates / updates entitlement entries. */
+export interface HkSaveAdjustmentArgs {
+  p_id: string;
+  /** 0 = create with the client-generated p_id */
+  p_version: number;
+  /** 'YYYY-MM' or 'YYYY-MM-01'; a closed month (or one before a later closed month) is refused */
+  p_month: string;
+  p_payee_user_id: string;
+  p_kind: HkAdjustmentKind;
+  /** TL cents, never 0; negative = deduction */
+  p_amount_cents: number;
+  /** 1..500 characters */
+  p_description: string;
+}
+
+/** Monthly bonus / other row of a payee (0031). */
+export function finHkSaveAdjustment(args: HkSaveAdjustmentArgs) {
+  return rpc<HkWriteResult<HkAdjustmentJson>>("fin_hk_save_adjustment", { ...args, p_month: monthStart(args.p_month) });
+}
+
+export function finHkVoidAdjustment(args: HkVoidArgs) {
+  return rpc<HkWriteResult<HkAdjustmentJson>>("fin_hk_void_adjustment", { ...args });
+}
+
+/**
+ * Closes a past open month; refuses UNRULED warnings unless p_accept_unruled. Creates / updates the doctors'
+ * entitlement entries and (0031) one payroll entry per staff payee in the personnel category.
+ */
 export function finHkCloseMonth(args: { p_month: string; p_version: number; p_accept_unruled: boolean }) {
   return rpc<HkMonthPayload>("fin_hk_close_month", { ...args, p_month: monthStart(args.p_month) });
 }
@@ -959,14 +1100,15 @@ export interface HkRuleInput {
 export function validateRule(r: HkRuleInput): string | null {
   const f = RULE_FIELDS[r.kind];
   if (!f) return "Kural türünü seçin.";
-  if (!r.payee_user_id) return "Hakediş sahibini seçin.";
+  const salary = r.kind === "fixed_monthly";
+  if (!r.payee_user_id) return salary ? "Maaş alacak kişiyi seçin." : "Hakediş sahibini seçin.";
   if (f.doctor && !r.doctor_id) return "Hekimi seçin.";
   if (f.segment && !r.segment) return "Hasta grubunu seçin.";
   if (f.share && (r.share_bp === null || !Number.isInteger(r.share_bp) || r.share_bp < 1 || r.share_bp > 10000)) {
     return "Pay oranı %0,01 ile %100 arasında olmalı.";
   }
   if (f.piece && (r.piece_cents === null || !Number.isInteger(r.piece_cents) || r.piece_cents <= 0)) {
-    return "Adet başı tutar 0'dan büyük olmalı.";
+    return salary ? "Aylık net maaş 0'dan büyük olmalı." : "Adet başı tutar 0'dan büyük olmalı.";
   }
   for (const method of HK_METHODS) {
     const bp = r[DEDUCT_FIELD[method]];
@@ -981,10 +1123,104 @@ export function validateRule(r: HkRuleInput): string | null {
   return null;
 }
 
-/** "Ciro payı · Çocuk hasta · Hekim A" */
+/**
+ * Rules that may not be active in the same month (fin_hk_save_rule overlap check): fixed_monthly per (kind, payee),
+ * every other kind per (kind, doctor, segment) regardless of the payee.
+ */
+export function ruleOverlapKey(r: Pick<HkRuleInput, "kind" | "payee_user_id" | "doctor_id" | "segment">): string {
+  return r.kind === "fixed_monthly"
+    ? `${r.kind}|${r.payee_user_id ?? ""}`
+    : `${r.kind}|${r.doctor_id ?? ""}|${r.segment ?? ""}`;
+}
+
+/** Do two month ranges (from_month … to_month inclusive, null = open-ended) share a month? */
+export function monthRangesOverlap(
+  a: { from_month: string; to_month: string | null },
+  b: { from_month: string; to_month: string | null }
+): boolean {
+  const aEndsBefore = !!a.to_month && monthKey(a.to_month) < monthKey(b.from_month);
+  const bEndsBefore = !!b.to_month && monthKey(b.to_month) < monthKey(a.from_month);
+  return !aEndsBefore && !bEndsBefore;
+}
+
+/**
+ * The saved rule (other than `rule.id`) the server would name when refusing `rule` as overlapping (the earliest by
+ * from_month, then id); undefined if none.
+ */
+export function findOverlappingRule<T extends HkRuleInput & { id: string }>(
+  rules: readonly T[],
+  rule: HkRuleInput & { id?: string | null }
+): T | undefined {
+  const key = ruleOverlapKey(rule);
+  return rules
+    .filter((r) => r.id !== rule.id && ruleOverlapKey(r) === key && monthRangesOverlap(r, rule))
+    .sort((a, b) => byText(monthKey(a.from_month), monthKey(b.from_month)) || byText(a.id, b.id))[0];
+}
+
+/** The payee's fixed_monthly rule active in the month (salary in piece_cents), if any. */
+export function salaryRuleOf<T extends Pick<HkRuleJson, "kind" | "payee_user_id" | "from_month" | "to_month">>(
+  rules: readonly T[],
+  payeeUserId: string,
+  month: string
+): T | undefined {
+  return rules.find((r) => r.kind === "fixed_monthly" && r.payee_user_id === payeeUserId && ruleActiveIn(r, month));
+}
+
+/** fin_hk_adjustments.description length limit. */
+export const HK_ADJUSTMENT_DESCRIPTION_MAX = 500;
+/** |amount_cents| limit of fin_hk_save_adjustment (10.000.000.000 TL). */
+export const HK_ADJUSTMENT_MAX_ABS_CENTS = 1_000_000_000_000;
+
+export interface HkAdjustmentInput {
+  month: string;
+  payee_user_id: string | null;
+  kind: HkAdjustmentKind | null;
+  amount_cents: number | null;
+  description: string;
+}
+
+/** Client-side mirror of the fin_hk_save_adjustment checks; null when valid. Month locks are checked by the server. */
+export function validateAdjustment(a: HkAdjustmentInput): string | null {
+  if (!MONTH_KEY_RE.test(a.month ?? "")) return "Ayı seçin.";
+  if (!a.payee_user_id) return "Kişiyi seçin.";
+  if (!a.kind || !HK_ADJUSTMENT_KINDS.includes(a.kind)) return "Türü seçin.";
+  if (a.amount_cents === null || !Number.isSafeInteger(a.amount_cents) || a.amount_cents === 0) {
+    return "Tutar 0 olamaz. Kesinti için eksi tutar girin.";
+  }
+  if (Math.abs(a.amount_cents) > HK_ADJUSTMENT_MAX_ABS_CENTS) {
+    return "Tutar en fazla 10.000.000.000 TL olabilir.";
+  }
+  const description = (a.description ?? "").trim();
+  if (!description) return "Açıklama girin.";
+  if (description.length > HK_ADJUSTMENT_DESCRIPTION_MAX) {
+    return `Açıklama en fazla ${HK_ADJUSTMENT_DESCRIPTION_MAX} karakter olabilir.`;
+  }
+  return null;
+}
+
+/** A stable list key of a payee's component: the rule id, or the kind for the rule-less 'adjustments' component. */
+export function componentKey(c: Pick<HkComponentJson, "kind"> & { rule_id?: string | null }): string {
+  return c.rule_id ?? c.kind;
+}
+
+/**
+ * Data entry in open months (fin_hk_reference / fin_hk_month can_prepare, 0031). A payload without the flag (database
+ * before 0031) falls back to can_write.
+ */
+export function hkCanPrepare(x: { can_prepare?: boolean | null; can_write: boolean }): boolean {
+  return x.can_prepare ?? x.can_write;
+}
+
+/** Ledger data (statement entries, paid / remaining, finance entry links) is shown; true before 0031. */
+export function hkLedgerVisible(x: { ledger_visible?: boolean | null }): boolean {
+  return x.ledger_visible ?? true;
+}
+
+/** "Ciro payı · Çocuk hasta · Hekim A"; "Sabit aylık maaş"; "Prim ve diğer" */
 export function componentTitle(
   c: Pick<HkComponentJson, "kind"> & Partial<Pick<HkComponentJson, "segment" | "doctor_name">>
 ): string {
+  if (c.kind === "adjustments") return ADJUSTMENTS_COMPONENT_LABEL;
   const parts = [KIND_LABELS[c.kind] ?? c.kind];
   if (c.kind === "ciro_share" && c.segment) parts.push(SEGMENT_LABELS[c.segment] ?? c.segment);
   if (c.doctor_name) parts.push(c.doctor_name);
@@ -1002,15 +1238,18 @@ export function warningText(w: HkWarningJson): string {
         return `${w.payee_name || "Hakediş sahibi"} için hekim kaydı yok; ay kapatılamaz. Önce Ekip ekranından hekim kaydını ekleyin.`;
       }
       if (w.reason === "inactive") {
-        return `${w.payee_name || "Hakediş sahibi"} için hekim cari kaydı pasif; ay kapatılmadan önce Cariler ekranından aktifleştirin.`;
+        return `${w.payee_name || "Hakediş sahibi"} için cari kaydı pasif; ay kapatılmadan önce Cariler ekranından aktifleştirin.`;
       }
-      return `${w.payee_name || "Hakediş sahibi"} için hekim cari kaydı yok; ay kapatılınca otomatik oluşturulur.`;
+      return `${w.payee_name || "Hakediş sahibi"} için cari kaydı yok; ay kapatılınca otomatik oluşturulur.`;
     default:
       return "Bilinmeyen uyarı.";
   }
 }
 
-/** Payee table row (§2): ciro by method, implant part, lab, deductions, base, share, implants, management, total. */
+/**
+ * Payee table row (§2): ciro by method, implant part, lab, deductions, base, share, implants, management, total; from
+ * 0031 also the fixed salary and the month's bonus / other rows.
+ */
 export interface HkPayeeSummary {
   gross_by_method: Record<HkMethod, number>;
   gross_cents: number;
@@ -1025,12 +1264,18 @@ export interface HkPayeeSummary {
   implant_amount_cents: number;
   management_base_cents: number;
   management_cents: number;
+  /** fixed_monthly components */
+  salary_cents: number;
+  /** 'adjustments' component: Σ bonus items, Σ other items, and the whole component */
+  bonus_cents: number;
+  other_cents: number;
+  adjustments_cents: number;
   total_cents: number;
 }
 
-/** A payee object of fin_hk_month (HkPayeeJson) or of hk_my_month (HkMyPayeeJson, trimmed management component). */
-export function summarizePayee(p: { total_cents: number; components: readonly HkMyComponentJson[] }): HkPayeeSummary {
-  const s: HkPayeeSummary = {
+/** A summary with every figure 0 (and the given total). */
+export function emptyPayeeSummary(totalCents = 0): HkPayeeSummary {
+  return {
     gross_by_method: { cash: 0, card: 0, transfer: 0, financing: 0 },
     gross_cents: 0,
     implant_cents: 0,
@@ -1043,10 +1288,54 @@ export function summarizePayee(p: { total_cents: number; components: readonly Hk
     implant_amount_cents: 0,
     management_base_cents: 0,
     management_cents: 0,
-    total_cents: p.total_cents,
+    salary_cents: 0,
+    bonus_cents: 0,
+    other_cents: 0,
+    adjustments_cents: 0,
+    total_cents: totalCents,
   };
+}
+
+/**
+ * Totals row of a payee table: every figure summed, share rates merged. management_base_cents stays 0: each
+ * management share is computed on the same clinic ciro, so its bases do not add up.
+ */
+export function sumPayeeSummaries(rows: readonly HkPayeeSummary[]): HkPayeeSummary {
+  const out = emptyPayeeSummary();
+  for (const s of rows) {
+    for (const m of HK_METHODS) out.gross_by_method[m] += s.gross_by_method[m];
+    out.gross_cents += s.gross_cents;
+    out.implant_cents += s.implant_cents;
+    out.lab_cents += s.lab_cents;
+    out.deduction_cents += s.deduction_cents;
+    out.base_cents += s.base_cents;
+    out.share_cents += s.share_cents;
+    for (const bp of s.share_bps) if (!out.share_bps.includes(bp)) out.share_bps.push(bp);
+    out.implant_qty += s.implant_qty;
+    out.implant_amount_cents += s.implant_amount_cents;
+    out.management_cents += s.management_cents;
+    out.salary_cents += s.salary_cents;
+    out.bonus_cents += s.bonus_cents;
+    out.other_cents += s.other_cents;
+    out.adjustments_cents += s.adjustments_cents;
+    out.total_cents += s.total_cents;
+  }
+  return out;
+}
+
+/** A payee object of fin_hk_month (HkPayeeJson) or of hk_my_month (HkMyPayeeJson, trimmed management component). */
+export function summarizePayee(p: { total_cents: number; components: readonly HkMyComponentJson[] }): HkPayeeSummary {
+  const s = emptyPayeeSummary(p.total_cents);
   for (const c of p.components) {
-    if (c.kind === "implant_piece") {
+    if (c.kind === "fixed_monthly") {
+      s.salary_cents += c.amount_cents;
+    } else if (c.kind === "adjustments") {
+      s.adjustments_cents += c.amount_cents;
+      for (const item of c.items ?? []) {
+        if (item.kind === "bonus") s.bonus_cents += item.amount_cents;
+        else s.other_cents += item.amount_cents;
+      }
+    } else if (c.kind === "implant_piece") {
       s.implant_qty += c.qty ?? 0;
       s.implant_amount_cents += c.amount_cents;
     } else if (c.kind === "clinic_ciro_share") {
@@ -1134,6 +1423,22 @@ export interface HkComputeMark {
   birth_date?: string | null;
 }
 
+/** A bonus / other row (fin_hk_adjustments, 0031). */
+export interface HkComputeAdjustment {
+  id: string;
+  /** 'YYYY-MM' or 'YYYY-MM-DD' (1st of month) */
+  month: string;
+  payee_user_id: string;
+  /** used when `payees` does not name the payee */
+  payee_name?: string | null;
+  kind: HkAdjustmentKind;
+  amount_cents: number;
+  description: string;
+  voided_at?: string | null;
+  /** item order inside the component: (created_at, id) */
+  created_at?: string;
+}
+
 export interface HkComputeInput {
   month: string;
   rules: readonly HkComputeRule[];
@@ -1142,6 +1447,8 @@ export interface HkComputeInput {
   pieces?: readonly HkComputePiece[];
   lab_costs?: readonly HkComputeLabCost[];
   marks?: readonly HkComputeMark[];
+  /** bonus / other rows of any month: voided ones and other months are ignored */
+  adjustments?: readonly HkComputeAdjustment[];
   /** fin_settings hakediş fields; child_age_limit defaults to HK_DEFAULT_CHILD_AGE_LIMIT */
   settings?: { child_age_limit?: number | null } | null;
   doctors?: readonly { id: string; name: string }[];
@@ -1275,6 +1582,9 @@ function orthoWalk(
 /**
  * Pure TypeScript mirror of fin_hk__compute(clinic, month). Rounding is half away from zero on exact integers
  * (BigInt), applied once per method bucket (deduction) and once per component (share), exactly like the SQL.
+ * Payroll (0031): a fixed_monthly rule pays its piece_cents as is; the payee's live adjustments of the month form one
+ * 'adjustments' component after the rule components. A payee may have payroll components only (staff, or a payee with
+ * a bonus and no rule).
  */
 export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const month = monthKey(input.month);
@@ -1310,7 +1620,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   });
 
   // Components, one per active rule.
-  const components = new Map<string, HkComponentJson>();
+  const components = new Map<string, HkRuleComponentJson>();
   const ruleOf = new Map<string, HkComputeRule>();
   for (const r of active) {
     ruleOf.set(r.id, r);
@@ -1320,10 +1630,10 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       doctor_id: r.doctor_id,
       doctor_name: doctorName(r.doctor_id, r.doctor_name),
       segment: r.kind === "ciro_share" ? r.segment : null,
-      share_bp: r.kind === "implant_piece" ? null : r.share_bp,
-      piece_cents: r.kind === "implant_piece" ? r.piece_cents : null,
+      share_bp: r.kind === "implant_piece" || r.kind === "fixed_monthly" ? null : r.share_bp,
+      piece_cents: r.kind === "implant_piece" || r.kind === "fixed_monthly" ? r.piece_cents : null,
       by_method: r.kind === "ciro_share" || r.kind === "ortho_lab_first" ? emptyByMethod(r) : null,
-      base_cents: 0,
+      base_cents: r.kind === "fixed_monthly" ? null : 0,
       amount_cents: 0,
       qty: r.kind === "implant_piece" ? 0 : null,
       lines_count: 0,
@@ -1362,8 +1672,8 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const clinicTotal = monthLines.reduce((sum, l) => sum + l.try_cents, 0);
   const pieceDoctors = new Set<string>();
 
-  components.forEach((c) => {
-    const rule = ruleOf.get(c.rule_id)!;
+  components.forEach((c, ruleId) => {
+    const rule = ruleOf.get(ruleId)!;
     if (c.by_method) {
       let base = 0;
       for (const method of HK_METHODS) {
@@ -1380,6 +1690,8 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       c.qty = qty;
       c.lines_count = mine.length;
       c.amount_cents = Number(BigInt(qty) * BigInt(rule.piece_cents ?? 0));
+    } else if (rule.kind === "fixed_monthly") {
+      c.amount_cents = rule.piece_cents ?? 0;
     } else {
       c.base_cents = clinicTotal;
       c.lines_count = monthLines.length;
@@ -1387,25 +1699,45 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     }
   });
 
-  // Payees: every payee with an active rule, components in kind / doctor / segment order.
-  const kindOrder = (k: HkKind) => HK_KINDS.indexOf(k);
-  const segmentOrder = (s: HkSegment | null) => (s ? HK_SEGMENTS.indexOf(s) : -1);
+  // Payees: every payee with an active rule or a live adjustment in the month; components in kind / doctor / segment
+  // order, the 'adjustments' component last.
+  const kindOrder = (k: HkComponentKind) => (k === "adjustments" ? HK_KINDS.length : HK_KINDS.indexOf(k));
+  const segmentOrder = (s: HkSegment | null | undefined) => (s ? HK_SEGMENTS.indexOf(s) : -1);
   const payeeMap = new Map<string, HkPayeeJson>();
-  for (const r of active) {
-    let p = payeeMap.get(r.payee_user_id);
+  const payeeOf = (userId: string, fallbackName: string | null | undefined): HkPayeeJson => {
+    let p = payeeMap.get(userId);
     if (!p) {
-      p = {
-        payee_user_id: r.payee_user_id,
-        payee_name: payeeNames.get(r.payee_user_id) ?? r.payee_name ?? "",
-        total_cents: 0,
-        components: [],
-      };
-      payeeMap.set(r.payee_user_id, p);
+      p = { payee_user_id: userId, payee_name: payeeNames.get(userId) ?? fallbackName ?? "", total_cents: 0, components: [] };
+      payeeMap.set(userId, p);
     }
+    return p;
+  };
+  for (const r of active) {
+    const p = payeeOf(r.payee_user_id, r.payee_name);
     const c = components.get(r.id)!;
     p.components.push(c);
     p.total_cents += c.amount_cents;
   }
+
+  const adjustmentsOf = new Map<string, HkComputeAdjustment[]>();
+  for (const a of input.adjustments ?? []) {
+    if (!isLive(a) || monthKey(a.month) !== month) continue;
+    const list = adjustmentsOf.get(a.payee_user_id) ?? [];
+    list.push(a);
+    adjustmentsOf.set(a.payee_user_id, list);
+  }
+  adjustmentsOf.forEach((list, userId) => {
+    const items = list
+      .slice()
+      .sort((a, b) => byText(a.created_at ?? "", b.created_at ?? "") || byText(a.id, b.id))
+      .map((a) => ({ id: a.id, kind: a.kind, amount_cents: a.amount_cents, description: a.description }));
+    const amount = items.reduce((sum, a) => sum + a.amount_cents, 0);
+    const p = payeeOf(userId, list.find((a) => a.payee_name)?.payee_name);
+    // Same three keys as the SQL component (no rule, no line count).
+    p.components.push({ kind: "adjustments", amount_cents: amount, items });
+    p.total_cents += amount;
+  });
+
   const payees = Array.from(payeeMap.values());
   for (const p of payees) {
     p.components.sort(
@@ -1413,7 +1745,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
         kindOrder(a.kind) - kindOrder(b.kind) ||
         byName(a.doctor_name ?? "", b.doctor_name ?? "") ||
         segmentOrder(a.segment) - segmentOrder(b.segment) ||
-        byText(a.rule_id, b.rule_id)
+        byText(a.rule_id ?? "", b.rule_id ?? "")
     );
   }
   payees.sort((a, b) => byName(a.payee_name, b.payee_name) || byText(a.payee_user_id, b.payee_user_id));

@@ -130,6 +130,7 @@ export const AUDIT_ENTITY_LABELS: Record<string, string> = {
   fin_hk_lab_costs: "Hakediş lab gideri",
   fin_hk_months: "Hakediş ayı",
   fin_hk_statements: "Hakediş dökümü",
+  fin_hk_adjustments: "Hakediş prim / diğer",
 };
 
 export const AUDIT_ACTION_LABELS: Record<string, string> = {
@@ -780,7 +781,8 @@ export type AuditEntityType =
   | "fin_hk_patient_marks"
   | "fin_hk_lab_costs"
   | "fin_hk_months"
-  | "fin_hk_statements";
+  | "fin_hk_statements"
+  | "fin_hk_adjustments";
 
 export interface AuditFilters {
   entity_type?: AuditEntityType;

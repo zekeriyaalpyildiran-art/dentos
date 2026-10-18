@@ -9,6 +9,7 @@ import {
   PERMISSIONS,
   PERMISSION_LABELS,
   isPermission,
+  permissionGrantLock,
   type Permission,
 } from "@/lib/permissions";
 
@@ -125,6 +126,13 @@ export function PermissionManager({ clinicId, canManageFinance }: Props) {
           maliyet yetkisini klinik sahibi veya Finans yetkilisi verebilir.
         </p>
         <p className="text-sm text-gray-600 mt-2">
+          Hakediş ve maaş hazırlama yetkisini yalnızca klinik sahibi verebilir veya kaldırabilir. Bu
+          yetkiyle kişi “Hakediş ve maaş” bölümünde tahsilat satırlarını, implant ve lab kayıtlarını,
+          hasta işaretlerini ve aylık primleri girer; herkesin aylık hesabını, maaşlarını ve kuralları
+          görür. Kural ve maaş tutarlarını değiştiremez, ayı kapatamaz ve Finans&apos;ı (ödemeler,
+          ödenen / kalan tutarlar) göremez.
+        </p>
+        <p className="text-sm text-gray-600 mt-2">
           Şu an Finans yetkisi raporlardaki tahsilat tutarını, ödeme kayıtlarını düzeltmeyi ve
           geçmiş tarihli ödeme girmeyi kapsar. Tedavi planlarındaki ve hasta kartındaki ödeme
           bilgileri ise tüm personele açıktır.
@@ -177,12 +185,11 @@ export function PermissionManager({ clinicId, canManageFinance }: Props) {
                     // The database lets only an owner take a permission away from an owner.
                     const ownerLocked =
                       member.role === "owner" && myRole !== "owner" && granted.has(key);
-                    // Stock grants stay with the owner (migration 0024): 'stock_manage' only by the owner,
-                    // 'stock_cost_view' by the owner or a finance holder.
-                    const stockLocked =
-                      (p === "stock_manage" && myRole !== "owner") ||
-                      (p === "stock_cost_view" && myRole !== "owner" && !canManageFinance);
-                    const locked = ownerLocked || stockLocked;
+                    // Who may grant what (grant_staff_permission): stock_manage and hakedis_prepare only the
+                    // owner (0024, 0031), stock_cost_view the owner or a finance holder, finance keys a finance
+                    // holder (those columns are hidden otherwise).
+                    const grantLock = permissionGrantLock(p, { role: myRole, holdsFinance: canManageFinance });
+                    const locked = ownerLocked || !!grantLock;
                     return (
                       <td key={p} className="px-3 py-3 text-center">
                         <input
@@ -193,11 +200,7 @@ export function PermissionManager({ clinicId, canManageFinance }: Props) {
                           title={
                             ownerLocked
                               ? "Klinik sahibinin yetkilerini yalnızca klinik sahibi kaldırabilir."
-                              : stockLocked
-                                ? p === "stock_manage"
-                                  ? "Stok yönetim yetkisini yalnızca klinik sahibi verebilir veya kaldırabilir."
-                                  : "Stok maliyet yetkisini yalnızca klinik sahibi veya finans yetkisi olan kullanıcılar verebilir."
-                                : undefined
+                              : grantLock ?? undefined
                           }
                           aria-label={`${member.full_name}: ${PERMISSION_LABELS[p]}`}
                           className={`h-4 w-4 accent-blue-600 ${

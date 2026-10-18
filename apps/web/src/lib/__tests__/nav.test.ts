@@ -22,6 +22,7 @@ import {
   SECTIONS_CLOSED_FOR,
   type MenuItem,
 } from "../nav";
+import { HAKEDIS_READ_PERMISSIONS } from "../permissions";
 import { STAFF_ROLES } from "../staff";
 
 const PANEL_DIR = fileURLToPath(new URL("../../app/(panel)", import.meta.url));
@@ -267,6 +268,73 @@ describe("Hasta işaretleri (patient marks at the reception desk)", () => {
     expect(src).toMatch(/\bhkSaveMark\(/);
     expect(src).not.toMatch(/\bfinHk[A-Z]\w*\(|\bhkMy[A-Z]\w*\(|FinanceShell|requiredPermission/);
     expect(src).not.toMatch(/\b(formatTL|formatMoney|parseTL)\b|_cents\b|_bp\b/);
+  });
+});
+
+describe("Hakediş ve maaş (hakediş and payroll preparation, 0031)", () => {
+  const PREP_PAGES = ["/hakedis", "/hakedis/lines", "/hakedis/payroll", "/hakedis/rules"];
+  const FINANCE_PAGES = ["/finance/hakedis", "/finance/hakedis/lines", "/finance/hakedis/payroll", "/finance/hakedis/rules"];
+
+  it("is in the menu of hakedis_prepare, finance and finance_readonly holders, whatever the role", () => {
+    for (const role of STAFF_ROLES) {
+      for (const perm of ["hakedis_prepare", "finance", "finance_readonly"]) {
+        expect(hrefs(menuItemsFor(user(role, [perm]))), `${role} ${perm}`).toContain("/hakedis");
+      }
+      expect(hrefs(menuItemsFor(user(role))), role).not.toContain("/hakedis");
+      expect(hrefs(menuItemsFor(user(role, ["stock_manage", "stock_cost_view", "crm_manage", "clinical"]))), role).not.toContain(
+        "/hakedis"
+      );
+    }
+    expect(hrefs(menuItemsFor(null))).not.toContain("/hakedis");
+    expect(MENU_ITEMS.find((i) => i.href === "/hakedis")?.name).toBe("💼 Hakediş ve maaş");
+  });
+
+  it("gives the reception the section without Finans, right after Hasta işaretleri", () => {
+    const list = hrefs(menuItemsFor(user("reception", ["hakedis_prepare"])));
+    expect(list).not.toContain("/finance");
+    expect(list).not.toContain("/hakedisim");
+    expect(list.indexOf("/hakedis")).toBe(list.indexOf("/hasta-isaretleri") + 1);
+    expect(list.indexOf("/hakedis")).toBe(list.indexOf("/settings") - 1);
+  });
+
+  it("is guarded by permission, not by role: its layout requires the same keys as the menu", () => {
+    expect([...HAKEDIS_READ_PERMISSIONS].sort()).toEqual(["finance", "finance_readonly", "hakedis_prepare"]);
+    expect(Object.keys(SECTIONS_CLOSED_FOR)).not.toContain("/hakedis");
+    for (const role of STAFF_ROLES) expect(canOpenPath(role, "/hakedis/payroll"), role).toBe(true);
+    const layout = `${PANEL_DIR}/hakedis/layout.tsx`;
+    expect(existsSync(layout)).toBe(true);
+    expect(readFileSync(layout, "utf8")).toMatch(/requiredPermission=\{HAKEDIS_READ_PERMISSIONS\}/);
+  });
+
+  it("is not mixed up with Hakedişim (the payee's own page)", () => {
+    const item = (href: string) => MENU_ITEMS.find((i) => i.href === href)!;
+    expect(isMenuItemActive(item("/hakedis"), "/hakedis")).toBe(true);
+    expect(isMenuItemActive(item("/hakedis"), "/hakedis/payroll")).toBe(true);
+    expect(isMenuItemActive(item("/hakedis"), "/hakedisim")).toBe(false);
+    expect(isMenuItemActive(item("/hakedisim"), "/hakedis")).toBe(false);
+    expect(canOpenPath("reception", "/hakedis")).toBe(true);
+    expect(canOpenPath("reception", "/hakedisim")).toBe(false);
+  });
+
+  it("does not change anyone's start page", () => {
+    for (const role of STAFF_ROLES) {
+      expect(homePathForUser({ role, permissions: ["hakedis_prepare"] }), role).toBe(homePathFor(role));
+    }
+  });
+
+  it("shares the Hakediş views with Finans: prep mode here, finance mode inside FinanceShell", () => {
+    for (const href of PREP_PAGES) {
+      const src = pageSource(href);
+      expect(src, href).not.toBeNull();
+      expect(src, href).toMatch(/mode="prep"/);
+      expect(src, href).not.toMatch(/mode="finance"|FinanceShell|\bfinHk[A-Z]\w*\(/);
+    }
+    for (const href of FINANCE_PAGES) {
+      const src = pageSource(href);
+      expect(src, href).not.toBeNull();
+      expect(src, href).toMatch(/mode="finance"/);
+      expect(src, href).toMatch(/<FinanceShell\b/);
+    }
   });
 });
 

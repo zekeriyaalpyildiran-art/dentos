@@ -74,6 +74,11 @@ type Dialog =
 
 const SAVED_HINT = "Kaydedildi. Banka ve kasa bakiyelerini ayrıca güncellemeyi unutmayın.";
 
+/** 0031: a staff payroll entry written by the hakediş month close; the database keeps its person and category. */
+function isPayrollEntry(e: { source_key: string | null }): boolean {
+  return e.source_key?.startsWith("payroll:") ?? false;
+}
+
 function EntryDetailView() {
   const params = useParams<{ id: string }>();
   const searchParams = useSearchParams();
@@ -213,6 +218,12 @@ function EntryDetailView() {
         {e.is_entitlement && (
           <p className="mt-4 text-sm text-indigo-700">
             Hekim hakedişi kaydı. Sonraki ödemeleri bu kayda ekleyin; hekim, ay ve kategori değiştirilemez.
+          </p>
+        )}
+        {isPayrollEntry(e) && (
+          <p className="mt-4 text-sm text-indigo-700">
+            Personel maaş kaydı (Hakediş → Maaş ve prim). Sonraki ödemeleri bu kayda ekleyin; kişi ve kategori
+            değiştirilemez.
           </p>
         )}
         {locked && (
@@ -619,6 +630,7 @@ function ReasonDialog({
 /** 'Ayrıntı / düzenle' (legacy edit, RT:126-129). */
 function EditDialog({ refData, detail, onClose, onReload, onDone }: DialogProps & { refData: ReferenceData }) {
   const e = detail.entry;
+  const isPayroll = isPayrollEntry(e);
   const [state, setState] = useState<EntryFormState>({
     category_id: e.category_id,
     subcategory: e.subcategory ?? "",
@@ -664,8 +676,8 @@ function EditDialog({ refData, detail, onClose, onReload, onDone }: DialogProps 
           state={state}
           onChange={setState}
           today={detail.today}
-          lockCategory={e.paid_cents > 0 || e.is_entitlement}
-          lockCounterparty={e.is_entitlement}
+          lockCategory={e.paid_cents > 0 || e.is_entitlement || isPayroll}
+          lockCounterparty={e.is_entitlement || isPayroll}
           lockMonth={e.is_entitlement}
           originalCategoryId={e.category_id}
           disabled={busy}

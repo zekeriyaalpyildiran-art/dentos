@@ -65,6 +65,7 @@ export const ENTITY_GROUPS: { label: string; types: [string, string][] }[] = [
       ["fin_hk_lab_costs", "Hakediş lab gideri"],
       ["fin_hk_months", "Hakediş ayı"],
       ["fin_hk_statements", "Hakediş dökümü"],
+      ["fin_hk_adjustments", "Hakediş prim / diğer"],
     ],
   },
   {
@@ -208,6 +209,7 @@ const ENTITY_FIELD_LABELS: Record<string, Record<string, string>> = {
   payments: { status: "Ödeme durumu" },
   patients: { is_active: "Arşiv durumu" },
   doctors: { user_id: "Personel" },
+  fin_counterparties: { staff_user_id: "Bağlı personel" },
   stock_items: { name: "Ürün adı" },
   labs: { name: "Laboratuvar adı" },
   implant_brands: { name: "Marka adı" },
@@ -246,6 +248,7 @@ export const USER_ID_KEYS: ReadonlySet<string> = new Set([
   "posted_by",
   "actor_user_id",
   "cancelled_by",
+  "staff_user_id",
 ]);
 
 const PAYMENT_STATUS_LABELS: Record<string, string> = {

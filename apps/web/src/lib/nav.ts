@@ -2,7 +2,7 @@
 // rules, so nothing here is a security boundary.
 
 import type { UserRole } from "./auth";
-import { canSeeFinance } from "./permissions";
+import { canSeeFinance, canSeeHakedis } from "./permissions";
 
 type NavUser = { role?: string | null; permissions?: readonly string[] } | null | undefined;
 
@@ -46,6 +46,9 @@ export const MENU_ITEMS: readonly MenuItem[] = [
   // Own-portfolio doctor and birth date of patients, entered at the reception (hk_marks_* RPCs: no amounts). Reception,
   // admins and the owner; see SECTIONS_CLOSED_FOR.
   { name: "🏷️ Hasta işaretleri", href: "/hasta-isaretleri" },
+  // Hakediş and payroll preparation (0031): 'hakedis_prepare' (the reception, without the finance permission) and
+  // finance holders; the section's layout requires the same permissions, whatever the role.
+  { name: "💼 Hakediş ve maaş", href: "/hakedis", match: "/hakedis", visible: canSeeHakedis },
   { name: "⚙️ Ayarlar", href: "/settings" },
 ];
 

@@ -7,6 +7,7 @@ import { formatDay, formatMonth, formatTL, formatTimestamp, toFinanceError, type
 import {
   METHOD_LABELS,
   SEGMENT_LABELS,
+  componentKey,
   formatBp,
   hkMyMonth,
   hkMyMonths,
@@ -231,6 +232,9 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
   const hasShare = components.some((c) => c.kind === "ciro_share" || c.kind === "ortho_lab_first");
   const hasImplant = components.some((c) => c.kind === "implant_piece");
   const management = components.filter((c) => c.kind === "clinic_ciro_share");
+  // 0031: a fixed monthly salary and the month's bonus / other rows are part of the same monthly entry.
+  const hasSalary = components.some((c) => c.kind === "fixed_monthly");
+  const hasAdjustments = components.some((c) => c.kind === "adjustments");
   const ortho = components.filter((c) => c.kind === "ortho_lab_first");
   const labPatients: HkLabPatientJson[] = ortho.flatMap((c) => c.lab_patients ?? []);
   const closed = data.status === "closed";
@@ -293,6 +297,16 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
                 .join("; ")}
             />
           )}
+          {hasSalary && <SummaryTile label="Sabit maaş" cents={s.salary_cents} caption="Net" />}
+          {hasAdjustments && (
+            <SummaryTile
+              label="Prim ve diğer"
+              cents={s.adjustments_cents}
+              caption={[s.bonus_cents ? `Prim ${formatTL(s.bonus_cents)}` : null, s.other_cents ? `Diğer ${formatTL(s.other_cents)}` : null]
+                .filter(Boolean)
+                .join(" · ") || undefined}
+            />
+          )}
           <SummaryTile label={closed ? "Toplam hakediş" : "Toplam (tahmini)"} cents={total} strong />
           {ent && <SummaryTile label="Ödenen" cents={ent.paid_cents} tone="green" />}
           {closed &&
@@ -321,7 +335,7 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
           <summary className="cursor-pointer px-4 py-3 font-semibold">Hesap dökümü</summary>
           <div className="px-4 pb-4 grid gap-3 lg:grid-cols-2">
             {components.map((c) => (
-              <ComponentBreakdown key={c.rule_id} c={c} />
+              <ComponentBreakdown key={componentKey(c)} c={c} />
             ))}
           </div>
         </details>

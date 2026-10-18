@@ -1,38 +1,58 @@
-// Hakediş engine mirror (spec §1 "Calculation", §2; v1.1 child patients by age). Made-up doctors, patients, rates
-// and amounts only.
+// Hakediş engine mirror (spec §1 "Calculation", §2; v1.1 child patients by age; v1.2 staff payroll: fixed_monthly
+// salaries and bonus / other adjustments). Made-up doctors, staff, patients, rates and amounts only.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addMonths,
+  ADJUSTMENT_KIND_LABELS,
+  ADJUSTMENTS_COMPONENT_LABEL,
   ageOn,
   applyBp,
   bpToInput,
   childAgeLimitOf,
+  componentKey,
   componentTitle,
   computeMonth,
+  emptyPayeeSummary,
+  findOverlappingRule,
+  finHkSaveAdjustment,
   finHkSaveMark,
   finHkSaveSettings,
+  finHkVoidAdjustment,
   formatBp,
+  hkCanPrepare,
+  hkLedgerVisible,
+  HK_ADJUSTMENT_DESCRIPTION_MAX,
   HK_DEFAULT_CHILD_AGE_LIMIT,
+  HK_KINDS,
   hkMarksAccess,
   hkMarksList,
   hkSaveMark,
+  KIND_LABELS,
   markIsChildOn,
   monthKey,
+  monthRangesOverlap,
   monthStart,
   monthStatus,
   normalizePatientRef,
   parsePercent,
   pickDefaultMonth,
+  pieceFieldLabel,
   resolveSegment,
   roundHalfAwayDiv,
+  RULE_FIELDS,
   ruleActiveIn,
+  ruleOverlapKey,
+  salaryRuleOf,
+  sumPayeeSummaries,
   summarizePayee,
+  validateAdjustment,
   validateBirthDate,
   validateChildAgeLimit,
   validateRule,
   warningText,
   type HkComponentJson,
+  type HkComputeAdjustment,
   type HkComputeInput,
   type HkComputeLabCost,
   type HkComputeLine,
@@ -62,6 +82,9 @@ const PAYEES = [
   { user_id: "u-b", name: "Hekim B" },
   { user_id: "u-c", name: "Hekim C" },
   { user_id: "u-s", name: "Hekim S" },
+  // Staff without a doctors row (payroll only).
+  { user_id: "u-p1", name: "Personel Bir" },
+  { user_id: "u-p2", name: "Personel İki" },
 ];
 
 let seq = 0;
@@ -836,6 +859,292 @@ describe("rule month ranges", () => {
   });
 });
 
+describe("payroll (v1.2)", () => {
+  const salary = (payee: string, cents: number, from_month = "2026-11-01", to_month: string | null = null) =>
+    rule({ kind: "fixed_monthly", payee_user_id: payee, piece_cents: cents, from_month, to_month });
+
+  function adj(
+    p: Partial<HkComputeAdjustment> & Pick<HkComputeAdjustment, "payee_user_id" | "amount_cents">
+  ): HkComputeAdjustment {
+    return { id: nextId("a"), month: "2026-11-01", kind: "bonus", description: "Örnek prim", ...p };
+  }
+
+  it("pays a fixed monthly salary to staff without a doctors row, within the rule's months", () => {
+    const a = aStd();
+    const p1 = salary("u-p1", TL(31_000), "2026-11-01", "2026-12-01");
+    const p2 = salary("u-p2", TL(28_500), "2026-12-01");
+    const lines = [line({ doctor_id: "doc-a", try_cents: TL(1_000) })];
+    const at = (month: string) => run({ month, rules: [p2, a, p1], lines });
+
+    const nov = at("2026-11");
+    expect(nov.payees.map((p) => [p.payee_name, p.total_cents])).toEqual([
+      ["Hekim A", TL(250)],
+      ["Personel Bir", TL(31_000)],
+    ]);
+    expect(component(nov, p1.id)).toEqual({
+      rule_id: p1.id,
+      kind: "fixed_monthly",
+      doctor_id: null,
+      doctor_name: null,
+      segment: null,
+      share_bp: null,
+      piece_cents: TL(31_000),
+      by_method: null,
+      base_cents: null,
+      amount_cents: TL(31_000),
+      qty: null,
+      lines_count: 0,
+    });
+    // Payroll never touches the clinic ciro or the doctors' figures.
+    expect(nov.clinic_total_cents).toBe(TL(1_000));
+    expect(nov.warnings).toEqual([]);
+    expect(componentTitle(component(nov, p1.id))).toBe("Sabit aylık maaş");
+
+    expect(at("2026-12").payees.map((p) => [p.payee_name, p.total_cents])).toEqual([
+      ["Hekim A", 0],
+      ["Personel Bir", TL(31_000)],
+      ["Personel İki", TL(28_500)],
+    ]);
+    expect(at("2027-01").payees.map((p) => p.payee_user_id)).toEqual(["u-a", "u-p2"]);
+    expect(at("2026-10").payees).toEqual([]);
+  });
+
+  it("adds the month's live bonus / other rows as one component after the rule components", () => {
+    const a = aStd();
+    const aSalary = salary("u-a", TL(5_000));
+    const p1 = salary("u-p1", TL(31_000));
+    const adjustments = [
+      adj({ payee_user_id: "u-p1", amount_cents: TL(2_500), description: "Ay sonu primi", created_at: "2026-11-28T10:00:00Z" }),
+      adj({
+        payee_user_id: "u-p1",
+        kind: "other",
+        amount_cents: TL(-400),
+        description: "Örnek kesinti",
+        created_at: "2026-11-03T09:00:00Z",
+      }),
+      adj({ payee_user_id: "u-p1", amount_cents: TL(9_999), voided_at: "2026-11-29T08:00:00Z" }),
+      adj({ payee_user_id: "u-p1", month: "2026-12-01", amount_cents: TL(1_000) }),
+      adj({ payee_user_id: "u-a", amount_cents: TL(750) }),
+      // A bonus without any rule: the payee is listed with that component only.
+      adj({ payee_user_id: "u-p2", month: "2026-11", amount_cents: TL(1_200) }),
+      adj({ payee_user_id: "u-x", payee_name: "Personel Üç", amount_cents: TL(300) }),
+    ];
+    const out = run({
+      month: "2026-11",
+      rules: [p1, aSalary, a],
+      lines: [line({ doctor_id: "doc-a", try_cents: TL(1_000) })],
+      adjustments,
+    });
+
+    expect(out.payees.map((p) => [p.payee_name, p.total_cents])).toEqual([
+      ["Hekim A", TL(250 + 5_000 + 750)],
+      ["Personel Bir", TL(31_000 + 2_500 - 400)],
+      ["Personel İki", TL(1_200)],
+      ["Personel Üç", TL(300)],
+    ]);
+
+    const staff = out.payees.find((p) => p.payee_user_id === "u-p1")!;
+    expect(staff.components.map((c) => c.kind)).toEqual(["fixed_monthly", "adjustments"]);
+    const adjustmentsComponent = staff.components[1];
+    // Exactly the keys of the SQL component (fin__hk_compute 0031): kind, amount and the items, oldest first.
+    expect(adjustmentsComponent).toEqual({
+      kind: "adjustments",
+      amount_cents: TL(2_100),
+      items: [
+        { id: adjustments[1].id, kind: "other", amount_cents: TL(-400), description: "Örnek kesinti" },
+        { id: adjustments[0].id, kind: "bonus", amount_cents: TL(2_500), description: "Ay sonu primi" },
+      ],
+    });
+    expect(componentKey(adjustmentsComponent)).toBe("adjustments");
+    expect(componentKey(staff.components[0])).toBe(p1.id);
+    expect(componentTitle(adjustmentsComponent)).toBe(ADJUSTMENTS_COMPONENT_LABEL);
+
+    // A doctor's salary and bonus belong to the same payee as the ciro share (one monthly entitlement).
+    const doctor = out.payees.find((p) => p.payee_user_id === "u-a")!;
+    expect(doctor.components.map((c) => c.kind)).toEqual(["ciro_share", "fixed_monthly", "adjustments"]);
+
+    expect(summarizePayee(staff)).toMatchObject({
+      salary_cents: TL(31_000),
+      bonus_cents: TL(2_500),
+      other_cents: TL(-400),
+      adjustments_cents: TL(2_100),
+      share_cents: 0,
+      base_cents: 0,
+      gross_cents: 0,
+      total_cents: TL(33_100),
+    });
+    expect(summarizePayee(doctor)).toMatchObject({
+      share_cents: TL(250),
+      salary_cents: TL(5_000),
+      bonus_cents: TL(750),
+      other_cents: 0,
+      total_cents: TL(6_000),
+    });
+
+    // December: only that month's bonus, no salary rule change.
+    const dec = run({ month: "2026-12", rules: [p1], lines: [], adjustments });
+    expect(dec.payees.map((p) => [p.payee_user_id, p.total_cents])).toEqual([["u-p1", TL(32_000)]]);
+  });
+
+  it("keeps a component whose rows net to zero; counterparty warnings follow the total", () => {
+    const out = run({
+      month: "2026-11",
+      rules: [salary("u-p1", TL(20_000))],
+      lines: [],
+      adjustments: [
+        adj({ payee_user_id: "u-p2", amount_cents: TL(500) }),
+        adj({ payee_user_id: "u-p2", kind: "other", amount_cents: TL(-500) }),
+      ],
+      counterparty_user_ids: [],
+    });
+    const zero = out.payees.find((p) => p.payee_user_id === "u-p2")!;
+    expect(zero.total_cents).toBe(0);
+    expect(zero.components).toHaveLength(1);
+    expect(zero.components[0]).toMatchObject({ kind: "adjustments", amount_cents: 0 });
+    expect(zero.components[0].items).toHaveLength(2);
+    expect(out.warnings).toEqual([
+      { code: "NO_COUNTERPARTY", payee_user_id: "u-p1", payee_name: "Personel Bir", reason: "missing" },
+    ]);
+    expect(warningText(out.warnings[0])).toBe("Personel Bir için cari kaydı yok; ay kapatılınca otomatik oluşturulur.");
+  });
+
+  it("leaves results identical for months without payroll rows", () => {
+    const input: HkComputeInput = {
+      month: "2026-11",
+      doctors: DOCTORS,
+      payees: PAYEES,
+      rules: [
+        aStd(),
+        rule({ kind: "clinic_ciro_share", payee_user_id: "u-a", share_bp: 500 }),
+        rule({ kind: "implant_piece", payee_user_id: "u-b", doctor_id: "doc-b", piece_cents: TL(1_500) }),
+        salary("u-p1", TL(31_000), "2027-01-01"),
+      ],
+      lines: [
+        line({ doctor_id: "doc-a", method: "card", try_cents: TL(12_345.67) }),
+        line({ doctor_id: "doc-d", try_cents: TL(800) }),
+      ],
+      pieces: [piece({ doctor_id: "doc-b", qty: 2 })],
+      counterparty_user_ids: ["u-a"],
+    };
+    const before = computeMonth(input);
+    const after = computeMonth({
+      ...input,
+      adjustments: [
+        adj({ payee_user_id: "u-a", month: "2026-10-01", amount_cents: TL(100) }),
+        adj({ payee_user_id: "u-p1", amount_cents: TL(100), voided_at: "2026-11-20T08:00:00Z" }),
+      ],
+    });
+    expect(after).toEqual(before);
+    expect(computeMonth({ ...input, adjustments: [] })).toEqual(before);
+    expect(before.payees.map((p) => p.payee_user_id)).toEqual(["u-a", "u-b"]);
+  });
+
+  it("checks fixed_monthly rules and adjustment inputs", () => {
+    expect(HK_KINDS[HK_KINDS.length - 1]).toBe("fixed_monthly");
+    expect(KIND_LABELS.fixed_monthly).toBe("Sabit aylık maaş");
+    expect(ADJUSTMENT_KIND_LABELS).toEqual({ bonus: "Prim", other: "Diğer" });
+    expect(RULE_FIELDS.fixed_monthly).toEqual({ doctor: false, segment: false, share: false, piece: true, deductions: false });
+    expect(pieceFieldLabel("fixed_monthly")).toBe("Aylık net maaş (TL)");
+    expect(pieceFieldLabel("implant_piece")).toBe("İmplant başı tutar (TL)");
+
+    const base: HkRuleInput = {
+      payee_user_id: "u-p1",
+      doctor_id: null,
+      kind: "fixed_monthly",
+      segment: null,
+      share_bp: null,
+      piece_cents: TL(31_000),
+      deduct_cash_bp: 0,
+      deduct_card_bp: 0,
+      deduct_transfer_bp: 0,
+      deduct_financing_bp: 0,
+      from_month: "2026-11",
+      to_month: null,
+    };
+    expect(validateRule(base)).toBeNull();
+    expect(validateRule({ ...base, payee_user_id: null })).toBe("Maaş alacak kişiyi seçin.");
+    expect(validateRule({ ...base, piece_cents: 0 })).toBe("Aylık net maaş 0'dan büyük olmalı.");
+    expect(validateRule({ ...base, piece_cents: null })).toBe("Aylık net maaş 0'dan büyük olmalı.");
+    expect(validateRule({ ...base, deduct_card_bp: 100 })).toBe("Bu kural türünde kesinti girilemez.");
+
+    const ok = { month: "2026-11", payee_user_id: "u-p1", kind: "bonus" as const, amount_cents: TL(1_500), description: " Prim " };
+    expect(validateAdjustment(ok)).toBeNull();
+    expect(validateAdjustment({ ...ok, kind: "other", amount_cents: TL(-250) })).toBeNull();
+    expect(validateAdjustment({ ...ok, month: "" })).toBe("Ayı seçin.");
+    expect(validateAdjustment({ ...ok, payee_user_id: null })).toBe("Kişiyi seçin.");
+    expect(validateAdjustment({ ...ok, kind: null })).toBe("Türü seçin.");
+    for (const bad of [0, null, 1.5]) {
+      expect(validateAdjustment({ ...ok, amount_cents: bad })).toBe("Tutar 0 olamaz. Kesinti için eksi tutar girin.");
+    }
+    expect(validateAdjustment({ ...ok, amount_cents: -1_000_000_000_000 })).toBeNull();
+    expect(validateAdjustment({ ...ok, amount_cents: 1_000_000_000_001 })).toBe("Tutar en fazla 10.000.000.000 TL olabilir.");
+    expect(validateAdjustment({ ...ok, description: "   " })).toBe("Açıklama girin.");
+    expect(validateAdjustment({ ...ok, description: "x".repeat(HK_ADJUSTMENT_DESCRIPTION_MAX) })).toBeNull();
+    expect(validateAdjustment({ ...ok, description: "x".repeat(HK_ADJUSTMENT_DESCRIPTION_MAX + 1) })).toBe(
+      "Açıklama en fazla 500 karakter olabilir."
+    );
+  });
+
+  it("checks overlaps per payee for salaries and per doctor / segment otherwise", () => {
+    const p1 = { ...salary("u-p1", TL(31_000), "2026-11-01", "2026-12-01"), note: "" };
+    const p2 = { ...salary("u-p2", TL(28_500)), note: "" };
+    const aStdRule = { ...aStd(), from_month: "2026-11-01" };
+    const rules = [p1, p2, aStdRule];
+
+    // Two staff members' salaries never overlap each other.
+    expect(ruleOverlapKey(p1)).not.toBe(ruleOverlapKey(p2));
+    expect(findOverlappingRule(rules, { ...p2, id: "new", payee_user_id: "u-p3" })).toBeUndefined();
+    // The same person: a second salary in a covered month is refused, after the end month it is fine.
+    expect(findOverlappingRule(rules, { ...p1, id: "new", from_month: "2026-12-01", to_month: null })?.id).toBe(p1.id);
+    expect(findOverlappingRule(rules, { ...p1, id: "new", from_month: "2027-01-01", to_month: null })).toBeUndefined();
+    // Editing the rule itself is not an overlap.
+    expect(findOverlappingRule(rules, p1)).toBeUndefined();
+    // Other kinds: per doctor and segment, whoever the payee is.
+    expect(findOverlappingRule(rules, { ...aStdRule, id: "new", payee_user_id: "u-b" })?.id).toBe(aStdRule.id);
+    expect(findOverlappingRule(rules, { ...aStdRule, id: "new", segment: "child" })).toBeUndefined();
+    // The earliest overlapping rule is named, like the server's DETAIL.
+    const later = { ...salary("u-p2", TL(1_000), "2025-01-01", "2025-06-01"), note: "" };
+    const earliest = { ...salary("u-p2", TL(1_000), "2024-01-01", "2024-12-01"), note: "" };
+    expect(findOverlappingRule([later, earliest], { ...later, id: "new", from_month: "2024-06-01", to_month: null })?.id).toBe(
+      earliest.id
+    );
+
+    expect(monthRangesOverlap({ from_month: "2026-11", to_month: "2026-12" }, { from_month: "2026-12-01", to_month: null })).toBe(true);
+    expect(monthRangesOverlap({ from_month: "2026-11", to_month: "2026-11" }, { from_month: "2026-12", to_month: null })).toBe(false);
+    expect(monthRangesOverlap({ from_month: "2027-01", to_month: null }, { from_month: "2026-01", to_month: "2026-12" })).toBe(false);
+
+    expect(salaryRuleOf(rules, "u-p1", "2026-12")?.id).toBe(p1.id);
+    expect(salaryRuleOf(rules, "u-p1", "2027-01")).toBeUndefined();
+    expect(salaryRuleOf(rules, "u-a", "2026-11")).toBeUndefined();
+  });
+
+  it("sums payee summaries for a totals row", () => {
+    const out = run({
+      month: "2026-11",
+      rules: [aStd(), salary("u-p1", TL(31_000)), rule({ kind: "clinic_ciro_share", payee_user_id: "u-c", share_bp: 500 })],
+      lines: [line({ doctor_id: "doc-a", method: "card", try_cents: TL(10_000) })],
+      adjustments: [adj({ payee_user_id: "u-p1", amount_cents: TL(1_000) }), adj({ payee_user_id: "u-p1", kind: "other", amount_cents: TL(-200) })],
+    });
+    const total = sumPayeeSummaries(out.payees.map(summarizePayee));
+    expect(total).toMatchObject({
+      gross_cents: TL(10_000),
+      deduction_cents: TL(1_100),
+      share_cents: TL(2_225),
+      share_bps: [2500],
+      management_cents: TL(500),
+      management_base_cents: 0,
+      salary_cents: TL(31_000),
+      bonus_cents: TL(1_000),
+      other_cents: TL(-200),
+      adjustments_cents: TL(800),
+      total_cents: TL(2_225 + 500 + 31_000 + 800),
+    });
+    expect(total.gross_by_method.card).toBe(TL(10_000));
+    expect(sumPayeeSummaries([])).toEqual(emptyPayeeSummary());
+    expect(emptyPayeeSummary(TL(5)).total_cents).toBe(TL(5));
+  });
+});
+
 describe("percent helpers", () => {
   it("parses Turkish and plain percentages into basis points", () => {
     const bp = (s: string, allowZero = false) => {
@@ -1015,5 +1324,61 @@ describe("RPC wrappers (v1.1)", () => {
     const forbidden = "Hasta işaretlerini değiştirme yetkiniz yok.";
     rpcMock.mockResolvedValueOnce({ data: null, error: { message: forbidden, code: "42501" } });
     await expect(hkSaveMark(args)).rejects.toMatchObject({ message: forbidden, isForbidden: true });
+  });
+});
+
+describe("RPC wrappers (v1.2)", () => {
+  beforeEach(() => {
+    rpcMock.mockReset();
+    rpcMock.mockResolvedValue({ data: { already_saved: false, record: {} }, error: null });
+  });
+
+  it("sends the adjustment arguments by name, the month as its first day", async () => {
+    const args = {
+      p_id: "a-1",
+      p_version: 0,
+      p_month: "2026-11",
+      p_payee_user_id: "u-p1",
+      p_kind: "bonus" as const,
+      p_amount_cents: TL(1_500),
+      p_description: "Örnek prim",
+    };
+    await finHkSaveAdjustment(args);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_adjustment", { ...args, p_month: "2026-11-01" });
+    await finHkSaveAdjustment({ ...args, p_version: 2, p_month: "2026-12-01", p_kind: "other", p_amount_cents: TL(-300) });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_adjustment", {
+      ...args,
+      p_version: 2,
+      p_month: "2026-12-01",
+      p_kind: "other",
+      p_amount_cents: TL(-300),
+    });
+
+    await finHkVoidAdjustment({ p_id: "a-1", p_version: 3, p_reason: "Yanlış kişi" });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_void_adjustment", { p_id: "a-1", p_version: 3, p_reason: "Yanlış kişi" });
+  });
+
+  it("passes the closed-month refusal through as a FinanceError", async () => {
+    const message = "Bu ay kapatıldı. Düzeltmeyi açık bir aya düzeltme satırı olarak girin.";
+    rpcMock.mockResolvedValueOnce({ data: null, error: { message, code: "P0001" } });
+    await expect(
+      finHkVoidAdjustment({ p_id: "a-1", p_version: 1, p_reason: "Yanlış tutar" })
+    ).rejects.toMatchObject({ message, isForbidden: false });
+  });
+});
+
+describe("access flags of the hakediş payloads (0031)", () => {
+  it("lets 'hakedis_prepare' enter data without the finance write flag", () => {
+    expect(hkCanPrepare({ can_write: false, can_prepare: true })).toBe(true);
+    expect(hkCanPrepare({ can_write: true, can_prepare: true })).toBe(true);
+    expect(hkCanPrepare({ can_write: false, can_prepare: false })).toBe(false);
+  });
+
+  it("falls back to the 0030 payload (no can_prepare / ledger_visible: finance callers only)", () => {
+    expect(hkCanPrepare({ can_write: true })).toBe(true);
+    expect(hkCanPrepare({ can_write: false })).toBe(false);
+    expect(hkLedgerVisible({})).toBe(true);
+    expect(hkLedgerVisible({ ledger_visible: false })).toBe(false);
+    expect(hkLedgerVisible({ ledger_visible: true })).toBe(true);
   });
 });
