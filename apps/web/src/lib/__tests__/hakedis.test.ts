@@ -1,5 +1,6 @@
 // Hakediş engine mirror (spec §1 "Calculation", §2; v1.1 child patients by age; v1.2 staff payroll: fixed_monthly
-// salaries and bonus / other adjustments). Made-up doctors, staff, patients, rates and amounts only.
+// salaries and bonus / other adjustments; v1.3 bank / cash split: bank_portion rules). Made-up doctors, staff,
+// patients, rates and amounts only.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -8,6 +9,11 @@ import {
   ADJUSTMENTS_COMPONENT_LABEL,
   ageOn,
   applyBp,
+  BANK_PORTION_HINT,
+  bankOverText,
+  bankRuleOf,
+  bankSplitOf,
+  bankSplitText,
   bpToInput,
   childAgeLimitOf,
   componentKey,
@@ -17,6 +23,7 @@ import {
   findOverlappingRule,
   finHkSaveAdjustment,
   finHkSaveMark,
+  finHkSaveRule,
   finHkSaveSettings,
   finHkVoidAdjustment,
   formatBp,
@@ -29,6 +36,7 @@ import {
   hkMarksList,
   hkSaveMark,
   KIND_LABELS,
+  kindAllowsAnyUser,
   markIsChildOn,
   monthKey,
   monthRangesOverlap,
@@ -44,6 +52,7 @@ import {
   ruleActiveIn,
   ruleOverlapKey,
   salaryRuleOf,
+  SPLIT_LABELS,
   sumPayeeSummaries,
   summarizePayee,
   validateAdjustment,
@@ -1040,7 +1049,7 @@ describe("payroll (v1.2)", () => {
   });
 
   it("checks fixed_monthly rules and adjustment inputs", () => {
-    expect(HK_KINDS[HK_KINDS.length - 1]).toBe("fixed_monthly");
+    expect(HK_KINDS.slice(-2)).toEqual(["fixed_monthly", "bank_portion"]);
     expect(KIND_LABELS.fixed_monthly).toBe("Sabit aylık maaş");
     expect(ADJUSTMENT_KIND_LABELS).toEqual({ bonus: "Prim", other: "Diğer" });
     expect(RULE_FIELDS.fixed_monthly).toEqual({ doctor: false, segment: false, share: false, piece: true, deductions: false });
@@ -1142,6 +1151,224 @@ describe("payroll (v1.2)", () => {
     expect(total.gross_by_method.card).toBe(TL(10_000));
     expect(sumPayeeSummaries([])).toEqual(emptyPayeeSummary());
     expect(emptyPayeeSummary(TL(5)).total_cents).toBe(TL(5));
+  });
+});
+
+describe("bank / cash split (v1.3)", () => {
+  const bank = (payee: string, cents: number, from_month = "2026-11-01", to_month: string | null = null) =>
+    rule({ kind: "bank_portion", payee_user_id: payee, piece_cents: cents, from_month, to_month });
+  const salary = (payee: string, cents: number) => rule({ kind: "fixed_monthly", payee_user_id: payee, piece_cents: cents });
+  const bonus = (payee: string, cents: number): HkComputeAdjustment => ({
+    id: nextId("a"),
+    month: "2026-11-01",
+    payee_user_id: payee,
+    kind: "bonus",
+    amount_cents: cents,
+    description: "Örnek prim",
+  });
+  const payee = (out: HkComputeOutput, userId: string) => out.payees.find((p) => p.payee_user_id === userId)!;
+
+  it("splits a doctor's hakediş into the bank part and the rest in cash without changing the total", () => {
+    const a = aStd();
+    const lines = [
+      line({ doctor_id: "doc-a", try_cents: TL(60_000) }),
+      line({ doctor_id: "doc-a", method: "card", try_cents: TL(20_000) }),
+    ];
+    const without = run({ month: "2026-11", rules: [a], lines });
+    const out = run({ month: "2026-11", rules: [a, bank("u-a", TL(12_500))], lines });
+
+    // 25 % of (60.000 + 20.000 × 0,89) = 19.450 TL; bank 12.500, cash 6.950.
+    const doctor = payee(out, "u-a");
+    expect(doctor.total_cents).toBe(TL(19_450));
+    expect(doctor.bank_cents).toBe(TL(12_500));
+    expect(doctor.cash_cents).toBe(TL(6_950));
+    // The bank part is no component: components, totals, clinic ciro and line results are those of the plain month.
+    expect(doctor.components).toEqual(payee(without, "u-a").components);
+    expect(out.clinic_total_cents).toBe(without.clinic_total_cents);
+    expect(out.line_results).toEqual(without.line_results);
+    expect(out.warnings).toEqual([]);
+    expect(payee(without, "u-a")).toMatchObject({ bank_cents: null, cash_cents: null });
+
+    expect(bankSplitOf(doctor)).toEqual({ bank_cents: TL(12_500), cash_cents: TL(6_950), over_cents: 0 });
+    expect(bankSplitText(doctor)).toBe("Bankadan ₺12.500,00 · Elden ₺6.950,00");
+    expect(summarizePayee(doctor)).toMatchObject({
+      share_cents: TL(19_450),
+      total_cents: TL(19_450),
+      bank_cents: TL(12_500),
+      cash_cents: TL(6_950),
+    });
+  });
+
+  it("pays a staff salary by bank and the month's bonus in cash", () => {
+    const out = run({
+      month: "2026-11",
+      rules: [salary("u-p1", TL(26_000)), bank("u-p1", TL(26_000))],
+      lines: [],
+      adjustments: [bonus("u-p1", TL(3_750))],
+    });
+    const staff = payee(out, "u-p1");
+    expect(staff.total_cents).toBe(TL(29_750));
+    expect(staff.components.map((c) => c.kind)).toEqual(["fixed_monthly", "adjustments"]);
+    expect(staff).toMatchObject({ bank_cents: TL(26_000), cash_cents: TL(3_750) });
+    expect(summarizePayee(staff)).toMatchObject({
+      salary_cents: TL(26_000),
+      bonus_cents: TL(3_750),
+      bank_cents: TL(26_000),
+      cash_cents: TL(3_750),
+    });
+    // Bank part equal to the total: no warning, nothing in cash.
+    const exact = run({ month: "2026-11", rules: [salary("u-p1", TL(26_000)), bank("u-p1", TL(26_000))], lines: [] });
+    expect(payee(exact, "u-p1")).toMatchObject({ total_cents: TL(26_000), bank_cents: TL(26_000), cash_cents: 0 });
+    expect(exact.warnings).toEqual([]);
+  });
+
+  it("lists a payee with only a bank part (total 0) and warns when the bank part exceeds the total", () => {
+    const a = aStd();
+    const out = run({
+      month: "2026-11",
+      rules: [a, bank("u-a", TL(5_000)), bank("u-p2", TL(9_000))],
+      lines: [line({ doctor_id: "doc-a", try_cents: TL(8_000) }), line({ doctor_id: "doc-d", try_cents: TL(300) })],
+      counterparty_user_ids: [],
+    });
+    expect(out.payees.map((p) => [p.payee_name, p.total_cents, p.bank_cents, p.cash_cents, p.components.length])).toEqual([
+      ["Hekim A", TL(2_000), TL(5_000), TL(-3_000), 1],
+      ["Personel İki", 0, TL(9_000), TL(-9_000), 0],
+    ]);
+    // After the other warnings, by payee name; a zero total gets no counterparty warning.
+    expect(out.warnings).toEqual([
+      { code: "UNRULED_LINES", doctor_id: "doc-d", doctor_name: "Hekim D", count: 1, try_cents: TL(300) },
+      { code: "NO_COUNTERPARTY", payee_user_id: "u-a", payee_name: "Hekim A", reason: "missing" },
+      { code: "BANK_OVER_TOTAL", payee_user_id: "u-a", payee_name: "Hekim A", bank_cents: TL(5_000), total_cents: TL(2_000) },
+      { code: "BANK_OVER_TOTAL", payee_user_id: "u-p2", payee_name: "Personel İki", bank_cents: TL(9_000), total_cents: 0 },
+    ]);
+    expect(warningText(out.warnings[2])).toBe("Hekim A: Bankadan ödenen tutar bu ayın toplamını ₺3.000,00 aşıyor.");
+    expect(warningText(out.warnings[3])).toBe("Personel İki: Bankadan ödenen tutar bu ayın toplamını ₺9.000,00 aşıyor.");
+    expect(bankSplitOf(payee(out, "u-p2"))).toEqual({ bank_cents: TL(9_000), cash_cents: TL(-9_000), over_cents: TL(9_000) });
+
+    // A payee unknown to `payees` is named after the rule.
+    const named = run({
+      month: "2026-11",
+      rules: [{ ...bank("u-x", TL(1_000)), payee_name: "Personel Üç" }],
+      lines: [],
+    });
+    expect(named.payees).toEqual([
+      { payee_user_id: "u-x", payee_name: "Personel Üç", total_cents: 0, components: [], bank_cents: TL(1_000), cash_cents: TL(-1_000) },
+    ]);
+  });
+
+  it("applies the bank part within its months; other payees and months are unchanged", () => {
+    const a = aStd();
+    const b = rule({ kind: "implant_piece", payee_user_id: "u-b", doctor_id: "doc-b", piece_cents: TL(1_500) });
+    const aBank = bank("u-a", TL(1_000), "2026-12-01", "2027-01-01");
+    const lines = ["2026-11-10", "2026-12-10", "2027-01-10", "2027-02-10"].map((day) =>
+      line({ doctor_id: "doc-a", day, try_cents: TL(10_000) })
+    );
+    const pieces = [piece({ doctor_id: "doc-b", qty: 2, day: "2026-12-05" })];
+    const at = (month: string, rules: HkComputeRule[]) => run({ month, rules, lines, pieces, counterparty_user_ids: ["u-a"] });
+
+    for (const month of ["2026-11", "2027-02"]) {
+      expect(at(month, [a, b, aBank])).toEqual(at(month, [a, b]));
+      expect(at(month, [a, b, aBank]).payees.every((p) => p.bank_cents === null && p.cash_cents === null)).toBe(true);
+    }
+    const dec = at("2026-12", [a, b, aBank]);
+    const plainDec = at("2026-12", [a, b]);
+    expect(payee(dec, "u-a")).toMatchObject({ total_cents: TL(2_500), bank_cents: TL(1_000), cash_cents: TL(1_500) });
+    expect(payee(dec, "u-b")).toEqual(payee(plainDec, "u-b"));
+    expect(payee(dec, "u-b")).toMatchObject({ total_cents: TL(3_000), bank_cents: null, cash_cents: null });
+    expect(dec.warnings).toEqual(plainDec.warnings);
+    expect(payee(at("2027-01", [a, b, aBank]), "u-a").bank_cents).toBe(TL(1_000));
+
+    // A bank part of another payee never moves to this one.
+    expect(payee(at("2026-12", [a, b, bank("u-b", TL(500))]), "u-a").bank_cents).toBeNull();
+  });
+
+  it("sums overlapping bank parts like the SQL (only reachable through invalid data)", () => {
+    const out = run({
+      month: "2026-11",
+      rules: [salary("u-p1", TL(10_000)), bank("u-p1", TL(6_000), "2026-10-01"), bank("u-p1", TL(3_000))],
+      lines: [],
+    });
+    expect(payee(out, "u-p1")).toMatchObject({ total_cents: TL(10_000), bank_cents: TL(9_000), cash_cents: TL(1_000) });
+    expect(out.warnings).toEqual([]);
+    expect(bankOverText(TL(250))).toBe("Bankadan ödenen tutar bu ayın toplamını ₺250,00 aşıyor.");
+  });
+
+  it("checks bank_portion rules: fields, labels, overlaps per payee", () => {
+    expect(KIND_LABELS.bank_portion).toBe("Bankadan ödenen sabit tutar");
+    expect(RULE_FIELDS.bank_portion).toEqual({ doctor: false, segment: false, share: false, piece: true, deductions: false });
+    expect(pieceFieldLabel("bank_portion")).toBe("Aylık bankadan ödenen tutar (TL)");
+    expect(BANK_PORTION_HINT).toBe(
+      "Hakedişin/maaşın bankadan ödenen kısmı; toplamı değiştirmez, ödemeyi bankadan ve elden diye böler."
+    );
+    expect(SPLIT_LABELS).toEqual({ bank: "Bankadan", cash: "Elden" });
+    expect(HK_KINDS.filter(kindAllowsAnyUser)).toEqual(["fixed_monthly", "bank_portion"]);
+
+    const base: HkRuleInput = {
+      payee_user_id: "u-p1",
+      doctor_id: null,
+      kind: "bank_portion",
+      segment: null,
+      share_bp: null,
+      piece_cents: TL(15_000),
+      deduct_cash_bp: 0,
+      deduct_card_bp: 0,
+      deduct_transfer_bp: 0,
+      deduct_financing_bp: 0,
+      from_month: "2026-11",
+      to_month: null,
+    };
+    expect(validateRule(base)).toBeNull();
+    expect(validateRule({ ...base, payee_user_id: null })).toBe("Bankadan ödeme alacak kişiyi seçin.");
+    for (const bad of [0, -100, null, 12.5]) {
+      expect(validateRule({ ...base, piece_cents: bad })).toBe("Aylık bankadan ödenen tutar 0'dan büyük olmalı.");
+    }
+    expect(validateRule({ ...base, deduct_cash_bp: 100 })).toBe("Bu kural türünde kesinti girilemez.");
+    expect(validateRule({ ...base, to_month: "2026-10" })).toBe("Bitiş ayı başlangıç ayından önce olamaz.");
+
+    const b1 = { ...bank("u-p1", TL(15_000), "2026-11-01", "2026-12-01"), note: "" };
+    const b2 = { ...bank("u-a", TL(15_000)), note: "" };
+    const s1 = { ...salary("u-p1", TL(15_000)), note: "" };
+    const rules = [b1, b2, s1];
+    // Per payee: another person's bank part and the same person's salary never overlap it.
+    expect(ruleOverlapKey(b1)).toBe("bank_portion|u-p1");
+    expect(ruleOverlapKey(b1)).not.toBe(ruleOverlapKey(s1));
+    expect(findOverlappingRule(rules, { ...b1, id: "new", payee_user_id: "u-p2" })).toBeUndefined();
+    expect(findOverlappingRule(rules, { ...b1, id: "new", from_month: "2026-12-01", to_month: null })?.id).toBe(b1.id);
+    expect(findOverlappingRule(rules, { ...b1, id: "new", from_month: "2027-01-01", to_month: null })).toBeUndefined();
+    expect(findOverlappingRule(rules, b1)).toBeUndefined();
+
+    expect(bankRuleOf(rules, "u-p1", "2026-12")?.id).toBe(b1.id);
+    expect(bankRuleOf(rules, "u-p1", "2027-01")).toBeUndefined();
+    expect(bankRuleOf(rules, "u-a", "2030-05")?.id).toBe(b2.id);
+    expect(salaryRuleOf(rules, "u-p1", "2026-11")?.id).toBe(s1.id);
+  });
+
+  it("reads the split from payloads and sums it for a totals row", () => {
+    // A payload without cash_cents (or a frozen statement from before 0032) still splits; no bank part → null.
+    expect(bankSplitOf({ total_cents: TL(800), bank_cents: TL(500) })).toEqual({ bank_cents: TL(500), cash_cents: TL(300), over_cents: 0 });
+    expect(bankSplitOf({ total_cents: TL(800) })).toBeNull();
+    expect(bankSplitOf({ total_cents: TL(800), bank_cents: null, cash_cents: null })).toBeNull();
+    expect(bankSplitText({ total_cents: TL(800) })).toBe("");
+    expect(summarizePayee({ total_cents: TL(800), components: [] })).toMatchObject({ bank_cents: null, cash_cents: null });
+
+    const out = run({
+      month: "2026-11",
+      rules: [aStd(), bank("u-a", TL(1_000)), salary("u-p1", TL(20_000)), bank("u-p1", TL(18_000)), salary("u-p2", TL(9_000))],
+      lines: [line({ doctor_id: "doc-a", try_cents: TL(10_000) })],
+    });
+    const rows = out.payees.map(summarizePayee);
+    expect(rows.map((r) => [r.total_cents, r.bank_cents, r.cash_cents])).toEqual([
+      [TL(2_500), TL(1_000), TL(1_500)],
+      [TL(20_000), TL(18_000), TL(2_000)],
+      [TL(9_000), null, null],
+    ]);
+    expect(sumPayeeSummaries(rows)).toMatchObject({
+      total_cents: TL(31_500),
+      bank_cents: TL(19_000),
+      cash_cents: TL(3_500),
+    });
+    expect(sumPayeeSummaries([rows[2]])).toMatchObject({ bank_cents: null, cash_cents: null });
+    expect(emptyPayeeSummary()).toMatchObject({ bank_cents: null, cash_cents: null });
   });
 });
 
@@ -1364,6 +1591,39 @@ describe("RPC wrappers (v1.2)", () => {
     await expect(
       finHkVoidAdjustment({ p_id: "a-1", p_version: 1, p_reason: "Yanlış tutar" })
     ).rejects.toMatchObject({ message, isForbidden: false });
+  });
+});
+
+describe("RPC wrappers (v1.3)", () => {
+  beforeEach(() => {
+    rpcMock.mockReset();
+    rpcMock.mockResolvedValue({ data: { already_saved: false, record: {} }, error: null });
+  });
+
+  it("saves a bank_portion rule by name, months as their first day", async () => {
+    const args = {
+      p_id: "r-1",
+      p_version: 0,
+      p_payee_user_id: "u-p1",
+      p_doctor_id: null,
+      p_kind: "bank_portion" as const,
+      p_segment: null,
+      p_share_bp: null,
+      p_piece_cents: TL(15_000),
+      p_deduct_cash_bp: 0,
+      p_deduct_card_bp: 0,
+      p_deduct_transfer_bp: 0,
+      p_deduct_financing_bp: 0,
+      p_from_month: "2026-11",
+      p_to_month: "2027-03",
+      p_note: "",
+    };
+    await finHkSaveRule(args);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", {
+      ...args,
+      p_from_month: "2026-11-01",
+      p_to_month: "2027-03-01",
+    });
   });
 });
 

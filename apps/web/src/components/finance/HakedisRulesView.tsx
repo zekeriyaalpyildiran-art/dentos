@@ -2,7 +2,8 @@
 
 // Kurallar of the Hakediş pages (finance and prep modes, HakedisParts): the rules grouped by payee and the child age
 // limit. Only finance mode offers the editors, and only to 'finance' holders (fin_hk_save_rule / fin_hk_save_settings
-// stay finance-only in 0031); the prep section shows the same list read-only.
+// stay finance-only in 0031); the prep section shows the same list read-only. v1.3 (0032): kind bank_portion, the fixed
+// monthly part of a payee's total paid by bank (any active user, like the fixed monthly salary).
 
 import { useState } from "react";
 import { HakedisTabs, useHkReference, type HkMode } from "./HakedisParts";
@@ -29,6 +30,7 @@ import {
   type FinanceError,
 } from "@/lib/finance";
 import {
+  BANK_PORTION_HINT,
   HK_CHILD_AGE_LIMIT_MAX,
   HK_CHILD_AGE_LIMIT_MIN,
   HK_KINDS,
@@ -43,6 +45,7 @@ import {
   finHkSaveRule,
   finHkSaveSettings,
   formatBp,
+  kindAllowsAnyUser,
   monthKey,
   parsePercent,
   pieceFieldLabel,
@@ -59,7 +62,10 @@ import {
 
 type DialogState = { record: HkRuleJson | null; payeeUserId?: string };
 
-/** Hakediş rules need a doctors row or the owner role (fin_hk_save_rule); a fixed monthly salary any user. */
+/**
+ * Hakediş rules need a doctors row or the owner role (fin_hk_save_rule); a fixed monthly salary and a bank amount
+ * (kindAllowsAnyUser) any user.
+ */
 function canHaveHakedisRules(p: Pick<HkPayeeRefJson, "doctor_id" | "role">): boolean {
   return !!p.doctor_id || p.role === "owner";
 }
@@ -119,6 +125,11 @@ export function HakedisRulesView({ mode }: { mode: HkMode }) {
         <p>
           Sabit aylık maaş, kişinin her ay alacağı net tutardır (SGK ve vergi muhasebede takip edilir); aynı kişi için
           ayları çakışan iki maaş kuralı olamaz. Primler her ay Maaş ve prim sayfasından elle girilir.
+        </p>
+        <p>
+          Bankadan ödenen sabit tutar, kişinin o ayki hakedişinin ya da maaşının bankadan (resmi maaş olarak) ödenen
+          kısmıdır. Toplamı değiştirmez; ay özetinde ödeme “Bankadan” ve “Elden” (toplamdan kalan) diye bölünür. Aynı
+          kişi için ayları çakışan iki bankadan ödenen tutar kuralı olamaz.
         </p>
       </div>
 
@@ -267,7 +278,7 @@ function ChildAgeLimitCard({
 
 function rateText(r: HkRuleJson): string {
   if (r.kind === "implant_piece") return `${formatTL(r.piece_cents)} / implant`;
-  if (r.kind === "fixed_monthly") return `${formatTL(r.piece_cents)} / ay`;
+  if (r.kind === "fixed_monthly" || r.kind === "bank_portion") return `${formatTL(r.piece_cents)} / ay`;
   return formatBp(r.share_bp);
 }
 
@@ -424,10 +435,13 @@ function RuleDialog({
 
   const f = RULE_FIELDS[form.kind];
   const salary = form.kind === "fixed_monthly";
+  const bank = form.kind === "bank_portion";
+  const anyUser = kindAllowsAnyUser(form.kind);
   const current = record ? refData.rules.find((r) => r.id === record.id) ?? record : null;
-  // A salary may go to any active user; hakediş rules to doctors and the owner (the server checks the same).
+  // A salary or a bank amount may go to any active user; hakediş rules to doctors and the owner (the server checks the
+  // same).
   const payees = refData.payees.filter(
-    (p) => (p.is_active && (salary || canHaveHakedisRules(p))) || p.user_id === form.payee_user_id
+    (p) => (p.is_active && (anyUser || canHaveHakedisRules(p))) || p.user_id === form.payee_user_id
   );
   const payee = refData.payees.find((p) => p.user_id === form.payee_user_id);
   const doctors = refData.doctors.filter((d) => d.is_active || d.id === form.doctor_id);
@@ -458,7 +472,10 @@ function RuleDialog({
     let pieceCents: number | null = null;
     if (f.piece) {
       const p = parseTL(form.piece);
-      if (!p.ok) return setFormError(`${salary ? "Aylık net maaş" : "Adet başı tutar"}: ${p.error}`);
+      if (!p.ok) {
+        const label = salary ? "Aylık net maaş" : bank ? "Aylık bankadan ödenen tutar" : "Adet başı tutar";
+        return setFormError(`${label}: ${p.error}`);
+      }
       pieceCents = p.cents;
     }
     const deduct: Record<HkMethod, number> = { cash: 0, card: 0, transfer: 0, financing: 0 };
@@ -489,8 +506,10 @@ function RuleDialog({
     };
     const invalid = validateRule(input);
     if (invalid) return setFormError(invalid);
-    if (!salary && payee && !canHaveHakedisRules(payee)) {
-      return setFormError("Hakediş yalnızca hekimlere ve klinik sahibine tanımlanabilir. Personel için “Sabit aylık maaş” seçin.");
+    if (!anyUser && payee && !canHaveHakedisRules(payee)) {
+      return setFormError(
+        "Hakediş yalnızca hekimlere ve klinik sahibine tanımlanabilir. Personel için “Sabit aylık maaş” ya da “Bankadan ödenen sabit tutar” seçin."
+      );
     }
 
     setBusy(true);
@@ -524,8 +543,8 @@ function RuleDialog({
       <form onSubmit={submit} className="space-y-4">
         <div className="grid gap-4 md:grid-cols-2">
           <Field
-            label={salary ? "Maaş alacak kişi" : "Hakediş sahibi"}
-            hint={salary ? "Klinikteki herhangi bir aktif kullanıcı (personel ya da hekim)." : "Hekimler ve klinik sahibi."}
+            label={salary ? "Maaş alacak kişi" : bank ? "Bankadan ödeme alacak kişi" : "Hakediş sahibi"}
+            hint={anyUser ? "Klinikteki herhangi bir aktif kullanıcı (personel ya da hekim)." : "Hekimler ve klinik sahibi."}
           >
             <select className={inputClass} value={form.payee_user_id} onChange={(e) => setPayee(e.target.value)} required>
               <option value="">Seçin</option>
@@ -533,7 +552,7 @@ function RuleDialog({
                 <option key={p.user_id} value={p.user_id}>
                   {p.name}
                   {p.role === "owner" ? " (klinik sahibi)" : ""}
-                  {salary && !p.doctor_id && p.role !== "owner" ? " (personel)" : ""}
+                  {anyUser && !p.doctor_id && p.role !== "owner" ? " (personel)" : ""}
                   {p.is_active ? "" : " (pasif)"}
                 </option>
               ))}
@@ -600,7 +619,9 @@ function RuleDialog({
               hint={
                 salary
                   ? "Her ay ödenecek net tutar. SGK ve vergi muhasebede takip edilir; prim her ay ayrıca girilir."
-                  : undefined
+                  : bank
+                    ? BANK_PORTION_HINT
+                    : undefined
               }
             >
               <input className={inputClass} inputMode="decimal" value={form.piece} onChange={(e) => set("piece", e.target.value)} required />

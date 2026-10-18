@@ -1,7 +1,8 @@
 "use client";
 
-// Ay özeti of the Hakediş pages (finance and prep modes, HakedisParts): per payee the month's figures, the warnings,
-// the close / reopen of the month (finance mode only) and the lines per doctor.
+// Ay özeti of the Hakediş pages (finance and prep modes, HakedisParts): per payee the month's figures (with the bank /
+// cash split of 0032 when a payee has a bank part), the warnings, the close / reopen of the month (finance mode only)
+// and the lines per doctor.
 
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
@@ -23,6 +24,9 @@ import {
   KIND_LABELS,
   METHOD_LABELS,
   SEGMENT_LABELS,
+  SPLIT_LABELS,
+  bankSplitOf,
+  bankSplitText,
   componentKey,
   finHkCloseMonth,
   finHkReopenMonth,
@@ -48,8 +52,8 @@ export const HK_PREP_CLOSE_TEXT = "Ayı klinik sahibi Finans → Hakediş'ten ka
 
 /**
  * Hakediş month (spec §2, v1.2): per payee ciro by payment method, implant part, lab, deductions, matrah, rate, share,
- * implants, management share, fixed salary, bonus / other and total, the warnings, the close / reopen of the month
- * (finance mode) and the lines per doctor. Figures come from fin_hk_month (fin__hk_compute in the database); nothing is
+ * implants, management share, fixed salary, bonus / other and total, the bank / cash split (v1.3), the warnings, the
+ * close / reopen of the month (finance mode) and the lines per doctor. Figures come from fin_hk_month (fin__hk_compute in the database); nothing is
  * recomputed here. Ledger figures (paid / remaining, finance entry links) only when the server sends them.
  */
 export function HakedisMonthView({ mode }: { mode: HkMode }) {
@@ -145,6 +149,24 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                 ) : (
                   <p className="pt-1">Satırın hekimini kontrol edin; kural eksikse klinik sahibine bildirin.</p>
                 ))}
+              {current.warnings.some((w) => w.code === "BANK_OVER_TOTAL") && (
+                <p className="pt-1">
+                  {current.status === "open" ? "Tutarlar değişmez ve ay kapatılabilir; " : "Tutarlar değişmez; "}
+                  bankadan ödenen sabit tutar{" "}
+                  {mode === "finance" ? (
+                    <>
+                      <Link href={`${base}/rules`} className="underline">
+                        Kurallar
+                      </Link>{" "}
+                      sayfasından kontrol edilebilir.
+                      {current.status === "closed" &&
+                        " Kapalı ayda düzeltme için ay yeniden açılıp tekrar kapatılmalıdır."}
+                    </>
+                  ) : (
+                    "yanlışsa klinik sahibine bildirin."
+                  )}
+                </p>
+              )}
             </div>
           )}
           {loading && <p className="text-sm text-gray-500">Güncelleniyor...</p>}
@@ -286,8 +308,8 @@ function implantText(components: HkComponentJson[], qty: number): string {
 }
 
 /**
- * One row per payee; 'Ayrıntı' opens the component breakdown under the row. The salary and bonus columns appear only
- * in months that have them, so a month of hakediş alone looks as before.
+ * One row per payee; 'Ayrıntı' opens the component breakdown under the row. The salary, bonus and bank / cash columns
+ * appear only in months that have them, so a month of hakediş alone looks as before.
  */
 function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<string>; onToggle: (id: string) => void }) {
   const rows = useMemo(() => data.payees.map((p) => ({ payee: p, s: summarizePayee(p) })), [data.payees]);
@@ -296,7 +318,9 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
   const ledger = hkLedgerVisible(data);
   const showSalary = data.payees.some((p) => p.components.some((c) => c.kind === "fixed_monthly"));
   const showAdjustments = data.payees.some((p) => p.components.some((c) => c.kind === "adjustments"));
-  const colCount = 16 + (showSalary ? 1 : 0) + (showAdjustments ? 1 : 0);
+  // 0032: Bankadan / Elden when a payee has a bank part this month (part of the total, never on top of it).
+  const showBank = rows.some((r) => r.s.bank_cents !== null);
+  const colCount = 16 + (showSalary ? 1 : 0) + (showAdjustments ? 1 : 0) + (showBank ? 2 : 0);
 
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto text-gray-900">
@@ -320,6 +344,12 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
             {showSalary && <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">Sabit maaş</th>}
             {showAdjustments && <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">Prim ve diğer</th>}
             <th className="px-3 py-3 font-semibold text-right">Toplam</th>
+            {showBank && (
+              <>
+                <th className="px-3 py-3 font-semibold text-right">{SPLIT_LABELS.bank}</th>
+                <th className="px-3 py-3 font-semibold text-right">{SPLIT_LABELS.cash}</th>
+              </>
+            )}
             <th className="px-3 py-3 font-semibold">Kayıt</th>
             <th className="px-3 py-3" />
           </tr>
@@ -366,6 +396,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                       <td className={`${NUM} ${s.adjustments_cents < 0 ? "text-red-600" : ""}`}>{dash(s.adjustments_cents)}</td>
                     )}
                     <td className={`${NUM} font-semibold ${payee.total_cents < 0 ? "text-red-600" : ""}`}>{formatTL(payee.total_cents)}</td>
+                    {showBank && <SplitCells bank={s.bank_cents} cash={s.cash_cents} />}
                     <td className="px-3 py-2 text-xs whitespace-nowrap">
                       <StatementCell
                         statement={st}
@@ -388,6 +419,14 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                   {expanded && (
                     <tr className="border-b bg-white">
                       <td colSpan={colCount} className="px-3 py-3">
+                        {payee.components.length === 0 && (
+                          <p className="text-sm text-gray-600 mb-2">
+                            Bu ay hakediş ya da maaş çıkmadı; yalnızca bankadan ödenen sabit tutar kuralı var.
+                          </p>
+                        )}
+                        {s.bank_cents !== null && (
+                          <p className="text-sm text-gray-700 mb-2 tabular-nums">Ödeme: {bankSplitText(payee)}</p>
+                        )}
                         <div className="grid gap-3 lg:grid-cols-2">
                           {payee.components.map((c) => (
                             <ComponentBreakdown key={componentKey(c)} c={c} />
@@ -430,6 +469,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
               {showSalary && <td className={NUM}>{dash(totals.salary_cents)}</td>}
               {showAdjustments && <td className={NUM}>{dash(totals.adjustments_cents)}</td>}
               <td className={NUM}>{formatTL(totals.total_cents)}</td>
+              {showBank && <SplitCells bank={totals.bank_cents} cash={totals.cash_cents} />}
               <td colSpan={2} />
             </tr>
           </tfoot>
@@ -441,8 +481,20 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
         cirosundan hesaplanır. Sabit maaş net tutardır; prim ve diğer satırları o ayın elle girilen tutarlarıdır (eksi
         tutar kesintidir). Ay kapatılınca hekimin bütün tutarları tek hakediş kaydına, personelin maaşı ve primi
         personel gideri olarak Finans&apos;a yazılır.
+        {showBank &&
+          " Bankadan: kişinin bu ay bankadan (resmi maaş olarak) ödenen sabit tutarı; Elden: toplamdan kalan kısım. Bu bölünme toplamı değiştirmez; ay kapatılınca Finans kaydının açıklamasına yazılır."}
       </p>
     </div>
+  );
+}
+
+/** Bankadan / Elden cells of a payee (or totals) row; "—" without a bank part, a negative cash part in red. */
+function SplitCells({ bank, cash }: { bank: number | null; cash: number | null }) {
+  return (
+    <>
+      <td className={NUM}>{bank === null ? "—" : formatTL(bank)}</td>
+      <td className={`${NUM} ${cash !== null && cash < 0 ? "text-red-600" : ""}`}>{cash === null ? "—" : formatTL(cash)}</td>
+    </>
   );
 }
 
@@ -490,6 +542,9 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
   const live = new Map(data.payees.map((p) => [p.payee_user_id, p.total_cents]));
   const moved = data.statements.some((st) => (live.get(st.payee_user_id) ?? 0) !== st.total_cents);
   const ledger = hkLedgerVisible(data);
+  // 0032: the bank / cash split frozen in the statement (statements of closes before 0032 have none).
+  const splits = new Map(data.statements.map((st) => [st.id, st.breakdown ? bankSplitOf(st.breakdown) : null]));
+  const showBank = Array.from(splits.values()).some((x) => x !== null);
   return (
     <Card title="Kapanış dökümleri">
       {data.statements.length === 0 ? (
@@ -501,6 +556,12 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
               <tr className="text-left text-gray-700 border-b">
                 <th className="py-2 pr-3 font-semibold">Kişi</th>
                 <th className="py-2 pr-3 font-semibold text-right">Kapanıştaki toplam</th>
+                {showBank && (
+                  <>
+                    <th className="py-2 pr-3 font-semibold text-right">{SPLIT_LABELS.bank}</th>
+                    <th className="py-2 pr-3 font-semibold text-right">{SPLIT_LABELS.cash}</th>
+                  </>
+                )}
                 <th className="py-2 pr-3 font-semibold text-right">Güncel hesap</th>
                 {ledger && (
                   <>
@@ -514,10 +575,19 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
             <tbody>
               {data.statements.map((st) => {
                 const now = live.get(st.payee_user_id) ?? 0;
+                const split = splits.get(st.id) ?? null;
                 return (
                   <tr key={st.id} className="border-b last:border-b-0">
                     <td className="py-2 pr-3">{st.payee_name}</td>
                     <td className="py-2 pr-3 text-right tabular-nums font-medium">{formatTL(st.total_cents)}</td>
+                    {showBank && (
+                      <>
+                        <td className="py-2 pr-3 text-right tabular-nums">{split ? formatTL(split.bank_cents) : "—"}</td>
+                        <td className={`py-2 pr-3 text-right tabular-nums ${split && split.cash_cents < 0 ? "text-red-600" : ""}`}>
+                          {split ? formatTL(split.cash_cents) : "—"}
+                        </td>
+                      </>
+                    )}
                     <td className={`py-2 pr-3 text-right tabular-nums ${now !== st.total_cents ? "text-amber-700" : "text-gray-600"}`}>
                       {formatTL(now)}
                     </td>
@@ -672,6 +742,7 @@ function CloseDialog({
 }) {
   const unruled = data.warnings.filter((w) => w.code === "UNRULED_LINES" || w.code === "UNRULED_PIECES");
   const negative = data.payees.filter((p) => p.total_cents < 0);
+  const bankOver = data.warnings.filter((w) => w.code === "BANK_OVER_TOTAL");
   const [accept, setAccept] = useState(false);
   const [error, setError] = useState<FinanceError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -698,23 +769,41 @@ function CloseDialog({
           ve personelin bu ayki maaş kaydı (personel gideri) Finans → Ödeme ve tahsilatlar listesinde oluşturulur ya da
           tutarı güncellenir. Kapalı ayın ve ondan önceki ayların satırları, implant, lab ve prim kayıtları
           değiştirilemez; düzeltmeler son kapatılan aydan sonraki bir aya düzeltme satırı olarak girilir.
+          {data.payees.some((p) => bankSplitOf(p)) &&
+            " Bankadan ödenen sabit tutarı olan kişinin kaydının açıklamasına bankadan ve elden ödenecek kısımlar yazılır; kayıt tutarı yine toplamdır."}
         </p>
         <div className="rounded border">
           {data.payees.length === 0 ? (
             <p className="p-3 text-sm text-gray-500">Bu ay için hakediş ya da maaş çıkmadı.</p>
           ) : (
-            data.payees.map((p) => (
-              <div key={p.payee_user_id} className="flex justify-between gap-4 px-3 py-2 border-b last:border-b-0 text-sm">
-                <span>{p.payee_name}</span>
-                <span className={`tabular-nums font-medium ${p.total_cents < 0 ? "text-red-600" : ""}`}>{formatTL(p.total_cents)}</span>
-              </div>
-            ))
+            data.payees.map((p) => {
+              const split = bankSplitText(p);
+              return (
+                <div key={p.payee_user_id} className="flex justify-between gap-4 px-3 py-2 border-b last:border-b-0 text-sm">
+                  <span>{p.payee_name}</span>
+                  <span className="text-right">
+                    <span className={`tabular-nums font-medium ${p.total_cents < 0 ? "text-red-600" : ""}`}>{formatTL(p.total_cents)}</span>
+                    {split && <span className="block text-xs text-gray-600 tabular-nums">{split}</span>}
+                  </span>
+                </div>
+              );
+            })
           )}
         </div>
         {negative.length > 0 && (
           <div className="p-3 rounded bg-red-50 text-red-700 text-sm">
             Toplamı eksi çıkan kişi var ({negative.map((p) => p.payee_name).join(", ")}). Ay kapatılamaz; düzeltme
             satırlarını ve kesintileri kontrol edin.
+          </div>
+        )}
+        {bankOver.length > 0 && (
+          <div className="p-3 rounded bg-amber-50 text-amber-900 text-sm space-y-1">
+            <ul className="list-disc pl-5 space-y-1">
+              {bankOver.map((w, i) => (
+                <li key={i}>{warningText(w)}</li>
+              ))}
+            </ul>
+            <p>Tutarlar değişmez; ay yine de kapatılabilir.</p>
           </div>
         )}
         {unruled.length > 0 && (

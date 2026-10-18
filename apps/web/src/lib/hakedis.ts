@@ -3,7 +3,10 @@
 // v1.1 additions: child patients by birth date (fin_settings.hk_child_age_limit, fin_hk_patient_marks.birth_date) and
 // the reception's patient marking RPCs (hk_marks_*, hk_save_mark; no amounts), and v1.2 (0031_hakedis_payroll.sql):
 // staff payroll (rule kind fixed_monthly = monthly net salary, monthly bonus / other adjustments in
-// fin_hk_adjustments) and the 'hakedis_prepare' permission (fin_hk_* data entry without the ledger).
+// fin_hk_adjustments) and the 'hakedis_prepare' permission (fin_hk_* data entry without the ledger), and v1.3
+// (0032_hakedis_bank_split.sql): rule kind bank_portion = the fixed part of a payee's monthly amount paid by bank
+// (official salary). It is not a component and never changes a total; every payee carries bank_cents / cash_cents
+// (cash = total − bank, both null without a bank part) and BANK_OVER_TOTAL warns when the bank part exceeds the total.
 // Every rate and amount is data entered by the owner (basis points and integer cents); nothing here is hard-coded.
 // Month arguments are sent as 'YYYY-MM-01' dates; month values read back may be 'YYYY-MM' or 'YYYY-MM-DD', so every
 // helper compares them through monthKey().
@@ -18,10 +21,22 @@ import { createClient } from "./supabase";
 
 export type HkMethod = PaymentMethod;
 export type HkCurrency = Currency;
-/** Rule kinds (fin_hk_rules.kind). fixed_monthly (0031): monthly net salary of any active user, in piece_cents. */
-export type HkKind = "ciro_share" | "ortho_lab_first" | "implant_piece" | "clinic_ciro_share" | "fixed_monthly";
+/**
+ * Rule kinds (fin_hk_rules.kind). fixed_monthly (0031): monthly net salary of any active user, in piece_cents.
+ * bank_portion (0032): the fixed monthly amount of any active user paid by bank, in piece_cents; part of the payee's
+ * total (hakediş or salary), never on top of it.
+ */
+export type HkKind =
+  | "ciro_share"
+  | "ortho_lab_first"
+  | "implant_piece"
+  | "clinic_ciro_share"
+  | "fixed_monthly"
+  | "bank_portion";
+/** Rule kinds that become a component of their payee (bank_portion only splits the total into bank and cash). */
+export type HkRuleComponentKind = Exclude<HkKind, "bank_portion">;
 /** Component kinds of a payee: one per active rule, plus one 'adjustments' component (no rule) for the month's bonuses. */
-export type HkComponentKind = HkKind | "adjustments";
+export type HkComponentKind = HkRuleComponentKind | "adjustments";
 /** fin_hk_adjustments.kind (0031): bonus, or anything else (negative = deduction). */
 export type HkAdjustmentKind = "bonus" | "other";
 export type HkSegment = "standard" | "child" | "own";
@@ -32,13 +47,17 @@ export type HkMonthStatus = "open" | "closed";
 /** Display order everywhere (tables, by_method columns). */
 export const HK_METHODS: readonly HkMethod[] = ["cash", "card", "transfer", "financing"];
 export const HK_SEGMENTS: readonly HkSegment[] = ["standard", "child", "own"];
-/** Rule kinds in display order; also the component order of a payee (the 'adjustments' component comes last). */
+/**
+ * Rule kinds in display order; also the component order of a payee (the 'adjustments' component comes last;
+ * bank_portion is never a component).
+ */
 export const HK_KINDS: readonly HkKind[] = [
   "ciro_share",
   "ortho_lab_first",
   "implant_piece",
   "clinic_ciro_share",
   "fixed_monthly",
+  "bank_portion",
 ];
 export const HK_ADJUSTMENT_KINDS: readonly HkAdjustmentKind[] = ["bonus", "other"];
 
@@ -61,7 +80,15 @@ export const KIND_LABELS: Record<HkKind, string> = {
   implant_piece: "İmplant (adet başı)",
   clinic_ciro_share: "Yönetim payı (klinik cirosu)",
   fixed_monthly: "Sabit aylık maaş",
+  bank_portion: "Bankadan ödenen sabit tutar",
 };
+
+/** Rules editor hint of the bank_portion kind. */
+export const BANK_PORTION_HINT =
+  "Hakedişin/maaşın bankadan ödenen kısmı; toplamı değiştirmez, ödemeyi bankadan ve elden diye böler.";
+
+/** Titles of a payee's bank / cash split (bank_cents / cash_cents, 0032). */
+export const SPLIT_LABELS = { bank: "Bankadan", cash: "Elden" } as const;
 
 export const ADJUSTMENT_KIND_LABELS: Record<HkAdjustmentKind, string> = {
   bonus: "Prim",
@@ -94,11 +121,23 @@ export const RULE_FIELDS: Record<
   clinic_ciro_share: { doctor: false, segment: false, share: true, piece: false, deductions: false },
   // piece_cents holds the monthly net salary; the payee may be any active user of the clinic (staff or doctor).
   fixed_monthly: { doctor: false, segment: false, share: false, piece: true, deductions: false },
+  // piece_cents holds the monthly amount paid by bank; the payee may be any active user of the clinic.
+  bank_portion: { doctor: false, segment: false, share: false, piece: true, deductions: false },
 };
+
+/**
+ * Kinds whose payee may be any active user of the clinic (no doctors row needed) and whose overlap check is per payee:
+ * fixed_monthly (0031) and bank_portion (0032).
+ */
+export function kindAllowsAnyUser(kind: HkKind): boolean {
+  return kind === "fixed_monthly" || kind === "bank_portion";
+}
 
 /** Label of the piece_cents field of a rule kind that uses it (rules editor). */
 export function pieceFieldLabel(kind: HkKind): string {
-  return kind === "fixed_monthly" ? "Aylık net maaş (TL)" : "İmplant başı tutar (TL)";
+  if (kind === "fixed_monthly") return "Aylık net maaş (TL)";
+  if (kind === "bank_portion") return "Aylık bankadan ödenen tutar (TL)";
+  return "İmplant başı tutar (TL)";
 }
 
 const DEDUCT_FIELD: Record<
@@ -314,7 +353,8 @@ export interface HkDoctorRefJson {
 
 /**
  * Possible payees: users of the clinic that have a doctors row, plus the owner; from 0031 any active user may be a
- * payroll payee (fixed_monthly rule, bonus). doctor_id null = staff without a doctors row.
+ * payroll payee (fixed_monthly rule, bonus) and from 0032 have a bank_portion rule. doctor_id null = staff without a
+ * doctors row.
  */
 export interface HkPayeeRefJson {
   user_id: string;
@@ -338,7 +378,7 @@ export interface HkRuleJson {
   segment: HkSegment | null;
   /** ciro_share / ortho_lab_first / clinic_ciro_share: 1..10000 */
   share_bp: number | null;
-  /** implant_piece: amount per implant; fixed_monthly: monthly net salary; null otherwise */
+  /** implant_piece: amount per implant; fixed_monthly: monthly net salary; bank_portion: monthly bank amount */
   piece_cents: number | null;
   /** 0 unless ciro_share / ortho_lab_first */
   deduct_cash_bp: number;
@@ -575,10 +615,13 @@ export interface HkLabPatientJson {
   recovered_in_month_cents?: number;
 }
 
-/** A component computed from one active rule (every kind, fixed_monthly included: 13 keys in the SQL payload). */
+/**
+ * A component computed from one active rule (every kind but bank_portion, fixed_monthly included: 13 keys in the SQL
+ * payload).
+ */
 export interface HkRuleComponentJson {
   rule_id: string;
-  kind: HkKind;
+  kind: HkRuleComponentKind;
   doctor_id: string | null;
   doctor_name: string | null;
   segment: HkSegment | null;
@@ -641,6 +684,13 @@ export interface HkPayeeJson {
   counterparty_id?: string | null;
   total_cents: number;
   components: HkComponentJson[];
+  /**
+   * 0032: the payee's bank_portion amount active in the month (paid by bank as part of total_cents), null without one.
+   * Absent in payloads and statements from before 0032.
+   */
+  bank_cents?: number | null;
+  /** 0032: total_cents − bank_cents (paid in cash; negative when the bank part exceeds the total), null without one */
+  cash_cents?: number | null;
 }
 
 export type HkWarningJson =
@@ -652,6 +702,14 @@ export type HkWarningJson =
       payee_name?: string;
       /** no doctors row / no physician counterparty yet / counterparty inactive */
       reason?: "no_doctor" | "missing" | "inactive";
+    }
+  | {
+      /** 0032: the bank part is more than the month's total (the amounts are not changed; the close is not blocked) */
+      code: "BANK_OVER_TOTAL";
+      payee_user_id: string;
+      payee_name: string;
+      bank_cents: number;
+      total_cents: number;
     };
 
 /** fin_hk__compute output. */
@@ -742,6 +800,10 @@ export interface HkMyMonthRowJson {
   paid_cents: number;
   /** closed months only; null while open */
   remaining_cents: number | null;
+  /** 0032: the caller's bank part of the month (statement breakdown when closed), null without one */
+  bank_cents?: number | null;
+  /** 0032: total_cents − bank_cents, null without a bank part */
+  cash_cents?: number | null;
 }
 
 export interface HkMyMonthsJson {
@@ -799,6 +861,9 @@ export interface HkMyPayeeJson {
   payee_name: string;
   total_cents: number;
   components: HkMyComponentJson[];
+  /** 0032: see HkPayeeJson.bank_cents / cash_cents */
+  bank_cents?: number | null;
+  cash_cents?: number | null;
 }
 
 export interface HkMyMonthData {
@@ -1101,14 +1166,18 @@ export function validateRule(r: HkRuleInput): string | null {
   const f = RULE_FIELDS[r.kind];
   if (!f) return "Kural türünü seçin.";
   const salary = r.kind === "fixed_monthly";
-  if (!r.payee_user_id) return salary ? "Maaş alacak kişiyi seçin." : "Hakediş sahibini seçin.";
+  const bank = r.kind === "bank_portion";
+  if (!r.payee_user_id) {
+    return salary ? "Maaş alacak kişiyi seçin." : bank ? "Bankadan ödeme alacak kişiyi seçin." : "Hakediş sahibini seçin.";
+  }
   if (f.doctor && !r.doctor_id) return "Hekimi seçin.";
   if (f.segment && !r.segment) return "Hasta grubunu seçin.";
   if (f.share && (r.share_bp === null || !Number.isInteger(r.share_bp) || r.share_bp < 1 || r.share_bp > 10000)) {
     return "Pay oranı %0,01 ile %100 arasında olmalı.";
   }
   if (f.piece && (r.piece_cents === null || !Number.isInteger(r.piece_cents) || r.piece_cents <= 0)) {
-    return salary ? "Aylık net maaş 0'dan büyük olmalı." : "Adet başı tutar 0'dan büyük olmalı.";
+    if (salary) return "Aylık net maaş 0'dan büyük olmalı.";
+    return bank ? "Aylık bankadan ödenen tutar 0'dan büyük olmalı." : "Adet başı tutar 0'dan büyük olmalı.";
   }
   for (const method of HK_METHODS) {
     const bp = r[DEDUCT_FIELD[method]];
@@ -1124,11 +1193,11 @@ export function validateRule(r: HkRuleInput): string | null {
 }
 
 /**
- * Rules that may not be active in the same month (fin_hk_save_rule overlap check): fixed_monthly per (kind, payee),
- * every other kind per (kind, doctor, segment) regardless of the payee.
+ * Rules that may not be active in the same month (fin_hk_save_rule overlap check): fixed_monthly and bank_portion per
+ * (kind, payee), every other kind per (kind, doctor, segment) regardless of the payee.
  */
 export function ruleOverlapKey(r: Pick<HkRuleInput, "kind" | "payee_user_id" | "doctor_id" | "segment">): string {
-  return r.kind === "fixed_monthly"
+  return kindAllowsAnyUser(r.kind)
     ? `${r.kind}|${r.payee_user_id ?? ""}`
     : `${r.kind}|${r.doctor_id ?? ""}|${r.segment ?? ""}`;
 }
@@ -1164,6 +1233,48 @@ export function salaryRuleOf<T extends Pick<HkRuleJson, "kind" | "payee_user_id"
   month: string
 ): T | undefined {
   return rules.find((r) => r.kind === "fixed_monthly" && r.payee_user_id === payeeUserId && ruleActiveIn(r, month));
+}
+
+/** The payee's bank_portion rule active in the month (bank amount in piece_cents), if any. */
+export function bankRuleOf<T extends Pick<HkRuleJson, "kind" | "payee_user_id" | "from_month" | "to_month">>(
+  rules: readonly T[],
+  payeeUserId: string,
+  month: string
+): T | undefined {
+  return rules.find((r) => r.kind === "bank_portion" && r.payee_user_id === payeeUserId && ruleActiveIn(r, month));
+}
+
+/** A payee's bank / cash split (0032); over_cents = how much the bank part exceeds the total (0 when it does not). */
+export interface HkBankSplit {
+  bank_cents: number;
+  cash_cents: number;
+  over_cents: number;
+}
+
+/**
+ * The bank / cash split of a payee object (fin_hk_month, statement breakdown, hk_my_*), or null without a bank part
+ * (bank_cents null or absent). cash_cents falls back to total − bank when the payload leaves it out.
+ */
+export function bankSplitOf(p: {
+  total_cents: number;
+  bank_cents?: number | null;
+  cash_cents?: number | null;
+}): HkBankSplit | null {
+  if (typeof p.bank_cents !== "number") return null;
+  const cash = typeof p.cash_cents === "number" ? p.cash_cents : p.total_cents - p.bank_cents;
+  return { bank_cents: p.bank_cents, cash_cents: cash, over_cents: Math.max(p.bank_cents - p.total_cents, 0) };
+}
+
+/** BANK_OVER_TOTAL text without the payee's name: "Bankadan ödenen tutar bu ayın toplamını ₺X aşıyor." */
+export function bankOverText(overCents: number): string {
+  return `Bankadan ödenen tutar bu ayın toplamını ${formatTL(overCents)} aşıyor.`;
+}
+
+/** "Bankadan ₺1.234,00 · Elden ₺567,00"; "" without a bank part. */
+export function bankSplitText(p: { total_cents: number; bank_cents?: number | null; cash_cents?: number | null }): string {
+  const split = bankSplitOf(p);
+  if (!split) return "";
+  return `${SPLIT_LABELS.bank} ${formatTL(split.bank_cents)} · ${SPLIT_LABELS.cash} ${formatTL(split.cash_cents)}`;
 }
 
 /** fin_hk_adjustments.description length limit. */
@@ -1241,6 +1352,8 @@ export function warningText(w: HkWarningJson): string {
         return `${w.payee_name || "Hakediş sahibi"} için cari kaydı pasif; ay kapatılmadan önce Cariler ekranından aktifleştirin.`;
       }
       return `${w.payee_name || "Hakediş sahibi"} için cari kaydı yok; ay kapatılınca otomatik oluşturulur.`;
+    case "BANK_OVER_TOTAL":
+      return `${w.payee_name || "Hakediş sahibi"}: ${bankOverText(w.bank_cents - w.total_cents)}`;
     default:
       return "Bilinmeyen uyarı.";
   }
@@ -1271,9 +1384,15 @@ export interface HkPayeeSummary {
   other_cents: number;
   adjustments_cents: number;
   total_cents: number;
+  /**
+   * 0032: the payee's bank part and total − bank part (cash); both null without a bank part. In a totals row: the sums
+   * over the payees that have one (null when none has).
+   */
+  bank_cents: number | null;
+  cash_cents: number | null;
 }
 
-/** A summary with every figure 0 (and the given total). */
+/** A summary with every figure 0 (and the given total), without a bank part. */
 export function emptyPayeeSummary(totalCents = 0): HkPayeeSummary {
   return {
     gross_by_method: { cash: 0, card: 0, transfer: 0, financing: 0 },
@@ -1293,12 +1412,15 @@ export function emptyPayeeSummary(totalCents = 0): HkPayeeSummary {
     other_cents: 0,
     adjustments_cents: 0,
     total_cents: totalCents,
+    bank_cents: null,
+    cash_cents: null,
   };
 }
 
 /**
  * Totals row of a payee table: every figure summed, share rates merged. management_base_cents stays 0: each
- * management share is computed on the same clinic ciro, so its bases do not add up.
+ * management share is computed on the same clinic ciro, so its bases do not add up. Bank / cash: summed over the
+ * payees with a bank part, null when none has one.
  */
 export function sumPayeeSummaries(rows: readonly HkPayeeSummary[]): HkPayeeSummary {
   const out = emptyPayeeSummary();
@@ -1319,13 +1441,25 @@ export function sumPayeeSummaries(rows: readonly HkPayeeSummary[]): HkPayeeSumma
     out.other_cents += s.other_cents;
     out.adjustments_cents += s.adjustments_cents;
     out.total_cents += s.total_cents;
+    if (s.bank_cents !== null) out.bank_cents = (out.bank_cents ?? 0) + s.bank_cents;
+    if (s.cash_cents !== null) out.cash_cents = (out.cash_cents ?? 0) + s.cash_cents;
   }
   return out;
 }
 
 /** A payee object of fin_hk_month (HkPayeeJson) or of hk_my_month (HkMyPayeeJson, trimmed management component). */
-export function summarizePayee(p: { total_cents: number; components: readonly HkMyComponentJson[] }): HkPayeeSummary {
+export function summarizePayee(p: {
+  total_cents: number;
+  components: readonly HkMyComponentJson[];
+  bank_cents?: number | null;
+  cash_cents?: number | null;
+}): HkPayeeSummary {
   const s = emptyPayeeSummary(p.total_cents);
+  const split = bankSplitOf(p);
+  if (split) {
+    s.bank_cents = split.bank_cents;
+    s.cash_cents = split.cash_cents;
+  }
   for (const c of p.components) {
     if (c.kind === "fixed_monthly") {
       s.salary_cents += c.amount_cents;
@@ -1585,6 +1719,10 @@ function orthoWalk(
  * Payroll (0031): a fixed_monthly rule pays its piece_cents as is; the payee's live adjustments of the month form one
  * 'adjustments' component after the rule components. A payee may have payroll components only (staff, or a payee with
  * a bonus and no rule).
+ * Bank split (0032): a bank_portion rule is not a component and changes no total; every payee gets bank_cents (the
+ * active bank_portion amount, else null) and cash_cents (total − bank, else null). A payee with only a bank_portion
+ * rule is listed with total 0 and a negative cash part; BANK_OVER_TOTAL follows the other warnings (by payee name, then
+ * payee id) when bank > total.
  */
 export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const month = monthKey(input.month);
@@ -1600,6 +1738,10 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     .filter((r) => ruleActiveIn(r, month))
     .slice()
     .sort((a, b) => byText(monthKey(b.from_month), monthKey(a.from_month)) || byText(a.id, b.id));
+  // Rules that become components: every kind but bank_portion.
+  const componentRules = active.filter(
+    (r): r is HkComputeRule & { kind: HkRuleComponentKind } => r.kind !== "bank_portion"
+  );
   const orthoByDoctor = new Map<string, HkComputeRule>();
   const ciroByKey = new Map<string, HkComputeRule>();
   for (const r of active) {
@@ -1622,7 +1764,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   // Components, one per active rule.
   const components = new Map<string, HkRuleComponentJson>();
   const ruleOf = new Map<string, HkComputeRule>();
-  for (const r of active) {
+  for (const r of componentRules) {
     ruleOf.set(r.id, r);
     components.set(r.id, {
       rule_id: r.id,
@@ -1712,7 +1854,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     }
     return p;
   };
-  for (const r of active) {
+  for (const r of componentRules) {
     const p = payeeOf(r.payee_user_id, r.payee_name);
     const c = components.get(r.id)!;
     p.components.push(c);
@@ -1738,8 +1880,20 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     p.total_cents += amount;
   });
 
+  // Bank part (0032): one active bank_portion rule per payee (fin_hk_save_rule's overlap check); summed like the SQL
+  // should rows ever overlap. A payee with only a bank_portion rule is listed with total 0 and no components.
+  const bankOf = new Map<string, number>();
+  for (const r of active) {
+    if (r.kind !== "bank_portion") continue;
+    bankOf.set(r.payee_user_id, (bankOf.get(r.payee_user_id) ?? 0) + (r.piece_cents ?? 0));
+    payeeOf(r.payee_user_id, r.payee_name);
+  }
+
   const payees = Array.from(payeeMap.values());
   for (const p of payees) {
+    const bank = bankOf.get(p.payee_user_id);
+    p.bank_cents = bank ?? null;
+    p.cash_cents = bank === undefined ? null : p.total_cents - bank;
     p.components.sort(
       (a, b) =>
         kindOrder(a.kind) - kindOrder(b.kind) ||
@@ -1786,6 +1940,17 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
           reason: "missing",
         });
       }
+    }
+  }
+  for (const p of payees) {
+    if (typeof p.bank_cents === "number" && p.bank_cents > p.total_cents) {
+      warnings.push({
+        code: "BANK_OVER_TOTAL",
+        payee_user_id: p.payee_user_id,
+        payee_name: p.payee_name,
+        bank_cents: p.bank_cents,
+        total_cents: p.total_cents,
+      });
     }
   }
 
