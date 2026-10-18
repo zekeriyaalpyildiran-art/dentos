@@ -1,10 +1,12 @@
 "use client";
 
 // Satırlar ve hastalar of the Hakediş pages (finance and prep modes, HakedisParts): the month's revenue lines, implants
-// placed, lab costs and the patient marks. Data entry needs can_prepare ('finance' or 'hakedis_prepare', 0031) and an
-// open month; the server enforces the same.
+// placed, lab costs (0032: with the rule and patient group each live cost resolves to) and the patient marks. Data
+// entry needs can_prepare ('finance' or 'hakedis_prepare', 0031) and an open month; the server enforces the same.
+// ?tab=pieces | lab | marks opens that sub-tab (e.g. the Lab özeti's link to the lab costs); default: the lines.
 
 import { useMemo, useState, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   DialogButtons,
   HakedisTabs,
@@ -46,6 +48,7 @@ import {
   HK_MIN_BIRTH_DATE,
   HK_SEGMENTS,
   KIND_LABELS,
+  LAB_DEDUCTION_TEXT,
   METHOD_LABELS,
   SEGMENT_LABELS,
   SOURCE_LABELS,
@@ -180,7 +183,11 @@ function checkPatient(name: string): string | null {
 export function HakedisLinesView({ mode }: { mode: HkMode }) {
   const ref = useHkReference();
   const [month, setMonth] = useHkMonth(ref.data);
-  const [tab, setTab] = useState<Tab>("lines");
+  const searchParams = useSearchParams();
+  const [tab, setTab] = useState<Tab>(() => {
+    const t = searchParams.get("tab");
+    return t === "pieces" || t === "lab" || t === "marks" ? t : "lines";
+  });
   const { data: current, error, loading, reload: loadMonth } = useHkMonthData(month);
   // Separate from the month's error: a successful month load must not hide a failed marks load.
   const { marks, error: marksError, reload: loadMarks } = useHkMarks();
@@ -700,6 +707,9 @@ function LabTab({
 }) {
   const [showVoided, setShowVoided] = useState(false);
   const rows = data.lab_costs.filter((c) => showVoided || !c.voided_at);
+  const rulesById = useMemo(() => new Map(refData.rules.map((r) => [r.id, r])), [refData.rules]);
+  // Before 0032 the rows carry no resolution: the doctor's ortho rule was the only one that used lab costs.
+  const resolved = data.lab_summary !== undefined || data.lab_costs.some((c) => c.rule_id !== undefined);
   const ortho = new Set(
     refData.rules.filter((r) => r.kind === "ortho_lab_first" && ruleActiveIn(r, month)).map((r) => r.doctor_id)
   );
@@ -731,13 +741,14 @@ function LabTab({
               <th className="py-2 pr-3 font-semibold">Hasta</th>
               <th className="py-2 pr-3 font-semibold">Laboratuvar</th>
               <th className="py-2 pr-3 font-semibold text-right">Tutar</th>
+              <th className="py-2 pr-3 font-semibold">Kural</th>
               <th className="py-2" />
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-6 text-center text-gray-500">
+                <td colSpan={7} className="py-6 text-center text-gray-500">
                   Bu ay için lab gideri yok.
                 </td>
               </tr>
@@ -747,10 +758,7 @@ function LabTab({
                 return (
                   <tr key={c.id} className={`border-b last:border-b-0 align-top ${voided ? "text-gray-400" : ""}`}>
                     <td className={`py-2 pr-3 whitespace-nowrap ${voided ? "line-through" : ""}`}>{formatDay(c.day)}</td>
-                    <td className="py-2 pr-3 whitespace-nowrap">
-                      {c.doctor_name}
-                      {!voided && !ortho.has(c.doctor_id) && <div className="text-xs text-gray-500">Bilgi amaçlı (ortodonti kuralı yok)</div>}
-                    </td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{c.doctor_name}</td>
                     <td className="py-2 pr-3">
                       <div className={voided ? "line-through" : ""}>{c.patient_name}</div>
                       {c.description && <div className="text-xs text-gray-500">{c.description}</div>}
@@ -759,6 +767,17 @@ function LabTab({
                     <td className="py-2 pr-3">{c.lab_name}</td>
                     <td className={`py-2 pr-3 text-right tabular-nums whitespace-nowrap ${c.amount_cents < 0 ? "text-red-600" : ""} ${voided ? "line-through" : ""}`}>
                       {formatTL(c.amount_cents)}
+                    </td>
+                    <td className="py-2 pr-3">
+                      {voided ? (
+                        "—"
+                      ) : resolved ? (
+                        <LabCostRule cost={c} rule={c.rule_id ? rulesById.get(c.rule_id) : undefined} />
+                      ) : ortho.has(c.doctor_id) ? (
+                        <div className="whitespace-nowrap">{KIND_LABELS.ortho_lab_first}</div>
+                      ) : (
+                        <span className="text-xs text-gray-500">Bilgi amaçlı</span>
+                      )}
                     </td>
                     <td className="py-2 text-right">
                       {editable && !voided && (
@@ -775,11 +794,41 @@ function LabTab({
         </table>
       </div>
       <p className="text-xs text-gray-500 mt-3">
-        Bu ay toplam {formatTL(total)}. Her laboratuvar faturası / ücreti hasta başına ayrı satır girilir. Lab gideri,
-        “Ortodonti (önce lab)” kuralı olan hekimde o hastanın ödemelerinden önce karşılanır (bu ay ve sonraki aylardaki
-        ödemelerden; geçmiş aylara geri dönmez). Diğer hekimlerde bilgi amaçlıdır.
+        Bu ay toplam {formatTL(total)}. Her laboratuvar faturası / ücreti hasta başına ayrı satır girilir. Kural
+        sütunu giderin hangi kuralda düşüldüğünü gösterir. {LAB_DEDUCTION_TEXT} Ortodontide gider bu ay ve sonraki
+        aylardaki ödemelerden karşılanır; geçmiş aylara geri dönmez.
       </p>
     </Card>
+  );
+}
+
+/**
+ * The rule a live lab cost resolves to (0032, fin__hk_eval_lab_costs): the kind, the patient group of a ciro_share rule
+ * and the payee; "Kural yok" when no ortho / ciro_share rule takes it (UNRULED_LAB).
+ */
+function LabCostRule({ cost, rule }: { cost: HkLabCostJson; rule: HkReferenceJson["rules"][number] | undefined }) {
+  if (!cost.rule_id) {
+    return (
+      <>
+        <div className="text-amber-700 whitespace-nowrap">Kural yok</div>
+        <div className="text-xs text-gray-500">Hakedişten düşülmez</div>
+      </>
+    );
+  }
+  const segment = rule?.kind === "ciro_share" ? rule.segment ?? cost.resolved_segment : null;
+  return (
+    <>
+      <div className="whitespace-nowrap">
+        {rule ? KIND_LABELS[rule.kind] : "Kural"}
+        {segment ? ` · ${SEGMENT_LABELS[segment]}` : ""}
+      </div>
+      <div className="text-xs text-gray-500">
+        {rule?.payee_name ?? ""}
+        {cost.resolved_segment && segment && cost.resolved_segment !== segment
+          ? ` (hasta grubu ${SEGMENT_LABELS[cost.resolved_segment].toLocaleLowerCase("tr")}, kuralı olmadığı için standart)`
+          : ""}
+      </div>
+    </>
   );
 }
 
@@ -897,7 +946,7 @@ function DoctorSelect({
   refData: HkReferenceJson;
   value: string;
   onChange: (id: string) => void;
-  /** listed first (e.g. doctors with an ortho rule for lab costs) */
+  /** listed first (e.g. doctors whose lab costs come off a rule this month: ortho_lab_first or ciro_share) */
   preferred?: Set<string | null>;
 }) {
   const doctors = refData.doctors
@@ -1245,12 +1294,17 @@ function LabCostDialog({
     () => new Set(refData.rules.filter((r) => r.kind === "ortho_lab_first" && ruleActiveIn(r, month)).map((r) => r.doctor_id)),
     [refData.rules, month]
   );
+  // 0032: a ciro_share doctor's lab costs come off the month's ciro.
+  const ciro = useMemo(
+    () => new Set(refData.rules.filter((r) => r.kind === "ciro_share" && ruleActiveIn(r, month)).map((r) => r.doctor_id)),
+    [refData.rules, month]
+  );
   const [id] = useState(() => newId());
   const [day, setDay] = useState(bounds.max);
-  const [doctorId, setDoctorId] = useState(() => {
-    const only = Array.from(ortho).filter((d): d is string => !!d);
-    return only.length === 1 ? only[0] : "";
-  });
+  // Every doctor with a ciro_share or ortho rule this month has lab costs deducted (0032), so no doctor is pre-selected
+  // (a cost booked to the wrong doctor would not come off the right ciro); those doctors are listed first.
+  const deducting = useMemo(() => new Set([...Array.from(ortho), ...Array.from(ciro)]), [ortho, ciro]);
+  const [doctorId, setDoctorId] = useState("");
   const [patient, setPatient] = useState("");
   const [labName, setLabName] = useState("");
   const [amount, setAmount] = useState("");
@@ -1300,18 +1354,22 @@ function LabCostDialog({
   return (
     <Modal title="Lab gideri ekle" onClose={onClose} busy={busy}>
       <form onSubmit={submit} className="space-y-4">
-        <Field label="Tarih" hint="Fatura / ücret tarihi. Bu ayın ödemelerinden itibaren karşılanır.">
+        <Field label="Tarih" hint="Fatura / ücret tarihi; gider bu tarihin ayında hesaba girer.">
           <input type="date" className={inputClass} value={day} min={bounds.min} max={bounds.max} onChange={(e) => setDay(e.target.value)} required />
         </Field>
         <Field
           label="Hekim"
           hint={
-            doctorId && !ortho.has(doctorId)
-              ? "Bu hekimin bu ay ortodonti (önce lab) kuralı yok; gider yalnızca bilgi amaçlı kaydedilir."
-              : "Lab gideri bu hekimin payından önce karşılanır."
+            !doctorId
+              ? "Lab gideri, hekimin payı hesaplanmadan önce düşülür."
+              : ortho.has(doctorId)
+                ? "Ortodonti: lab gideri bu hastanın ödemelerinden önce karşılanır."
+                : ciro.has(doctorId)
+                  ? "Lab gideri bu ayın cirosundan, ödeme şekli kesintilerinden sonra düşülür."
+                  : "Bu hekimin bu ay ciro payı ya da ortodonti kuralı yok; gider hakedişten düşülmez."
           }
         >
-          <DoctorSelect refData={refData} value={doctorId} onChange={setDoctorId} preferred={ortho} />
+          <DoctorSelect refData={refData} value={doctorId} onChange={setDoctorId} preferred={deducting} />
         </Field>
         <Field label="Hasta" hint={patientNoHint(patientRef, patient, known)}>
           <input className={inputClass} list="hk-patients" maxLength={200} value={patient} onChange={(e) => setPatient(e.target.value)} required />

@@ -6,7 +6,11 @@
 // fin_hk_adjustments) and the 'hakedis_prepare' permission (fin_hk_* data entry without the ledger), and v1.3
 // (0032_hakedis_bank_split.sql): rule kind bank_portion = the fixed part of a payee's monthly amount paid by bank
 // (official salary). It is not a component and never changes a total; every payee carries bank_cents / cash_cents
-// (cash = total − bank, both null without a bank part) and BANK_OVER_TOTAL warns when the bank part exceeds the total.
+// (cash = total − bank, both null without a bank part) and BANK_OVER_TOTAL warns when the bank part exceeds the total,
+// and v1.4 (same 0032): the month's lab costs of a ciro_share doctor are deducted from that rule's ciro after the
+// method deductions (floored at 0, LAB_OVER_CIRO / UNRULED_LAB), rule kind minimum_monthly = a monthly floor (the
+// 'minimum_topup' component tops the payee's total up to it; the bank split uses the final total) and the doctor × lab
+// summary of the month (lab_summary / lab_totals).
 // Every rate and amount is data entered by the owner (basis points and integer cents); nothing here is hard-coded.
 // Month arguments are sent as 'YYYY-MM-01' dates; month values read back may be 'YYYY-MM' or 'YYYY-MM-DD', so every
 // helper compares them through monthKey().
@@ -24,7 +28,8 @@ export type HkCurrency = Currency;
 /**
  * Rule kinds (fin_hk_rules.kind). fixed_monthly (0031): monthly net salary of any active user, in piece_cents.
  * bank_portion (0032): the fixed monthly amount of any active user paid by bank, in piece_cents; part of the payee's
- * total (hakediş or salary), never on top of it.
+ * total (hakediş or salary), never on top of it. minimum_monthly (0032, v1.4): the monthly floor of any active user, in
+ * piece_cents; the payee's total is max(the other components, the floor).
  */
 export type HkKind =
   | "ciro_share"
@@ -32,11 +37,18 @@ export type HkKind =
   | "implant_piece"
   | "clinic_ciro_share"
   | "fixed_monthly"
-  | "bank_portion";
-/** Rule kinds that become a component of their payee (bank_portion only splits the total into bank and cash). */
-export type HkRuleComponentKind = Exclude<HkKind, "bank_portion">;
-/** Component kinds of a payee: one per active rule, plus one 'adjustments' component (no rule) for the month's bonuses. */
-export type HkComponentKind = HkRuleComponentKind | "adjustments";
+  | "bank_portion"
+  | "minimum_monthly";
+/**
+ * Rule kinds that become a component of their payee one to one (bank_portion only splits the total into bank and cash;
+ * minimum_monthly adds a 'minimum_topup' component only when the floor applies).
+ */
+export type HkRuleComponentKind = Exclude<HkKind, "bank_portion" | "minimum_monthly">;
+/**
+ * Component kinds of a payee: one per active rule, plus one 'adjustments' component (no rule) for the month's bonuses,
+ * plus one 'minimum_topup' component (0032) when the payee's minimum_monthly floor is above the rest.
+ */
+export type HkComponentKind = HkRuleComponentKind | "adjustments" | "minimum_topup";
 /** fin_hk_adjustments.kind (0031): bonus, or anything else (negative = deduction). */
 export type HkAdjustmentKind = "bonus" | "other";
 export type HkSegment = "standard" | "child" | "own";
@@ -48,8 +60,8 @@ export type HkMonthStatus = "open" | "closed";
 export const HK_METHODS: readonly HkMethod[] = ["cash", "card", "transfer", "financing"];
 export const HK_SEGMENTS: readonly HkSegment[] = ["standard", "child", "own"];
 /**
- * Rule kinds in display order; also the component order of a payee (the 'adjustments' component comes last;
- * bank_portion is never a component).
+ * Rule kinds in display order; also the component order of a payee (then the 'adjustments' component, then the
+ * 'minimum_topup' component; bank_portion and minimum_monthly are never components themselves).
  */
 export const HK_KINDS: readonly HkKind[] = [
   "ciro_share",
@@ -58,6 +70,7 @@ export const HK_KINDS: readonly HkKind[] = [
   "clinic_ciro_share",
   "fixed_monthly",
   "bank_portion",
+  "minimum_monthly",
 ];
 export const HK_ADJUSTMENT_KINDS: readonly HkAdjustmentKind[] = ["bonus", "other"];
 
@@ -81,11 +94,35 @@ export const KIND_LABELS: Record<HkKind, string> = {
   clinic_ciro_share: "Yönetim payı (klinik cirosu)",
   fixed_monthly: "Sabit aylık maaş",
   bank_portion: "Bankadan ödenen sabit tutar",
+  minimum_monthly: "Taban maaş (hangisi yüksekse)",
 };
 
 /** Rules editor hint of the bank_portion kind. */
 export const BANK_PORTION_HINT =
   "Hakedişin/maaşın bankadan ödenen kısmı; toplamı değiştirmez, ödemeyi bankadan ve elden diye böler.";
+
+/** Rules editor hint of the minimum_monthly kind (0032). */
+export const MINIMUM_MONTHLY_HINT = "Ayın hakedişi bu tutarın altında kalırsa bu tutar ödenir.";
+
+/** Title of a payee's 'minimum_topup' component (floor − the other components, 0032). */
+export const MINIMUM_TOPUP_COMPONENT_LABEL = "Taban maaş tamamlaması";
+
+/** Titles of the lab figures (0032): month summary column, ciro_share component lines and the "Lab özeti" tab. */
+export const LAB_LABELS = {
+  tab: "Lab özeti",
+  column: "Lab",
+  cost: "Lab maliyeti",
+  deducted: "Cirodan düşülen",
+  excess: "Klinikte kalan",
+  count: "Kayıt",
+  lab: "Laboratuvar",
+  total: "Laboratuvar toplamları",
+} as const;
+
+/** "Lab özeti" tab hint (0032). */
+export const LAB_SUMMARY_HINT =
+  "Her laboratuvarın aylık toplamını o laboratuvarın aylık ekstresiyle karşılaştırabilirsiniz. " +
+  "Kliniğin laboratuvarlarla hesabı Finans → Cariler ekranındadır.";
 
 /** Titles of a payee's bank / cash split (bank_cents / cash_cents, 0032). */
 export const SPLIT_LABELS = { bank: "Bankadan", cash: "Elden" } as const;
@@ -123,20 +160,23 @@ export const RULE_FIELDS: Record<
   fixed_monthly: { doctor: false, segment: false, share: false, piece: true, deductions: false },
   // piece_cents holds the monthly amount paid by bank; the payee may be any active user of the clinic.
   bank_portion: { doctor: false, segment: false, share: false, piece: true, deductions: false },
+  // piece_cents holds the monthly floor; the payee may be any active user of the clinic.
+  minimum_monthly: { doctor: false, segment: false, share: false, piece: true, deductions: false },
 };
 
 /**
  * Kinds whose payee may be any active user of the clinic (no doctors row needed) and whose overlap check is per payee:
- * fixed_monthly (0031) and bank_portion (0032).
+ * fixed_monthly (0031), bank_portion and minimum_monthly (0032).
  */
 export function kindAllowsAnyUser(kind: HkKind): boolean {
-  return kind === "fixed_monthly" || kind === "bank_portion";
+  return kind === "fixed_monthly" || kind === "bank_portion" || kind === "minimum_monthly";
 }
 
 /** Label of the piece_cents field of a rule kind that uses it (rules editor). */
 export function pieceFieldLabel(kind: HkKind): string {
   if (kind === "fixed_monthly") return "Aylık net maaş (TL)";
   if (kind === "bank_portion") return "Aylık bankadan ödenen tutar (TL)";
+  if (kind === "minimum_monthly") return "Aylık taban tutar (TL)";
   return "İmplant başı tutar (TL)";
 }
 
@@ -378,7 +418,10 @@ export interface HkRuleJson {
   segment: HkSegment | null;
   /** ciro_share / ortho_lab_first / clinic_ciro_share: 1..10000 */
   share_bp: number | null;
-  /** implant_piece: amount per implant; fixed_monthly: monthly net salary; bank_portion: monthly bank amount */
+  /**
+   * implant_piece: amount per implant; fixed_monthly: monthly net salary; bank_portion: monthly bank amount;
+   * minimum_monthly: monthly floor
+   */
   piece_cents: number | null;
   /** 0 unless ciro_share / ortho_lab_first */
   deduct_cash_bp: number;
@@ -544,8 +587,8 @@ export interface HkMarkRowJson {
   /** finance-only field, shown read-only here */
   is_child: boolean;
   /**
-   * the patient has payments in a closed month: own doctor / birth date can be changed only by a finance writer (the
-   * server refuses others)
+   * the patient has payments (0032: or lab costs, which resolve their rule from the mark) in a closed month: own doctor
+   * / birth date can be changed only by a finance writer (the server refuses others)
    */
   locked: boolean;
 }
@@ -563,6 +606,13 @@ export interface HkLabCostJson extends HkVoidable, HkStamped {
   /** TL cents; negative = correction */
   amount_cents: number;
   description: string;
+  /**
+   * 0032: the engine's resolution of a live cost, like a revenue line of the patient on the cost's day: the doctor's
+   * ortho_lab_first rule, else the ciro_share rule of the resolved segment, else the doctor's standard one; null = no
+   * such rule (UNRULED_LAB) or voided. Absent before 0032.
+   */
+  rule_id?: string | null;
+  resolved_segment?: HkSegment | null;
 }
 
 /** A monthly bonus / other row of a payee (fin_hk_adjustments, 0031). */
@@ -616,8 +666,8 @@ export interface HkLabPatientJson {
 }
 
 /**
- * A component computed from one active rule (every kind but bank_portion, fixed_monthly included: 13 keys in the SQL
- * payload).
+ * A component computed from one active rule (every kind but bank_portion and minimum_monthly, fixed_monthly included:
+ * 13 keys in the SQL payload, plus lab_cents / lab_excess_cents on a ciro_share component with lab costs, 0032).
  */
 export interface HkRuleComponentJson {
   rule_id: string;
@@ -631,8 +681,8 @@ export interface HkRuleComponentJson {
   /** ciro_share / ortho_lab_first only */
   by_method: HkByMethodJson | null;
   /**
-   * matrah: Σ(eligible − deduction) for ciro / ortho, gross clinic ciro for clinic_ciro_share; implant_piece: null in
-   * the SQL payload, 0 from computeMonth; fixed_monthly: null
+   * matrah: Σ(eligible − deduction) for ciro / ortho (ciro_share from 0032: minus lab_cents), gross clinic ciro for
+   * clinic_ciro_share; implant_piece: null in the SQL payload, 0 from computeMonth; fixed_monthly: null
    */
   base_cents: number | null;
   /** fixed_monthly: the salary (= piece_cents) */
@@ -643,6 +693,14 @@ export interface HkRuleComponentJson {
   lines_count: number;
   /** ortho_lab_first only (null / absent otherwise) */
   lab_patients?: HkLabPatientJson[] | null;
+  /**
+   * 0032, ciro_share only, present when live lab costs of the month resolve to the rule: the part of their sum L
+   * deducted from the ciro after the method deductions C, i.e. min(L, max(C, 0)), so the base never goes below 0
+   * because of lab costs (and a negative C stays as it is). A negative L (corrections) is deducted whole.
+   */
+  lab_cents?: number;
+  /** 0032, with lab_cents: L − lab_cents, the lab cost left with the clinic (LAB_OVER_CIRO when > 0) */
+  lab_excess_cents?: number;
   items?: undefined;
 }
 
@@ -667,10 +725,39 @@ export interface HkAdjustmentsComponentJson {
   qty?: undefined;
   lines_count?: undefined;
   lab_patients?: undefined;
+  lab_cents?: undefined;
+  lab_excess_cents?: undefined;
 }
 
-/** One component of a payee: one per active rule, plus one 'adjustments' component when the month has live rows. */
-export type HkComponentJson = HkRuleComponentJson | HkAdjustmentsComponentJson;
+/**
+ * 0032: the top-up of a payee's minimum_monthly floor, after every other component: amount = floor − the sum of the
+ * other components, only when that sum is below the floor (the payee's total is then the floor).
+ */
+export interface HkMinimumTopupComponentJson {
+  kind: "minimum_topup";
+  /** the minimum_monthly rule */
+  rule_id: string;
+  amount_cents: number;
+  doctor_id?: undefined;
+  doctor_name?: undefined;
+  segment?: undefined;
+  share_bp?: undefined;
+  piece_cents?: undefined;
+  by_method?: undefined;
+  base_cents?: undefined;
+  qty?: undefined;
+  lines_count?: undefined;
+  lab_patients?: undefined;
+  lab_cents?: undefined;
+  lab_excess_cents?: undefined;
+  items?: undefined;
+}
+
+/**
+ * One component of a payee: one per active rule, plus one 'adjustments' component when the month has live rows, plus
+ * one 'minimum_topup' component when a floor applies.
+ */
+export type HkComponentJson = HkRuleComponentJson | HkAdjustmentsComponentJson | HkMinimumTopupComponentJson;
 
 export interface HkPayeeJson {
   payee_user_id: string;
@@ -689,7 +776,10 @@ export interface HkPayeeJson {
    * Absent in payloads and statements from before 0032.
    */
   bank_cents?: number | null;
-  /** 0032: total_cents − bank_cents (paid in cash; negative when the bank part exceeds the total), null without one */
+  /**
+   * 0032: total_cents − bank_cents (paid in cash; negative when the bank part exceeds the total), null without one.
+   * total_cents is the final total (after a minimum_topup).
+   */
   cash_cents?: number | null;
 }
 
@@ -710,7 +800,60 @@ export type HkWarningJson =
       payee_name: string;
       bank_cents: number;
       total_cents: number;
+    }
+  | {
+      /**
+       * 0032: the month's lab costs of a ciro_share rule exceed its ciro after the method deductions; the base was not
+       * taken below 0 and excess_cents stays with the clinic (no carry-forward).
+       */
+      code: "LAB_OVER_CIRO";
+      doctor_id: string;
+      doctor_name: string;
+      rule_id: string;
+      segment: HkSegment | null;
+      /** L: the month's lab costs resolved to the rule */
+      lab_cents: number;
+      /** C: Σ(eligible − deduction) of the rule before the lab costs */
+      ciro_after_deductions_cents: number;
+      /** L − the deducted part */
+      excess_cents: number;
+    }
+  | {
+      /**
+       * 0032: the month's lab costs of a doctor without an ortho_lab_first or (matching / standard) ciro_share rule;
+       * deducted nowhere. Reported when they do not net to zero.
+       */
+      code: "UNRULED_LAB";
+      doctor_id: string;
+      doctor_name: string;
+      lab_cents: number;
     };
+
+/** A doctor × lab row of the month's lab summary (0032, fin_hk_month lab_summary). */
+export interface HkLabSummaryRowJson {
+  doctor_id: string;
+  doctor_name: string;
+  lab_name: string;
+  /** Σ the month's live lab costs of the doctor at this lab (0 when only an earlier cost was recovered this month) */
+  cost_cents: number;
+  /**
+   * deducted from the doctor's figures this month: ciro_share = the lab's share of each rule's lab_cents; ortho = the
+   * lab's share of the lab part recovered from this month's payments (per patient, by the patient's lab costs to
+   * date); 0 for unruled costs. Shares are proportional, rounded cumulatively in COLLATE "C" lab name order
+   * (allocateByWeight).
+   */
+  deducted_cents: number;
+  /** live lab cost rows of the month */
+  count: number;
+}
+
+/** Month totals per lab (0032, fin_hk_month lab_totals): to compare with each lab's single monthly statement. */
+export interface HkLabTotalJson {
+  lab_name: string;
+  cost_cents: number;
+  deducted_cents: number;
+  count: number;
+}
 
 /** fin_hk__compute output. */
 export interface HkComputeResult {
@@ -777,6 +920,13 @@ export interface HkMonthPayload extends HkComputeResult {
   lines: HkLineJson[];
   pieces: HkPieceJson[];
   lab_costs: HkLabCostJson[];
+  /**
+   * 0032: doctor × lab rows of the month (fin__hk_lab_alloc next to the compute; not in fin__hk_compute or in a
+   * statement breakdown), by doctor name, doctor id, lab name. Kept for 'hakedis_prepare' callers. Absent before 0032.
+   */
+  lab_summary?: HkLabSummaryRowJson[];
+  /** 0032: lab_summary summed per lab, by lab name. Absent before 0032. */
+  lab_totals?: HkLabTotalJson[];
   /** the month's bonus / other rows of every payee, voided ones included (0031) */
   adjustments: HkAdjustmentJson[];
 }
@@ -878,8 +1028,16 @@ export interface HkMyMonthData {
   payees: HkMyPayeeJson[];
   lines: HkMyLineJson[];
   pieces: HkMyPieceJson[];
-  /** lab cost rows (to date) of the caller's ortho patients */
+  /**
+   * lab cost rows of the caller's patients: to date for an ortho doctor (the patients of the caller's ortho
+   * components), from 0032 also the month's rows counted under the caller's own ciro_share rules
+   */
   lab_costs: HkMyLabCostJson[];
+  /**
+   * 0032: the caller's doctor × lab rows of the month (same shape as fin_hk_month's; deducted_cents from the caller's
+   * own payee object, the frozen statement in a closed month). Absent before 0032.
+   */
+  lab_summary?: HkLabSummaryRowJson[];
   /** closed months: the caller's active statement */
   statement: { total_cents: number; closed_at: string } | null;
   /**
@@ -1167,7 +1325,9 @@ export function validateRule(r: HkRuleInput): string | null {
   if (!f) return "Kural türünü seçin.";
   const salary = r.kind === "fixed_monthly";
   const bank = r.kind === "bank_portion";
+  const minimum = r.kind === "minimum_monthly";
   if (!r.payee_user_id) {
+    if (minimum) return "Taban maaş alacak kişiyi seçin.";
     return salary ? "Maaş alacak kişiyi seçin." : bank ? "Bankadan ödeme alacak kişiyi seçin." : "Hakediş sahibini seçin.";
   }
   if (f.doctor && !r.doctor_id) return "Hekimi seçin.";
@@ -1177,6 +1337,7 @@ export function validateRule(r: HkRuleInput): string | null {
   }
   if (f.piece && (r.piece_cents === null || !Number.isInteger(r.piece_cents) || r.piece_cents <= 0)) {
     if (salary) return "Aylık net maaş 0'dan büyük olmalı.";
+    if (minimum) return "Aylık taban tutar 0'dan büyük olmalı.";
     return bank ? "Aylık bankadan ödenen tutar 0'dan büyük olmalı." : "Adet başı tutar 0'dan büyük olmalı.";
   }
   for (const method of HK_METHODS) {
@@ -1193,8 +1354,8 @@ export function validateRule(r: HkRuleInput): string | null {
 }
 
 /**
- * Rules that may not be active in the same month (fin_hk_save_rule overlap check): fixed_monthly and bank_portion per
- * (kind, payee), every other kind per (kind, doctor, segment) regardless of the payee.
+ * Rules that may not be active in the same month (fin_hk_save_rule overlap check): fixed_monthly, bank_portion and
+ * minimum_monthly per (kind, payee), every other kind per (kind, doctor, segment) regardless of the payee.
  */
 export function ruleOverlapKey(r: Pick<HkRuleInput, "kind" | "payee_user_id" | "doctor_id" | "segment">): string {
   return kindAllowsAnyUser(r.kind)
@@ -1242,6 +1403,15 @@ export function bankRuleOf<T extends Pick<HkRuleJson, "kind" | "payee_user_id" |
   month: string
 ): T | undefined {
   return rules.find((r) => r.kind === "bank_portion" && r.payee_user_id === payeeUserId && ruleActiveIn(r, month));
+}
+
+/** The payee's minimum_monthly rule active in the month (floor in piece_cents), if any. */
+export function minimumRuleOf<T extends Pick<HkRuleJson, "kind" | "payee_user_id" | "from_month" | "to_month">>(
+  rules: readonly T[],
+  payeeUserId: string,
+  month: string
+): T | undefined {
+  return rules.find((r) => r.kind === "minimum_monthly" && r.payee_user_id === payeeUserId && ruleActiveIn(r, month));
 }
 
 /** A payee's bank / cash split (0032); over_cents = how much the bank part exceeds the total (0 when it does not). */
@@ -1327,11 +1497,12 @@ export function hkLedgerVisible(x: { ledger_visible?: boolean | null }): boolean
   return x.ledger_visible ?? true;
 }
 
-/** "Ciro payı · Çocuk hasta · Hekim A"; "Sabit aylık maaş"; "Prim ve diğer" */
+/** "Ciro payı · Çocuk hasta · Hekim A"; "Sabit aylık maaş"; "Prim ve diğer"; "Taban maaş tamamlaması" */
 export function componentTitle(
   c: Pick<HkComponentJson, "kind"> & Partial<Pick<HkComponentJson, "segment" | "doctor_name">>
 ): string {
   if (c.kind === "adjustments") return ADJUSTMENTS_COMPONENT_LABEL;
+  if (c.kind === "minimum_topup") return MINIMUM_TOPUP_COMPONENT_LABEL;
   const parts = [KIND_LABELS[c.kind] ?? c.kind];
   if (c.kind === "ciro_share" && c.segment) parts.push(SEGMENT_LABELS[c.segment] ?? c.segment);
   if (c.doctor_name) parts.push(c.doctor_name);
@@ -1354,6 +1525,14 @@ export function warningText(w: HkWarningJson): string {
       return `${w.payee_name || "Hakediş sahibi"} için cari kaydı yok; ay kapatılınca otomatik oluşturulur.`;
     case "BANK_OVER_TOTAL":
       return `${w.payee_name || "Hakediş sahibi"}: ${bankOverText(w.bank_cents - w.total_cents)}`;
+    case "LAB_OVER_CIRO": {
+      const who = [w.doctor_name || "Hekim", w.segment ? SEGMENT_LABELS[w.segment] ?? w.segment : null]
+        .filter(Boolean)
+        .join(" · ");
+      return `${who}: ayın lab maliyeti (${formatTL(w.lab_cents)}) kesintiler sonrası cirodan (${formatTL(w.ciro_after_deductions_cents)}) fazla; aşan ${formatTL(w.excess_cents)} hakedişten düşülmedi, klinikte kalır.`;
+    }
+    case "UNRULED_LAB":
+      return `${w.doctor_name || "Hekim"}: ${formatTL(w.lab_cents)} lab maliyeti için ciro payı veya ortodonti kuralı yok; hakedişten düşülmedi.`;
     default:
       return "Bilinmeyen uyarı.";
   }
@@ -1361,13 +1540,22 @@ export function warningText(w: HkWarningJson): string {
 
 /**
  * Payee table row (§2): ciro by method, implant part, lab, deductions, base, share, implants, management, total; from
- * 0031 also the fixed salary and the month's bonus / other rows.
+ * 0031 also the fixed salary and the month's bonus / other rows; from 0032 the minimum top-up and the ciro_share lab
+ * deduction.
  */
 export interface HkPayeeSummary {
   gross_by_method: Record<HkMethod, number>;
   gross_cents: number;
   implant_cents: number;
+  /**
+   * lab costs deducted from the ciro / ortho figures: the ortho lab parts (by_method lab) plus, from 0032, the
+   * ciro_share lab_cents. gross − implant − lab − deduction = base.
+   */
   lab_cents: number;
+  /** 0032: the ciro_share part of lab_cents (Σ lab_cents of the ciro_share components, after the method deductions) */
+  ciro_lab_cents: number;
+  /** 0032: Σ ciro_share lab_excess_cents (lab costs above the ciro, left with the clinic) */
+  lab_excess_cents: number;
   deduction_cents: number;
   base_cents: number;
   share_cents: number;
@@ -1383,6 +1571,8 @@ export interface HkPayeeSummary {
   bonus_cents: number;
   other_cents: number;
   adjustments_cents: number;
+  /** 0032: the 'minimum_topup' component (0 when the floor did not apply) */
+  minimum_topup_cents: number;
   total_cents: number;
   /**
    * 0032: the payee's bank part and total − bank part (cash); both null without a bank part. In a totals row: the sums
@@ -1399,6 +1589,8 @@ export function emptyPayeeSummary(totalCents = 0): HkPayeeSummary {
     gross_cents: 0,
     implant_cents: 0,
     lab_cents: 0,
+    ciro_lab_cents: 0,
+    lab_excess_cents: 0,
     deduction_cents: 0,
     base_cents: 0,
     share_cents: 0,
@@ -1411,6 +1603,7 @@ export function emptyPayeeSummary(totalCents = 0): HkPayeeSummary {
     bonus_cents: 0,
     other_cents: 0,
     adjustments_cents: 0,
+    minimum_topup_cents: 0,
     total_cents: totalCents,
     bank_cents: null,
     cash_cents: null,
@@ -1429,6 +1622,8 @@ export function sumPayeeSummaries(rows: readonly HkPayeeSummary[]): HkPayeeSumma
     out.gross_cents += s.gross_cents;
     out.implant_cents += s.implant_cents;
     out.lab_cents += s.lab_cents;
+    out.ciro_lab_cents += s.ciro_lab_cents;
+    out.lab_excess_cents += s.lab_excess_cents;
     out.deduction_cents += s.deduction_cents;
     out.base_cents += s.base_cents;
     out.share_cents += s.share_cents;
@@ -1440,6 +1635,7 @@ export function sumPayeeSummaries(rows: readonly HkPayeeSummary[]): HkPayeeSumma
     out.bonus_cents += s.bonus_cents;
     out.other_cents += s.other_cents;
     out.adjustments_cents += s.adjustments_cents;
+    out.minimum_topup_cents += s.minimum_topup_cents;
     out.total_cents += s.total_cents;
     if (s.bank_cents !== null) out.bank_cents = (out.bank_cents ?? 0) + s.bank_cents;
     if (s.cash_cents !== null) out.cash_cents = (out.cash_cents ?? 0) + s.cash_cents;
@@ -1463,6 +1659,8 @@ export function summarizePayee(p: {
   for (const c of p.components) {
     if (c.kind === "fixed_monthly") {
       s.salary_cents += c.amount_cents;
+    } else if (c.kind === "minimum_topup") {
+      s.minimum_topup_cents += c.amount_cents;
     } else if (c.kind === "adjustments") {
       s.adjustments_cents += c.amount_cents;
       for (const item of c.items ?? []) {
@@ -1485,12 +1683,139 @@ export function summarizePayee(p: {
         s.lab_cents += b.lab;
         s.deduction_cents += b.deduction;
       }
+      s.lab_cents += c.lab_cents ?? 0;
+      s.ciro_lab_cents += c.lab_cents ?? 0;
+      s.lab_excess_cents += c.lab_excess_cents ?? 0;
       s.base_cents += c.base_cents ?? 0;
       s.share_cents += c.amount_cents;
       if (typeof c.share_bp === "number" && !s.share_bps.includes(c.share_bp)) s.share_bps.push(c.share_bp);
     }
   }
   return s;
+}
+
+// ---------------------------------------------------------------------------
+// Lab summary helpers (0032)
+// ---------------------------------------------------------------------------
+
+/**
+ * Splits `amount` over parts in proportion to `weights`, in the given order: part i = round(amount × W_i / W) −
+ * round(amount × W_(i−1) / W) with W_i the running sum of the weights and W their total (round half away from zero,
+ * exact), so the parts always add up to `amount`; a part equal to its weight whenever amount = W. Every part is 0 when
+ * the amount or the total weight is 0. Used for the deducted_cents of the lab summary (parts in COLLATE "C" lab name
+ * order, compareCodePoints, as fin__hk_lab_alloc).
+ */
+export function allocateByWeight(amount: number, weights: readonly number[]): number[] {
+  const total = weights.reduce((sum, w) => sum + w, 0);
+  if (amount === 0 || total === 0) return weights.map(() => 0);
+  const sign = total < 0 ? -1n : 1n;
+  const den = BigInt(total) * sign;
+  let running = 0n;
+  let previous = 0n;
+  return weights.map((w) => {
+    running += BigInt(w);
+    const upTo = roundHalfAwayDiv(BigInt(amount) * running * sign, den);
+    const part = upTo - previous;
+    previous = upTo;
+    return Number(part);
+  });
+}
+
+/**
+ * Code point order of two strings: PostgreSQL's COLLATE "C" on UTF-8 text (byte order = code point order). Plain
+ * `<` compares UTF-16 code units, which differs for characters beyond the Basic Multilingual Plane.
+ */
+export function compareCodePoints(a: string, b: string): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; ) {
+    const ca = a.codePointAt(i)!;
+    const cb = b.codePointAt(i)!;
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    i += ca > 0xffff ? 2 : 1;
+  }
+  return a.length < b.length ? -1 : a.length > b.length ? 1 : 0;
+}
+
+function sumPerLab(rows: readonly { lab_name: string; amount_cents: number }[]) {
+  const byLab = new Map<string, { lab_name: string; cost_cents: number; count: number }>();
+  for (const r of rows) {
+    const g = byLab.get(r.lab_name) ?? { lab_name: r.lab_name, cost_cents: 0, count: 0 };
+    g.cost_cents += r.amount_cents;
+    g.count += 1;
+    byLab.set(r.lab_name, g);
+  }
+  return Array.from(byLab.values());
+}
+
+/** Lab cost rows (fin_hk_month lab_costs, hk_my_month lab_costs) summed per lab, by lab name (display order). */
+export function groupLabCosts(
+  rows: readonly { lab_name: string; amount_cents: number }[]
+): { lab_name: string; cost_cents: number; count: number }[] {
+  return sumPerLab(rows).sort((a, b) => byName(a.lab_name, b.lab_name) || byText(a.lab_name, b.lab_name));
+}
+
+/**
+ * Lab cost rows summed per lab in the order fin__hk_lab_alloc shares a deduction over them: lab name COLLATE "C"
+ * (compareCodePoints). The order decides which lab gets a rounding cent.
+ */
+function labWeightsForShare(rows: readonly { lab_name: string; amount_cents: number }[]) {
+  return sumPerLab(rows).sort((a, b) => compareCodePoints(a.lab_name, b.lab_name));
+}
+
+/** A doctor's rows of the lab summary with their sums ("Lab özeti" table). */
+export interface HkLabDoctorGroup {
+  doctor_id: string;
+  doctor_name: string;
+  rows: HkLabSummaryRowJson[];
+  cost_cents: number;
+  deducted_cents: number;
+  count: number;
+}
+
+/** lab_summary rows grouped per doctor, in the order of the rows (the payload's: doctor name, doctor id, lab name). */
+export function labSummaryByDoctor(rows: readonly HkLabSummaryRowJson[]): HkLabDoctorGroup[] {
+  const groups = new Map<string, HkLabDoctorGroup>();
+  for (const r of rows) {
+    let g = groups.get(r.doctor_id);
+    if (!g) {
+      g = { doctor_id: r.doctor_id, doctor_name: r.doctor_name, rows: [], cost_cents: 0, deducted_cents: 0, count: 0 };
+      groups.set(r.doctor_id, g);
+    }
+    g.rows.push(r);
+    g.cost_cents += r.cost_cents;
+    g.deducted_cents += r.deducted_cents;
+    g.count += r.count;
+  }
+  return Array.from(groups.values());
+}
+
+/** The lab warnings of 0032 (neither blocks the month close). */
+export function isLabWarning(
+  w: HkWarningJson
+): w is Extract<HkWarningJson, { code: "LAB_OVER_CIRO" } | { code: "UNRULED_LAB" }> {
+  return w.code === "LAB_OVER_CIRO" || w.code === "UNRULED_LAB";
+}
+
+/**
+ * How lab costs reach the hakediş (0032), for the rules page, the lab cost list and the "Lab özeti" tab.
+ */
+export const LAB_DEDUCTION_TEXT =
+  "Ciro payı kuralı olan hekimde ayın lab giderleri, ödeme şekli kesintilerinden sonra hastanın girdiği kuralın " +
+  "cirosundan düşülür (hasta grubu tahsilattaki gibi belirlenir; grubun kuralı yoksa standart kural). Lab gideri " +
+  "ciroyu aşarsa matrah 0 olur, aşan kısım klinikte kalır ve sonraki aya devretmez. “Ortodonti (önce lab)” kuralında " +
+  "lab gideri hastanın ödemelerinden önce karşılanır. Kuralı olmayan hekimin lab gideri hakedişten düşülmez.";
+
+/** The doctor × lab rows summed per lab, by lab name (lab_totals). */
+export function labTotalsOf(rows: readonly HkLabSummaryRowJson[]): HkLabTotalJson[] {
+  const byLab = new Map<string, HkLabTotalJson>();
+  for (const r of rows) {
+    const t = byLab.get(r.lab_name) ?? { lab_name: r.lab_name, cost_cents: 0, deducted_cents: 0, count: 0 };
+    t.cost_cents += r.cost_cents;
+    t.deducted_cents += r.deducted_cents;
+    t.count += r.count;
+    byLab.set(r.lab_name, t);
+  }
+  return Array.from(byLab.values()).sort((a, b) => byName(a.lab_name, b.lab_name) || byText(a.lab_name, b.lab_name));
 }
 
 // ---------------------------------------------------------------------------
@@ -1541,8 +1866,12 @@ export interface HkComputeLabCost {
   id: string;
   day: string;
   doctor_id: string;
+  /** used when `doctors` does not name the doctor (lab summary, lab warnings) */
+  doctor_name?: string | null;
   patient_ref: string;
   patient_name?: string;
+  /** lab summary key (fin_hk_lab_costs.lab_name); "" when left out */
+  lab_name?: string;
   amount_cents: number;
   voided_at?: string | null;
   /** patient name tie-breaker: the latest (day, created_at, id) cost names the patient */
@@ -1599,8 +1928,20 @@ export interface HkLineResult {
   lab_part: number;
 }
 
+/** Per-cost resolution of the month's live lab costs (0032, fin_hk_month lab_costs: resolved_segment, rule_id). */
+export interface HkLabCostResult {
+  id: string;
+  segment: HkSegment;
+  /** the doctor's ortho_lab_first rule, else the segment's / standard ciro_share rule; null = UNRULED_LAB */
+  rule_id: string | null;
+}
+
 export interface HkComputeOutput extends HkComputeResult {
   line_results: HkLineResult[];
+  /** the month's live lab costs, in input order */
+  lab_results: HkLabCostResult[];
+  lab_summary: HkLabSummaryRowJson[];
+  lab_totals: HkLabTotalJson[];
 }
 
 /**
@@ -1645,14 +1986,44 @@ function emptyByMethod(rule: HkComputeRule): HkByMethodJson {
   return out;
 }
 
-/** Lab-first walk of one ortho doctor up to the end of month M: lab part per line id and per-patient totals. */
+/**
+ * Active rules of one month as the SQL resolves a line or a lab cost to a rule (fin__hk_eval_lines /
+ * fin__hk_eval_lab_costs): the doctor's ortho_lab_first rule, else the ciro_share rule of (doctor, segment), else the
+ * doctor's standard one. The newest from_month wins if invalid data ever has two for the same key.
+ */
+function ruleIndexOf(rules: readonly HkComputeRule[], month: string) {
+  const active = rules
+    .filter((r) => ruleActiveIn(r, month))
+    .slice()
+    .sort((a, b) => byText(monthKey(b.from_month), monthKey(a.from_month)) || byText(a.id, b.id));
+  const orthoByDoctor = new Map<string, HkComputeRule>();
+  const ciroByKey = new Map<string, HkComputeRule>();
+  for (const r of active) {
+    if (!r.doctor_id) continue;
+    if (r.kind === "ortho_lab_first" && !orthoByDoctor.has(r.doctor_id)) orthoByDoctor.set(r.doctor_id, r);
+    const key = `${r.doctor_id}|${r.segment}`;
+    if (r.kind === "ciro_share" && r.segment && !ciroByKey.has(key)) ciroByKey.set(key, r);
+  }
+  const ruleFor = (doctorId: string, segment: HkSegment): HkComputeRule | undefined =>
+    orthoByDoctor.get(doctorId) ?? ciroByKey.get(`${doctorId}|${segment}`) ?? ciroByKey.get(`${doctorId}|standard`);
+  return { active, orthoByDoctor, ruleFor };
+}
+
+/**
+ * Lab-first walk of one ortho doctor up to the end of month M: lab part per line id, per-patient totals, and (0032)
+ * the lab part recovered from M's payments per lab name: each patient's recovery of the month split over the
+ * patient's labs by their lab costs to date (allocateByWeight in COLLATE "C" lab name order). `labCosts` comes without
+ * the costs deducted from a ciro_share rule in their own month (0032, v1.4: fin__hk_ciro_lab_ids), so neither the lab
+ * parts, the patients list nor the per-lab split count them again.
+ */
 function orthoWalk(
   doctorId: string,
   month: string,
   lines: readonly HkComputeLine[],
   labCosts: readonly HkComputeLabCost[]
-): { labPart: Map<string, number>; patients: HkLabPatientJson[] } {
+): { labPart: Map<string, number>; patients: HkLabPatientJson[]; labInMonth: Map<string, number> } {
   const labPart = new Map<string, number>();
+  const labInMonth = new Map<string, number>();
   const costsByPatient = new Map<string, HkComputeLabCost[]>();
   for (const c of labCosts) {
     if (c.doctor_id !== doctorId || !isLive(c) || monthKey(c.day) > month) continue;
@@ -1688,6 +2059,11 @@ function orthoWalk(
       labPart.set(l.id, part);
       if (lineMonth === month) inMonth += part;
     }
+    if (inMonth !== 0) {
+      const labs = labWeightsForShare(costs.map((c) => ({ lab_name: c.lab_name ?? "", amount_cents: c.amount_cents })));
+      const parts = allocateByWeight(inMonth, labs.map((g) => g.cost_cents));
+      labs.forEach((g, i) => labInMonth.set(g.lab_name, (labInMonth.get(g.lab_name) ?? 0) + parts[i]));
+    }
     // Patients whose lab costs net to zero are not listed (SQL: lab total <> 0).
     const total = costs.reduce((sum, c) => sum + c.amount_cents, 0);
     if (costs.length === 0 || total === 0) continue;
@@ -1710,7 +2086,7 @@ function orthoWalk(
     });
   }
   patients.sort((a, b) => byName(a.patient_name, b.patient_name) || byText(a.patient_ref, b.patient_ref));
-  return { labPart, patients };
+  return { labPart, patients, labInMonth };
 }
 
 /**
@@ -1723,6 +2099,21 @@ function orthoWalk(
  * active bank_portion amount, else null) and cash_cents (total − bank, else null). A payee with only a bank_portion
  * rule is listed with total 0 and a negative cash part; BANK_OVER_TOTAL follows the other warnings (by payee name, then
  * payee id) when bank > total.
+ * Lab costs (0032, v1.4): each live lab cost dated in the month resolves like a revenue line of its patient on its day
+ * (no manual segment): the doctor's ortho_lab_first rule (lab-first walk, unchanged; nothing more is deducted), else
+ * the segment's ciro_share rule, else the doctor's standard one, else none (UNRULED_LAB per doctor when the sum is not
+ * 0). The ortho walk (lab parts, lab_patients, the per-lab split) leaves out every cost that resolved to a ciro_share
+ * rule in its own month, with that month's rules: it was deducted there (a doctor moving from ciro_share to
+ * ortho_lab_first); a cost unruled in its own month is still recovered. A ciro_share rule with costs L and ciro after deductions C deducts lab_cents = min(L, max(C, 0)):
+ * base = C − lab_cents, lab_excess_cents = L − lab_cents (LAB_OVER_CIRO when > 0, the excess stays with the clinic).
+ * Minimum (0032): the payee's active minimum_monthly floor F (the highest, should rows ever overlap): when the sum S of
+ * the other components is below F, a 'minimum_topup' component of F − S comes last and the total is F; a payee with
+ * only that rule is listed with the top-up. The bank split and every warning use the final total.
+ * Warning order (SQL: kind, then name, payee id, doctor id, segment): UNRULED_LINES, UNRULED_PIECES (by doctor name,
+ * doctor id), NO_COUNTERPARTY, BANK_OVER_TOTAL (by payee name, payee id), UNRULED_LAB (by doctor name, doctor id),
+ * LAB_OVER_CIRO (by doctor name, doctor id, segment).
+ * Lab summary (fin_hk_month lab_summary / lab_totals, built by fin__hk_lab_alloc next to the compute): shares are
+ * rounded cumulatively in byte order of the lab names (COLLATE "C"), rows listed by doctor name / id, then lab name.
  */
 export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const month = monthKey(input.month);
@@ -1734,31 +2125,48 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     id ? doctorNames.get(id) ?? fallback ?? "" : fallback ?? null;
 
   // Active rules; the newest from_month wins if invalid data ever has two for the same key.
-  const active = input.rules
-    .filter((r) => ruleActiveIn(r, month))
-    .slice()
-    .sort((a, b) => byText(monthKey(b.from_month), monthKey(a.from_month)) || byText(a.id, b.id));
-  // Rules that become components: every kind but bank_portion.
+  const index = ruleIndexOf(input.rules, month);
+  const { active, orthoByDoctor, ruleFor } = index;
+  // Rules that become components: every kind but bank_portion and minimum_monthly.
   const componentRules = active.filter(
-    (r): r is HkComputeRule & { kind: HkRuleComponentKind } => r.kind !== "bank_portion"
+    (r): r is HkComputeRule & { kind: HkRuleComponentKind } =>
+      r.kind !== "bank_portion" && r.kind !== "minimum_monthly"
   );
-  const orthoByDoctor = new Map<string, HkComputeRule>();
-  const ciroByKey = new Map<string, HkComputeRule>();
-  for (const r of active) {
-    if (!r.doctor_id) continue;
-    if (r.kind === "ortho_lab_first" && !orthoByDoctor.has(r.doctor_id)) orthoByDoctor.set(r.doctor_id, r);
-    const key = `${r.doctor_id}|${r.segment}`;
-    if (r.kind === "ciro_share" && r.segment && !ciroByKey.has(key)) ciroByKey.set(key, r);
-  }
+
+  // A lab cost resolves like a revenue line of its patient on its day (no manual segment), with the rules of its own
+  // month (0032, v1.4: fin__hk_eval_lab_costs).
+  const indexes = new Map<string, ReturnType<typeof ruleIndexOf>>([[month, index]]);
+  const labRule = (c: HkComputeLabCost) => {
+    const costMonth = monthKey(c.day);
+    let costIndex = indexes.get(costMonth);
+    if (!costIndex) {
+      costIndex = ruleIndexOf(input.rules, costMonth);
+      indexes.set(costMonth, costIndex);
+    }
+    const segment = resolveSegment(
+      { segment: null, doctor_id: c.doctor_id, day: c.day },
+      marks.get(c.patient_ref),
+      childAgeLimit
+    );
+    return { segment, rule: costIndex.ruleFor(c.doctor_id, segment) };
+  };
 
   // Live lines up to the end of the month (earlier months feed the ortho walk only).
   const toDate = input.lines.filter((l) => isLive(l) && monthKey(l.day) <= month);
   const monthLines = toDate.filter((l) => monthKey(l.day) === month);
   const livePieces = (input.pieces ?? []).filter((p) => isLive(p) && monthKey(p.day) === month);
 
+  // The ortho walk leaves out the costs that resolved to a ciro_share rule in their own month (deducted there; a doctor
+  // moving from ciro_share to ortho_lab_first does not recover them again). Costs unruled in their month still count.
+  const ciroLabIds = new Set(
+    (input.lab_costs ?? [])
+      .filter((c) => isLive(c) && monthKey(c.day) <= month && labRule(c).rule?.kind === "ciro_share")
+      .map((c) => c.id)
+  );
+  const walkCosts = (input.lab_costs ?? []).filter((c) => !ciroLabIds.has(c.id));
   const walks = new Map<string, ReturnType<typeof orthoWalk>>();
   orthoByDoctor.forEach((rule, doctorId) => {
-    walks.set(rule.id, orthoWalk(doctorId, month, toDate, input.lab_costs ?? []));
+    walks.set(rule.id, orthoWalk(doctorId, month, toDate, walkCosts));
   });
 
   // Components, one per active rule.
@@ -1788,10 +2196,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const unruled = new Map<string, { count: number; try_cents: number }>();
   for (const l of monthLines) {
     const segment = resolveSegment(l, marks.get(l.patient_ref), childAgeLimit);
-    const rule =
-      orthoByDoctor.get(l.doctor_id) ??
-      ciroByKey.get(`${l.doctor_id}|${segment}`) ??
-      ciroByKey.get(`${l.doctor_id}|standard`);
+    const rule = ruleFor(l.doctor_id, segment);
     if (!rule) {
       const u = unruled.get(l.doctor_id) ?? { count: 0, try_cents: 0 };
       u.count += 1;
@@ -1811,8 +2216,27 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     lineResults.push({ id: l.id, segment, rule_id: rule.id, lab_part: lab });
   }
 
+  // The month's live lab costs → rule, like a revenue line of the patient on the cost's day (0032). Costs of an ortho
+  // doctor stay with the lab-first walk; costs of a ciro_share rule are deducted from its ciro below.
+  const monthLabs = (input.lab_costs ?? []).filter((c) => isLive(c) && monthKey(c.day) === month);
+  const labResults: HkLabCostResult[] = [];
+  const labsOfRule = new Map<string, HkComputeLabCost[]>();
+  const unruledLab = new Map<string, number>();
+  for (const c of monthLabs) {
+    const { segment, rule } = labRule(c);
+    labResults.push({ id: c.id, segment, rule_id: rule?.id ?? null });
+    if (!rule) {
+      unruledLab.set(c.doctor_id, (unruledLab.get(c.doctor_id) ?? 0) + c.amount_cents);
+    } else if (rule.kind === "ciro_share") {
+      const list = labsOfRule.get(rule.id) ?? [];
+      list.push(c);
+      labsOfRule.set(rule.id, list);
+    }
+  }
+
   const clinicTotal = monthLines.reduce((sum, l) => sum + l.try_cents, 0);
   const pieceDoctors = new Set<string>();
+  const labOverCiro: Extract<HkWarningJson, { code: "LAB_OVER_CIRO" }>[] = [];
 
   components.forEach((c, ruleId) => {
     const rule = ruleOf.get(ruleId)!;
@@ -1822,6 +2246,27 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
         const b = c.by_method[method];
         b.deduction = applyBp(b.eligible, b.deduct_bp);
         base += b.eligible - b.deduction;
+      }
+      const labs = labsOfRule.get(ruleId);
+      if (labs) {
+        // Lab costs after the method deductions; never below a 0 base, the excess stays with the clinic.
+        const labTotal = labs.reduce((sum, x) => sum + x.amount_cents, 0);
+        const deducted = Math.min(labTotal, Math.max(base, 0));
+        c.lab_cents = deducted;
+        c.lab_excess_cents = labTotal - deducted;
+        if (labTotal > deducted) {
+          labOverCiro.push({
+            code: "LAB_OVER_CIRO",
+            doctor_id: rule.doctor_id ?? "",
+            doctor_name: c.doctor_name ?? "",
+            rule_id: rule.id,
+            segment: c.segment,
+            lab_cents: labTotal,
+            ciro_after_deductions_cents: base,
+            excess_cents: labTotal - deducted,
+          });
+        }
+        base -= deducted;
       }
       c.base_cents = base;
       c.amount_cents = applyBp(base, rule.share_bp ?? 0);
@@ -1842,8 +2287,9 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   });
 
   // Payees: every payee with an active rule or a live adjustment in the month; components in kind / doctor / segment
-  // order, the 'adjustments' component last.
-  const kindOrder = (k: HkComponentKind) => (k === "adjustments" ? HK_KINDS.length : HK_KINDS.indexOf(k));
+  // order, then the 'adjustments' component, then the 'minimum_topup' one.
+  const kindOrder = (k: HkComponentKind) =>
+    k === "adjustments" ? HK_KINDS.length : k === "minimum_topup" ? HK_KINDS.length + 1 : HK_KINDS.indexOf(k);
   const segmentOrder = (s: HkSegment | null | undefined) => (s ? HK_SEGMENTS.indexOf(s) : -1);
   const payeeMap = new Map<string, HkPayeeJson>();
   const payeeOf = (userId: string, fallbackName: string | null | undefined): HkPayeeJson => {
@@ -1878,6 +2324,27 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     // Same three keys as the SQL component (no rule, no line count).
     p.components.push({ kind: "adjustments", amount_cents: amount, items });
     p.total_cents += amount;
+  });
+
+  // Minimum (0032): one active minimum_monthly rule per payee (fin_hk_save_rule's overlap check); should rows ever
+  // overlap, the highest floor, then the lowest id (SQL: DISTINCT ON payee ORDER BY piece_cents DESC, id). Topped up
+  // after every other component.
+  const minimumOf = new Map<string, HkComputeRule>();
+  for (const r of active) {
+    if (r.kind !== "minimum_monthly") continue;
+    const seen = minimumOf.get(r.payee_user_id);
+    const floor = r.piece_cents ?? 0;
+    const seenFloor = seen?.piece_cents ?? 0;
+    if (!seen || floor > seenFloor || (floor === seenFloor && byText(r.id, seen.id) < 0)) {
+      minimumOf.set(r.payee_user_id, r);
+    }
+  }
+  minimumOf.forEach((r, userId) => {
+    const p = payeeOf(userId, r.payee_name);
+    const floor = r.piece_cents ?? 0;
+    if (p.total_cents >= floor) return;
+    p.components.push({ kind: "minimum_topup", rule_id: r.id, amount_cents: floor - p.total_cents });
+    p.total_cents = floor;
   });
 
   // Bank part (0032): one active bank_portion rule per payee (fin_hk_save_rule's overlap check); summed like the SQL
@@ -1926,9 +2393,13 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     if (qty === 0) return; // SQL: pc.qty <> 0 (+1 and -1 cancel out)
     pieceWarnings.push({ code: "UNRULED_PIECES", doctor_id: doctorId, doctor_name: doctorNames.get(doctorId), qty });
   });
+  // SQL: ORDER BY kind, name (tr), payee id, doctor id, segment.
   const warningName = (w: HkWarningJson) => ("doctor_name" in w ? w.doctor_name ?? "" : "");
-  warnings.push(...unruledLines.sort((a, b) => byName(warningName(a), warningName(b))));
-  warnings.push(...pieceWarnings.sort((a, b) => byName(warningName(a), warningName(b))));
+  const warningDoctor = (w: HkWarningJson) => ("doctor_id" in w ? w.doctor_id : "");
+  const byDoctorWarning = (a: HkWarningJson, b: HkWarningJson) =>
+    byName(warningName(a), warningName(b)) || byText(warningDoctor(a), warningDoctor(b));
+  warnings.push(...unruledLines.sort(byDoctorWarning));
+  warnings.push(...pieceWarnings.sort(byDoctorWarning));
   if (input.counterparty_user_ids) {
     const linked = new Set(input.counterparty_user_ids);
     for (const p of payees) {
@@ -1953,6 +2424,82 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       });
     }
   }
+  const labDoctorName = (doctorId: string) =>
+    doctorNames.get(doctorId) ?? monthLabs.find((c) => c.doctor_id === doctorId && c.doctor_name)?.doctor_name ?? "";
+  const unruledLabWarnings: Extract<HkWarningJson, { code: "UNRULED_LAB" }>[] = [];
+  unruledLab.forEach((cents, doctorId) => {
+    if (cents === 0) return; // costs that net to zero lose nothing
+    unruledLabWarnings.push({
+      code: "UNRULED_LAB",
+      doctor_id: doctorId,
+      doctor_name: labDoctorName(doctorId),
+      lab_cents: cents,
+    });
+  });
+  warnings.push(...unruledLabWarnings.sort(byDoctorWarning));
+  warnings.push(
+    ...labOverCiro.sort(
+      (a, b) =>
+        byDoctorWarning(a, b) || segmentOrder(a.segment) - segmentOrder(b.segment) || byText(a.rule_id, b.rule_id)
+    )
+  );
 
-  return { month, payees, clinic_total_cents: clinicTotal, warnings, line_results: lineResults };
+  // Doctor × lab summary (0032): the month's live costs of every doctor, and what was deducted from each doctor's
+  // figures this month per lab (ciro_share: each rule's lab_cents split over its labs; ortho: the walk's recovery).
+  const summary = new Map<string, HkLabSummaryRowJson>();
+  const summaryRow = (doctorId: string, labName: string): HkLabSummaryRowJson => {
+    const key = `${doctorId}|${labName}`;
+    let row = summary.get(key);
+    if (!row) {
+      row = {
+        doctor_id: doctorId,
+        doctor_name: labDoctorName(doctorId),
+        lab_name: labName,
+        cost_cents: 0,
+        deducted_cents: 0,
+        count: 0,
+      };
+      summary.set(key, row);
+    }
+    return row;
+  };
+  for (const c of monthLabs) {
+    const row = summaryRow(c.doctor_id, c.lab_name ?? "");
+    row.cost_cents += c.amount_cents;
+    row.count += 1;
+  }
+  labsOfRule.forEach((labs, ruleId) => {
+    const groups = labWeightsForShare(labs.map((x) => ({ lab_name: x.lab_name ?? "", amount_cents: x.amount_cents })));
+    const parts = allocateByWeight(components.get(ruleId)?.lab_cents ?? 0, groups.map((g) => g.cost_cents));
+    const doctorId = ruleOf.get(ruleId)?.doctor_id ?? "";
+    groups.forEach((g, i) => {
+      summaryRow(doctorId, g.lab_name).deducted_cents += parts[i];
+    });
+  });
+  orthoByDoctor.forEach((rule, doctorId) => {
+    walks.get(rule.id)?.labInMonth.forEach((cents, labName) => {
+      if (cents === 0 && !summary.has(`${doctorId}|${labName}`)) return;
+      const row = summaryRow(doctorId, labName);
+      row.deducted_cents += cents;
+      if (!row.doctor_name) row.doctor_name = doctorName(doctorId, rule.doctor_name) ?? "";
+    });
+  });
+  const labSummary = Array.from(summary.values()).sort(
+    (a, b) =>
+      byName(a.doctor_name, b.doctor_name) ||
+      byText(a.doctor_id, b.doctor_id) ||
+      byName(a.lab_name, b.lab_name) ||
+      byText(a.lab_name, b.lab_name)
+  );
+
+  return {
+    month,
+    payees,
+    clinic_total_cents: clinicTotal,
+    warnings,
+    line_results: lineResults,
+    lab_results: labResults,
+    lab_summary: labSummary,
+    lab_totals: labTotalsOf(labSummary),
+  };
 }

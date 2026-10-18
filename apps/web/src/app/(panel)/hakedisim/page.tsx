@@ -5,7 +5,9 @@ import { ComponentBreakdown, LabPatientsTable } from "@/components/finance/Haked
 import { Card, ErrorBox, Loading } from "@/components/finance/ui";
 import { formatDay, formatMonth, formatTL, formatTimestamp, toFinanceError, type FinanceError } from "@/lib/finance";
 import {
+  LAB_LABELS,
   METHOD_LABELS,
+  MINIMUM_TOPUP_COMPONENT_LABEL,
   SEGMENT_LABELS,
   SPLIT_LABELS,
   bankOverText,
@@ -14,11 +16,14 @@ import {
   formatBp,
   hkMyMonth,
   hkMyMonths,
+  labTotalsOf,
   monthKey,
   pickDefaultMonth,
   sumPayeeSummaries,
   summarizePayee,
   type HkLabPatientJson,
+  type HkLabSummaryRowJson,
+  type HkMyLabCostJson,
   type HkMyLineJson,
   type HkMyMonthData,
   type HkMyMonthJson,
@@ -29,7 +34,8 @@ import { formatMoney } from "@/lib/payments";
 /**
  * Hakedişim: the signed-in doctor's (or the owner's) own hakediş, read-only. hk_my_months / hk_my_month return only
  * the caller's figures and lines; no finance permission is needed. Doctors and the owner only (layout.tsx). v1.3
- * (0032): the part paid by bank and the rest in cash, when the caller has a bank amount in the month.
+ * (0032): the part paid by bank and the rest in cash, when the caller has a bank amount in the month. v1.4 (0032): the
+ * month's lab costs taken off the caller's ciro (total, per lab and the cost rows) and the minimum top-up.
  */
 export default function HakedisimPage() {
   return (
@@ -263,6 +269,9 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
   // 0031: a fixed monthly salary and the month's bonus / other rows are part of the same monthly entry.
   const hasSalary = components.some((c) => c.kind === "fixed_monthly");
   const hasAdjustments = components.some((c) => c.kind === "adjustments");
+  // 0032 (v1.4): the floor's top-up, and the lab costs of the month taken off a ciro_share base.
+  const hasTopup = components.some((c) => c.kind === "minimum_topup");
+  const hasCiroLab = components.some((c) => typeof c.lab_cents === "number");
   const ortho = components.filter((c) => c.kind === "ortho_lab_first");
   const labPatients: HkLabPatientJson[] = ortho.flatMap((c) => c.lab_patients ?? []);
   const closed = data.status === "closed";
@@ -271,19 +280,27 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
   const sums = sumPayeeSummaries(data.payees.map(summarizePayee));
   const split = bankSplitOf({ total_cents: total, bank_cents: sums.bank_cents, cash_cents: sums.cash_cents });
 
-  // The doctor's ciro: gross collections without the implant part and the ortho lab part, so Ciro − Kesintiler =
-  // Matrah on the tiles below.
-  const ciroCents = s.gross_cents - s.implant_cents - s.lab_cents;
+  // The doctor's ciro: gross collections without the implant part and the ortho lab part, so Ciro − Kesintiler − Lab
+  // (the month's lab costs of the ciro_share rules, 0032) = Matrah on the tiles below.
+  const orthoLab = s.lab_cents - s.ciro_lab_cents;
+  const ciroCents = s.gross_cents - s.implant_cents - orthoLab;
   const ciroCaption =
-    s.implant_cents || s.lab_cents
+    s.implant_cents || orthoLab
       ? [
           `Brüt ${formatTL(s.gross_cents)}`,
           s.implant_cents ? `implant payı ${formatTL(s.implant_cents)} hariç` : null,
-          s.lab_cents ? `lab ${formatTL(s.lab_cents)} hariç` : null,
+          orthoLab ? `ortodonti lab ${formatTL(orthoLab)} hariç` : null,
         ]
           .filter(Boolean)
           .join(", ")
       : "";
+  const labCaption =
+    s.lab_excess_cents > 0
+      ? `Kesintilerden sonra; cironuzu aşan ${formatTL(s.lab_excess_cents)} düşülmedi`
+      : "Ayın lab gideri, kesintilerden sonra";
+  // Lab card for every doctor with lab rows or a lab summary (before 0032: the ortho doctors only).
+  const labSummary = data.lab_summary;
+  const showLab = ortho.length > 0 || data.lab_costs.length > 0 || (labSummary?.length ?? 0) > 0;
 
   return (
     <div className="space-y-6">
@@ -310,6 +327,14 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
             <>
               <SummaryTile label="Ciro" cents={ciroCents} caption={ciroCaption || undefined} />
               <SummaryTile label="Kesintiler" cents={s.deduction_cents ? -s.deduction_cents : 0} caption="Ödeme şekline göre" />
+              {hasCiroLab && (
+                <SummaryTile
+                  label={LAB_LABELS.column}
+                  cents={s.ciro_lab_cents ? -s.ciro_lab_cents : 0}
+                  caption={labCaption}
+                  tone={s.lab_excess_cents > 0 ? "amber" : undefined}
+                />
+              )}
               <SummaryTile label="Matrah" cents={s.base_cents} />
               <SummaryTile
                 label="Pay"
@@ -329,6 +354,13 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
             />
           )}
           {hasSalary && <SummaryTile label="Sabit maaş" cents={s.salary_cents} caption="Net" />}
+          {hasTopup && (
+            <SummaryTile
+              label={MINIMUM_TOPUP_COMPONENT_LABEL}
+              cents={s.minimum_topup_cents}
+              caption="Ayın toplamı taban maaşınızın altında kaldığı için"
+            />
+          )}
           {hasAdjustments && (
             <SummaryTile
               label="Prim ve diğer"
@@ -418,51 +450,118 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
         </Card>
       )}
 
+      {showLab && (
+        <LabCard
+          costs={data.lab_costs}
+          summary={labSummary}
+          hasOrtho={ortho.length > 0}
+          hasCiroLab={hasCiroLab}
+        />
+      )}
       {ortho.length > 0 && (
-        <>
-          <Card title="Lab giderleri">
-            {data.lab_costs.length === 0 ? (
-              <p className="text-sm text-gray-500">Lab gideri yok.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-gray-700 border-b">
-                      <th className="py-2 pr-3 font-semibold">Tarih</th>
-                      <th className="py-2 pr-3 font-semibold">Hasta</th>
-                      <th className="py-2 pr-3 font-semibold">Lab</th>
-                      <th className="py-2 font-semibold text-right">Tutar</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.lab_costs.map((c, i) => (
-                      <tr key={c.id ?? i} className="border-b last:border-b-0">
-                        <td className="py-2 pr-3 whitespace-nowrap">{formatDay(c.day)}</td>
-                        <td className="py-2 pr-3">{c.patient_name}</td>
-                        <td className="py-2 pr-3">{c.lab_name}</td>
-                        <td className={`py-2 text-right tabular-nums whitespace-nowrap ${c.amount_cents < 0 ? "text-red-600" : ""}`}>
-                          {formatTL(c.amount_cents)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <p className="text-xs text-gray-500 mt-3">
-              Hastanın lab gideri önce o hastanın ödemelerinden karşılanır; payınız kalan tutar üzerinden hesaplanır.
-            </p>
-          </Card>
-          <Card title="Hasta başına lab: toplam / karşılanan / kalan">
-            {labPatients.length === 0 ? (
-              <p className="text-sm text-gray-500">Karşılanmayı bekleyen lab gideri yok.</p>
-            ) : (
-              <LabPatientsTable rows={labPatients} />
-            )}
-          </Card>
-        </>
+        <Card title="Hasta başına lab: toplam / karşılanan / kalan">
+          {labPatients.length === 0 ? (
+            <p className="text-sm text-gray-500">Karşılanmayı bekleyen lab gideri yok.</p>
+          ) : (
+            <LabPatientsTable rows={labPatients} />
+          )}
+        </Card>
       )}
     </div>
+  );
+}
+
+/**
+ * The caller's lab costs: the month's total and the breakdown per lab (hk_my_month lab_summary, 0032: cost of the
+ * month and what was taken off the caller's hakediş), then the cost rows (the month's rows under the caller's ciro_share
+ * rules, the ortho patients' rows to date).
+ */
+function LabCard({
+  costs,
+  summary,
+  hasOrtho,
+  hasCiroLab,
+}: {
+  costs: HkMyLabCostJson[];
+  summary: HkLabSummaryRowJson[] | undefined;
+  hasOrtho: boolean;
+  hasCiroLab: boolean;
+}) {
+  const perLab = summary ? labTotalsOf(summary) : [];
+  const cost = perLab.reduce((sum, r) => sum + r.cost_cents, 0);
+  const deducted = perLab.reduce((sum, r) => sum + r.deducted_cents, 0);
+  const count = perLab.reduce((sum, r) => sum + r.count, 0);
+  return (
+    <Card title="Lab giderleri">
+      {summary && perLab.length > 0 && (
+        <div className="space-y-3 mb-4">
+          <div className="grid grid-cols-2 gap-3">
+            <SummaryTile label="Bu ay lab gideri" cents={cost} caption={`${count} kayıt`} />
+            <SummaryTile label="Hakedişinizden düşülen" cents={deducted} caption="Bu ayın hesabında" />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-700 border-b">
+                  <th className="py-2 pr-3 font-semibold">{LAB_LABELS.lab}</th>
+                  <th className="py-2 pr-3 font-semibold text-right">{LAB_LABELS.count}</th>
+                  <th className="py-2 pr-3 font-semibold text-right whitespace-nowrap">{LAB_LABELS.cost}</th>
+                  <th className="py-2 font-semibold text-right whitespace-nowrap">{LAB_LABELS.deducted}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {perLab.map((r) => (
+                  <tr key={r.lab_name} className="border-b last:border-b-0">
+                    <td className="py-2 pr-3">{r.lab_name}</td>
+                    <td className="py-2 pr-3 text-right tabular-nums">{r.count}</td>
+                    <td className={`py-2 pr-3 text-right tabular-nums whitespace-nowrap ${r.cost_cents < 0 ? "text-red-600" : ""}`}>
+                      {formatTL(r.cost_cents)}
+                    </td>
+                    <td className="py-2 text-right tabular-nums whitespace-nowrap">{formatTL(r.deducted_cents)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {costs.length === 0 ? (
+        <p className="text-sm text-gray-500">Lab gideri kaydı yok.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-700 border-b">
+                <th className="py-2 pr-3 font-semibold">Tarih</th>
+                <th className="py-2 pr-3 font-semibold">Hasta</th>
+                <th className="py-2 pr-3 font-semibold">Lab</th>
+                <th className="py-2 font-semibold text-right">Tutar</th>
+              </tr>
+            </thead>
+            <tbody>
+              {costs.map((c, i) => (
+                <tr key={c.id ?? i} className="border-b last:border-b-0">
+                  <td className="py-2 pr-3 whitespace-nowrap">{formatDay(c.day)}</td>
+                  <td className="py-2 pr-3">{c.patient_name}</td>
+                  <td className="py-2 pr-3">{c.lab_name}</td>
+                  <td className={`py-2 text-right tabular-nums whitespace-nowrap ${c.amount_cents < 0 ? "text-red-600" : ""}`}>
+                    {formatTL(c.amount_cents)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="text-xs text-gray-500 mt-3">
+        {hasCiroLab &&
+          "Ayın lab giderleri, ödeme şekli kesintilerinden sonra cironuzdan düşülür; payınız kalan matrah üzerinden hesaplanır. Lab gideri ciroyu aşarsa matrah 0 olur, aşan kısım sizden düşülmez ve sonraki aya devretmez. "}
+        {hasOrtho &&
+          "Ortodontide hastanın lab gideri önce o hastanın ödemelerinden karşılanır; payınız kalan tutar üzerinden hesaplanır. "}
+        {LAB_LABELS.cost}: bu ay tarihli lab giderleri; {LAB_LABELS.deducted.toLocaleLowerCase("tr")}: bu ayın hesabında
+        hakedişinizden düşülen kısım.
+      </p>
+    </Card>
   );
 }
 

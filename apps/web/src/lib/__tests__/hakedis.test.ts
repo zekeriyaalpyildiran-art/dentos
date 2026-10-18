@@ -1,11 +1,13 @@
 // Hakediş engine mirror (spec §1 "Calculation", §2; v1.1 child patients by age; v1.2 staff payroll: fixed_monthly
-// salaries and bonus / other adjustments; v1.3 bank / cash split: bank_portion rules). Made-up doctors, staff,
-// patients, rates and amounts only.
+// salaries and bonus / other adjustments; v1.3 bank / cash split: bank_portion rules; v1.4 lab costs deducted from
+// the ciro, minimum_monthly floors and the doctor × lab summary). Made-up doctors, staff, patients, labs, rates and
+// amounts only.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   addMonths,
   ADJUSTMENT_KIND_LABELS,
+  allocateByWeight,
   ADJUSTMENTS_COMPONENT_LABEL,
   ageOn,
   applyBp,
@@ -16,6 +18,7 @@ import {
   bankSplitText,
   bpToInput,
   childAgeLimitOf,
+  compareCodePoints,
   componentKey,
   componentTitle,
   computeMonth,
@@ -27,6 +30,7 @@ import {
   finHkSaveSettings,
   finHkVoidAdjustment,
   formatBp,
+  groupLabCosts,
   hkCanPrepare,
   hkLedgerVisible,
   HK_ADJUSTMENT_DESCRIPTION_MAX,
@@ -35,9 +39,18 @@ import {
   hkMarksAccess,
   hkMarksList,
   hkSaveMark,
+  isLabWarning,
   KIND_LABELS,
   kindAllowsAnyUser,
+  LAB_DEDUCTION_TEXT,
+  LAB_LABELS,
+  LAB_SUMMARY_HINT,
+  labSummaryByDoctor,
+  labTotalsOf,
   markIsChildOn,
+  MINIMUM_MONTHLY_HINT,
+  MINIMUM_TOPUP_COMPONENT_LABEL,
+  minimumRuleOf,
   monthKey,
   monthRangesOverlap,
   monthStart,
@@ -1049,7 +1062,7 @@ describe("payroll (v1.2)", () => {
   });
 
   it("checks fixed_monthly rules and adjustment inputs", () => {
-    expect(HK_KINDS.slice(-2)).toEqual(["fixed_monthly", "bank_portion"]);
+    expect(HK_KINDS.slice(-3)).toEqual(["fixed_monthly", "bank_portion", "minimum_monthly"]);
     expect(KIND_LABELS.fixed_monthly).toBe("Sabit aylık maaş");
     expect(ADJUSTMENT_KIND_LABELS).toEqual({ bonus: "Prim", other: "Diğer" });
     expect(RULE_FIELDS.fixed_monthly).toEqual({ doctor: false, segment: false, share: false, piece: true, deductions: false });
@@ -1301,7 +1314,7 @@ describe("bank / cash split (v1.3)", () => {
       "Hakedişin/maaşın bankadan ödenen kısmı; toplamı değiştirmez, ödemeyi bankadan ve elden diye böler."
     );
     expect(SPLIT_LABELS).toEqual({ bank: "Bankadan", cash: "Elden" });
-    expect(HK_KINDS.filter(kindAllowsAnyUser)).toEqual(["fixed_monthly", "bank_portion"]);
+    expect(HK_KINDS.filter(kindAllowsAnyUser)).toEqual(["fixed_monthly", "bank_portion", "minimum_monthly"]);
 
     const base: HkRuleInput = {
       payee_user_id: "u-p1",
@@ -1369,6 +1382,789 @@ describe("bank / cash split (v1.3)", () => {
     });
     expect(sumPayeeSummaries([rows[2]])).toMatchObject({ bank_cents: null, cash_cents: null });
     expect(emptyPayeeSummary()).toMatchObject({ bank_cents: null, cash_cents: null });
+  });
+});
+
+describe("lab costs on the ciro (v1.4)", () => {
+  const payee = (out: HkComputeOutput, userId: string) => out.payees.find((p) => p.payee_user_id === userId)!;
+  // Hekim A: 40 % of ciro after card and havale 8 %, cash 0 %.
+  const a40 = () =>
+    rule({
+      kind: "ciro_share",
+      payee_user_id: "u-a",
+      doctor_id: "doc-a",
+      segment: "standard",
+      share_bp: 4000,
+      deduct_card_bp: 800,
+      deduct_transfer_bp: 800,
+    });
+  const bStd27 = () =>
+    rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "standard", share_bp: 2700 });
+
+  it("deducts the month's lab costs after the method deductions, before the share (owner example shape)", () => {
+    const r = a40();
+    const lines = [
+      line({ doctor_id: "doc-a", method: "card", try_cents: TL(47_500) }),
+      line({ doctor_id: "doc-a", method: "transfer", try_cents: TL(22_500) }),
+      line({ doctor_id: "doc-a", method: "cash", try_cents: TL(48_000) }),
+    ];
+    const labs = [
+      lab({ doctor_id: "doc-a", patient_ref: "hasta 1", day: "2026-11-05", amount_cents: TL(13_000), lab_name: "Lab Y" }),
+      lab({ doctor_id: "doc-a", patient_ref: "hasta 2", day: "2026-11-20", amount_cents: TL(9_400), lab_name: "Lab X" }),
+    ];
+    const without = run({ month: "2026-11", rules: [r], lines });
+    const out = run({ month: "2026-11", rules: [r], lines, lab_costs: labs });
+
+    // Ciro 118.000: card + havale 70.000 − 8 % = 64.400, cash 48.000 → 112.400 − lab 22.400 = 90.000 → 40 % = 36.000.
+    expect(component(without, r.id)).toMatchObject({ base_cents: TL(112_400), amount_cents: TL(44_960) });
+    // Without lab costs the component has exactly the 0031 keys.
+    expect("lab_cents" in component(without, r.id)).toBe(false);
+    const c = component(out, r.id);
+    expect(c).toEqual({
+      ...component(without, r.id),
+      base_cents: TL(90_000),
+      amount_cents: TL(36_000),
+      lab_cents: TL(22_400),
+      lab_excess_cents: 0,
+    });
+    // The method buckets are untouched: the lab comes off after the deductions.
+    expect(c.by_method!.card).toEqual({
+      gross: TL(47_500),
+      implant: 0,
+      lab: 0,
+      eligible: TL(47_500),
+      deduct_bp: 800,
+      deduction: TL(3_800),
+    });
+    expect(payeeTotal(out, "u-a")).toBe(TL(36_000));
+    expect(out.warnings).toEqual([]);
+    expect(out.line_results).toEqual(without.line_results);
+    expect(out.lab_results).toEqual([
+      { id: labs[0].id, segment: "standard", rule_id: r.id },
+      { id: labs[1].id, segment: "standard", rule_id: r.id },
+    ]);
+    expect(out.lab_summary).toEqual([
+      { doctor_id: "doc-a", doctor_name: "Hekim A", lab_name: "Lab X", cost_cents: TL(9_400), deducted_cents: TL(9_400), count: 1 },
+      { doctor_id: "doc-a", doctor_name: "Hekim A", lab_name: "Lab Y", cost_cents: TL(13_000), deducted_cents: TL(13_000), count: 1 },
+    ]);
+    expect(out.lab_totals).toEqual([
+      { lab_name: "Lab X", cost_cents: TL(9_400), deducted_cents: TL(9_400), count: 1 },
+      { lab_name: "Lab Y", cost_cents: TL(13_000), deducted_cents: TL(13_000), count: 1 },
+    ]);
+
+    const s = summarizePayee(payee(out, "u-a"));
+    expect(s).toMatchObject({
+      gross_cents: TL(118_000),
+      implant_cents: 0,
+      lab_cents: TL(22_400),
+      lab_excess_cents: 0,
+      deduction_cents: TL(5_600),
+      base_cents: TL(90_000),
+      share_cents: TL(36_000),
+      share_bps: [4000],
+      total_cents: TL(36_000),
+    });
+    expect(s.gross_cents - s.implant_cents - s.lab_cents - s.deduction_cents).toBe(s.base_cents);
+  });
+
+  it("never takes the base below 0: the excess stays with the clinic (LAB_OVER_CIRO), with no carry-forward", () => {
+    const r = bStd27();
+    const lines = [
+      line({ doctor_id: "doc-b", try_cents: TL(10_000) }),
+      line({ doctor_id: "doc-b", day: "2026-12-04", try_cents: TL(10_000) }),
+    ];
+    const labs = [
+      lab({ doctor_id: "doc-b", patient_ref: "hasta 1", day: "2026-11-03", amount_cents: TL(9_000.01), lab_name: "Lab X" }),
+      lab({ doctor_id: "doc-b", patient_ref: "hasta 2", day: "2026-11-09", amount_cents: TL(5_999.99), lab_name: "Lab Y" }),
+    ];
+    const nov = run({ month: "2026-11", rules: [r], lines, lab_costs: labs });
+    expect(component(nov, r.id)).toMatchObject({
+      base_cents: 0,
+      amount_cents: 0,
+      lab_cents: TL(10_000),
+      lab_excess_cents: TL(5_000),
+    });
+    expect(nov.warnings).toEqual([
+      {
+        code: "LAB_OVER_CIRO",
+        doctor_id: "doc-b",
+        doctor_name: "Hekim B",
+        rule_id: r.id,
+        segment: "standard",
+        lab_cents: TL(15_000),
+        ciro_after_deductions_cents: TL(10_000),
+        excess_cents: TL(5_000),
+      },
+    ]);
+    expect(warningText(nov.warnings[0])).toBe(
+      "Hekim B · Standart: ayın lab maliyeti (₺15.000,00) kesintiler sonrası cirodan (₺10.000,00) fazla; aşan ₺5.000,00 hakedişten düşülmedi, klinikte kalır."
+    );
+    // The deducted 10.000 is split over the labs by their costs (rounded cumulatively in lab name order).
+    expect(nov.lab_summary.map((x) => [x.lab_name, x.cost_cents, x.deducted_cents])).toEqual([
+      ["Lab X", TL(9_000.01), TL(6_000.01)],
+      ["Lab Y", TL(5_999.99), TL(3_999.99)],
+    ]);
+    expect(summarizePayee(payee(nov, "u-b"))).toMatchObject({ lab_cents: TL(10_000), lab_excess_cents: TL(5_000), base_cents: 0 });
+
+    // December starts clean: November's excess is not carried forward.
+    const dec = run({ month: "2026-12", rules: [r], lines, lab_costs: labs });
+    expect(component(dec, r.id)).toEqual(component(run({ month: "2026-12", rules: [r], lines }), r.id));
+    expect(component(dec, r.id)).toMatchObject({ base_cents: TL(10_000), amount_cents: TL(2_700) });
+    expect(dec.warnings).toEqual([]);
+    expect(dec.lab_summary).toEqual([]);
+  });
+
+  it("leaves a negative ciro as it is and deducts a lab correction whole", () => {
+    const r = bStd27();
+    // A month with only a correction line: nothing to deduct the lab cost from.
+    const jan = run({
+      month: "2027-01",
+      rules: [r],
+      lines: [line({ doctor_id: "doc-b", day: "2027-01-08", try_cents: TL(-1_800) })],
+      lab_costs: [lab({ doctor_id: "doc-b", patient_ref: "hasta 1", day: "2027-01-09", amount_cents: TL(1_000), lab_name: "Lab X" })],
+    });
+    expect(component(jan, r.id)).toMatchObject({
+      base_cents: TL(-1_800),
+      amount_cents: TL(-486),
+      lab_cents: 0,
+      lab_excess_cents: TL(1_000),
+    });
+    expect(jan.warnings).toEqual([
+      expect.objectContaining({ code: "LAB_OVER_CIRO", lab_cents: TL(1_000), ciro_after_deductions_cents: TL(-1_800), excess_cents: TL(1_000) }),
+    ]);
+    expect(jan.lab_summary[0]).toMatchObject({ cost_cents: TL(1_000), deducted_cents: 0, count: 1 });
+
+    // A lab refund (negative cost) raises the base.
+    const feb = run({
+      month: "2027-02",
+      rules: [r],
+      lines: [line({ doctor_id: "doc-b", day: "2027-02-08", try_cents: TL(10_000) })],
+      lab_costs: [lab({ doctor_id: "doc-b", patient_ref: "hasta 1", day: "2027-02-10", amount_cents: TL(-500), lab_name: "Lab X" })],
+    });
+    expect(component(feb, r.id)).toMatchObject({ base_cents: TL(10_500), amount_cents: TL(2_835), lab_cents: TL(-500), lab_excess_cents: 0 });
+    expect(feb.warnings).toEqual([]);
+    expect(feb.lab_summary[0]).toMatchObject({ cost_cents: TL(-500), deducted_cents: TL(-500) });
+  });
+
+  it("resolves each lab cost to the rule of its patient's segment on the cost's day, with the standard fallback", () => {
+    const bStd = rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "standard", share_bp: 2500 });
+    const bChild = rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "child", share_bp: 3200 });
+    const cStd = rule({ kind: "ciro_share", payee_user_id: "u-c", doctor_id: "doc-c", segment: "standard", share_bp: 2500 });
+    const cOwn = rule({ kind: "ciro_share", payee_user_id: "u-c", doctor_id: "doc-c", segment: "own", share_bp: 3200 });
+    const marks: HkComputeMark[] = [
+      // 14 on 2026-11-15 (default limit 14: a child until the day before).
+      { patient_ref: "cocuk 1", own_doctor_id: null, is_child: false, birth_date: "2012-11-15" },
+      { patient_ref: "kendi 1", own_doctor_id: "doc-c", is_child: false },
+      { patient_ref: "cocuk 2", own_doctor_id: null, is_child: true },
+    ];
+    const t = TL(10_000);
+    const lines = [
+      line({ doctor_id: "doc-b", patient_ref: "hasta 1", try_cents: t }),
+      line({ doctor_id: "doc-b", patient_ref: "cocuk 2", try_cents: t }),
+      line({ doctor_id: "doc-c", patient_ref: "kendi 1", try_cents: t }),
+      line({ doctor_id: "doc-c", patient_ref: "hasta 1", try_cents: t }),
+    ];
+    const labs = {
+      bChildByAge: lab({ doctor_id: "doc-b", patient_ref: "cocuk 1", day: "2026-11-14", amount_cents: TL(1_000), lab_name: "Lab X" }),
+      bBirthday: lab({ doctor_id: "doc-b", patient_ref: "cocuk 1", day: "2026-11-15", amount_cents: TL(2_000), lab_name: "Lab X" }),
+      // Hekim C's own patient is a standard patient for Hekim B.
+      bOtherOwn: lab({ doctor_id: "doc-b", patient_ref: "kendi 1", day: "2026-11-10", amount_cents: TL(450), lab_name: "Lab Y" }),
+      cOwn: lab({ doctor_id: "doc-c", patient_ref: "kendi 1", day: "2026-11-10", amount_cents: TL(700), lab_name: "Lab Y" }),
+      // No child rule for Hekim C → the standard rule.
+      cChildNoRule: lab({ doctor_id: "doc-c", patient_ref: "cocuk 2", day: "2026-11-10", amount_cents: TL(300), lab_name: "Lab X" }),
+    };
+    const rules = [bStd, bChild, cStd, cOwn];
+    const out = run({ month: "2026-11", rules, lines, marks, lab_costs: Object.values(labs) });
+    const res = (c: HkComputeLabCost) => out.lab_results.find((x) => x.id === c.id);
+
+    expect(res(labs.bChildByAge)).toEqual({ id: labs.bChildByAge.id, segment: "child", rule_id: bChild.id });
+    expect(res(labs.bBirthday)).toEqual({ id: labs.bBirthday.id, segment: "standard", rule_id: bStd.id });
+    expect(res(labs.bOtherOwn)).toEqual({ id: labs.bOtherOwn.id, segment: "standard", rule_id: bStd.id });
+    expect(res(labs.cOwn)).toEqual({ id: labs.cOwn.id, segment: "own", rule_id: cOwn.id });
+    expect(res(labs.cChildNoRule)).toEqual({ id: labs.cChildNoRule.id, segment: "child", rule_id: cStd.id });
+
+    expect(component(out, bChild.id)).toMatchObject({ lab_cents: TL(1_000), base_cents: TL(9_000), amount_cents: TL(2_880) });
+    expect(component(out, bStd.id)).toMatchObject({ lab_cents: TL(2_450), base_cents: TL(7_550), amount_cents: TL(1_887.5) });
+    expect(component(out, cOwn.id)).toMatchObject({ lab_cents: TL(700), base_cents: TL(9_300), amount_cents: TL(2_976) });
+    expect(component(out, cStd.id)).toMatchObject({ lab_cents: TL(300), base_cents: TL(9_700), amount_cents: TL(2_425) });
+    expect(payeeTotal(out, "u-b")).toBe(TL(4_767.5));
+    expect(payeeTotal(out, "u-c")).toBe(TL(5_401));
+    expect(out.warnings).toEqual([]);
+    expect(out.lab_summary.map((x) => [x.doctor_name, x.lab_name, x.cost_cents, x.deducted_cents, x.count])).toEqual([
+      ["Hekim B", "Lab X", TL(3_000), TL(3_000), 2],
+      ["Hekim B", "Lab Y", TL(450), TL(450), 1],
+      ["Hekim C", "Lab X", TL(300), TL(300), 1],
+      ["Hekim C", "Lab Y", TL(700), TL(700), 1],
+    ]);
+    expect(out.lab_totals).toEqual([
+      { lab_name: "Lab X", cost_cents: TL(3_300), deducted_cents: TL(3_300), count: 3 },
+      { lab_name: "Lab Y", cost_cents: TL(1_150), deducted_cents: TL(1_150), count: 2 },
+    ]);
+
+    // A higher child age limit moves the birthday cost to the child rule too.
+    const older = run({ month: "2026-11", rules, lines, marks, lab_costs: Object.values(labs), settings: { child_age_limit: 15 } });
+    expect(component(older, bChild.id).lab_cents).toBe(TL(3_000));
+    expect(component(older, bStd.id).lab_cents).toBe(TL(450));
+  });
+
+  it("keeps the ortho lab-first walk unchanged; its recovery of the month is split per lab in the summary", () => {
+    const s = rule({ kind: "ortho_lab_first", payee_user_id: "u-s", doctor_id: "doc-s", share_bp: 5500 });
+    const sStd = rule({ kind: "ciro_share", payee_user_id: "u-s", doctor_id: "doc-s", segment: "standard", share_bp: 2500 });
+    const labs = [
+      lab({ patient_ref: "orto 1", day: "2026-11-03", amount_cents: TL(21_000), lab_name: "Lab Y" }),
+      lab({ patient_ref: "orto 1", day: "2026-11-04", amount_cents: TL(15_000), lab_name: "Lab X" }),
+    ];
+    const nov = line({ doctor_id: "doc-s", patient_ref: "orto 1", day: "2026-11-06", try_cents: TL(18_000) });
+    const dec = line({ doctor_id: "doc-s", patient_ref: "orto 1", day: "2026-12-06", try_cents: TL(30_000) });
+    const lines = [nov, dec];
+
+    const outNov = run({ month: "2026-11", rules: [s, sStd], lines, lab_costs: labs });
+    expect(labPartOf(outNov, nov.id)).toBe(TL(18_000));
+    expect(component(outNov, s.id)).toMatchObject({ base_cents: 0, amount_cents: 0 });
+    // The costs belong to the ortho rule; nothing is deducted from a ciro component on top of the walk.
+    expect(outNov.lab_results.map((x) => x.rule_id)).toEqual([s.id, s.id]);
+    expect("lab_cents" in component(outNov, s.id)).toBe(false);
+    expect("lab_cents" in component(outNov, sStd.id)).toBe(false);
+    expect(component(run({ month: "2026-11", rules: [s], lines, lab_costs: labs }), s.id)).toEqual(component(outNov, s.id));
+    expect(outNov.warnings).toEqual([]);
+    // 18.000 recovered of 36.000: Lab X 15 / 36 of it, Lab Y 21 / 36.
+    expect(outNov.lab_summary).toEqual([
+      { doctor_id: "doc-s", doctor_name: "Hekim S", lab_name: "Lab X", cost_cents: TL(15_000), deducted_cents: TL(7_500), count: 1 },
+      { doctor_id: "doc-s", doctor_name: "Hekim S", lab_name: "Lab Y", cost_cents: TL(21_000), deducted_cents: TL(10_500), count: 1 },
+    ]);
+
+    // December recovers the rest from a payment: rows without costs of the month, only the deducted part.
+    const outDec = run({ month: "2026-12", rules: [s, sStd], lines, lab_costs: labs });
+    expect(labPartOf(outDec, dec.id)).toBe(TL(18_000));
+    expect(component(outDec, s.id)).toMatchObject({ base_cents: TL(12_000), amount_cents: TL(6_600) });
+    expect(outDec.lab_results).toEqual([]);
+    expect(outDec.lab_summary.map((x) => [x.lab_name, x.cost_cents, x.deducted_cents, x.count])).toEqual([
+      ["Lab X", 0, TL(7_500), 0],
+      ["Lab Y", 0, TL(10_500), 0],
+    ]);
+    expect(run({ month: "2027-01", rules: [s], lines, lab_costs: labs }).lab_summary).toEqual([]);
+  });
+
+  it("does not recover again in the ortho walk a cost deducted from a ciro_share rule in its own month", () => {
+    // Hekim S: ciro_share 25 % in 2026-02 only, then ortho_lab_first 55 % from 2026-03.
+    const sCiro = rule({
+      kind: "ciro_share",
+      payee_user_id: "u-s",
+      doctor_id: "doc-s",
+      segment: "standard",
+      share_bp: 2500,
+      from_month: "2026-02-01",
+      to_month: "2026-02-01",
+    });
+    const sOrtho = rule({
+      kind: "ortho_lab_first",
+      payee_user_id: "u-s",
+      doctor_id: "doc-s",
+      share_bp: 5500,
+      from_month: "2026-03-01",
+    });
+    const rules = [sCiro, sOrtho];
+    const febLine = line({ doctor_id: "doc-s", patient_ref: "hasta 2", day: "2026-02-05", try_cents: TL(10_000) });
+    // The patient pays only in March; the February cost came off February's ciro.
+    const febCost = lab({ patient_ref: "hasta 1", day: "2026-02-10", amount_cents: TL(1_000), lab_name: "Lab X" });
+    const marLine = line({ doctor_id: "doc-s", patient_ref: "hasta 1", day: "2026-03-04", try_cents: TL(4_000) });
+    const lines = [febLine, marLine];
+
+    const feb = run({ month: "2026-02", rules, lines, lab_costs: [febCost] });
+    expect(component(feb, sCiro.id)).toMatchObject({
+      base_cents: TL(9_000),
+      amount_cents: TL(2_250),
+      lab_cents: TL(1_000),
+      lab_excess_cents: 0,
+    });
+
+    const mar = run({ month: "2026-03", rules, lines, lab_costs: [febCost] });
+    expect(labPartOf(mar, marLine.id)).toBe(0);
+    expect(component(mar, sOrtho.id)).toMatchObject({ base_cents: TL(4_000), amount_cents: TL(2_200), lab_patients: [] });
+    expect(mar.lab_summary).toEqual([]);
+    expect(mar.warnings).toEqual([]);
+
+    // A March cost of the same patient is recovered and listed alone; the per-lab split has no February lab.
+    const marCost = lab({ patient_ref: "hasta 1", day: "2026-03-02", amount_cents: TL(500), lab_name: "Lab Y" });
+    const mixed = run({ month: "2026-03", rules, lines, lab_costs: [febCost, marCost] });
+    expect(labPartOf(mixed, marLine.id)).toBe(TL(500));
+    expect(component(mixed, sOrtho.id)).toMatchObject({
+      base_cents: TL(3_500),
+      amount_cents: TL(1_925),
+      lab_patients: [
+        {
+          patient_ref: "hasta 1",
+          patient_name: "hasta 1",
+          lab_total_cents: TL(500),
+          recovered_cents: TL(500),
+          remaining_cents: 0,
+          recovered_in_month_cents: TL(500),
+        },
+      ],
+    });
+    expect(mixed.lab_summary).toEqual([
+      { doctor_id: "doc-s", doctor_name: "Hekim S", lab_name: "Lab Y", cost_cents: TL(500), deducted_cents: TL(500), count: 1 },
+    ]);
+    // Later months keep it out too (the February rule still decides the February cost).
+    const apr = run({
+      month: "2026-04",
+      rules,
+      lines: [...lines, line({ doctor_id: "doc-s", patient_ref: "hasta 1", day: "2026-04-04", try_cents: TL(3_000) })],
+      lab_costs: [febCost],
+    });
+    expect(component(apr, sOrtho.id)).toMatchObject({ base_cents: TL(3_000), lab_patients: [] });
+  });
+
+  it("still recovers in the ortho walk a cost that had no rule in its own month (before the ortho start)", () => {
+    const sCiro = rule({
+      kind: "ciro_share",
+      payee_user_id: "u-s",
+      doctor_id: "doc-s",
+      segment: "standard",
+      share_bp: 2500,
+      from_month: "2026-02-01",
+      to_month: "2026-02-01",
+    });
+    const sOrtho = rule({
+      kind: "ortho_lab_first",
+      payee_user_id: "u-s",
+      doctor_id: "doc-s",
+      share_bp: 5500,
+      from_month: "2026-03-01",
+    });
+    // January: no rule of Hekim S (UNRULED_LAB there); February: ciro_share; March: the walk recovers January's cost.
+    const janCost = lab({ patient_ref: "hasta 3", day: "2026-01-20", amount_cents: TL(800), lab_name: "Lab X" });
+    const marLine = line({ doctor_id: "doc-s", patient_ref: "hasta 3", day: "2026-03-09", try_cents: TL(3_000) });
+
+    const jan = run({ month: "2026-01", rules: [sCiro, sOrtho], lines: [marLine], lab_costs: [janCost] });
+    expect(jan.warnings).toEqual([{ code: "UNRULED_LAB", doctor_id: "doc-s", doctor_name: "Hekim S", lab_cents: TL(800) }]);
+
+    const mar = run({ month: "2026-03", rules: [sCiro, sOrtho], lines: [marLine], lab_costs: [janCost] });
+    expect(labPartOf(mar, marLine.id)).toBe(TL(800));
+    expect(component(mar, sOrtho.id)).toMatchObject({
+      base_cents: TL(2_200),
+      amount_cents: TL(1_210),
+      lab_patients: [
+        {
+          patient_ref: "hasta 3",
+          patient_name: "hasta 3",
+          lab_total_cents: TL(800),
+          recovered_cents: TL(800),
+          remaining_cents: 0,
+          recovered_in_month_cents: TL(800),
+        },
+      ],
+    });
+    expect(mar.lab_summary).toEqual([
+      { doctor_id: "doc-s", doctor_name: "Hekim S", lab_name: "Lab X", cost_cents: 0, deducted_cents: TL(800), count: 0 },
+    ]);
+    // Same as an ortho-only history: the February rule has no costs of its own month to take out.
+    expect(component(run({ month: "2026-03", rules: [sOrtho], lines: [marLine], lab_costs: [janCost] }), sOrtho.id)).toEqual(
+      component(mar, sOrtho.id)
+    );
+  });
+
+  it("warns about lab costs without a ciro / ortho rule (UNRULED_LAB), before LAB_OVER_CIRO (SQL warning order)", () => {
+    const implant = rule({ kind: "implant_piece", payee_user_id: "u-b", doctor_id: "doc-e", piece_cents: TL(1_000) });
+    const a = aStd();
+    const labs = [
+      lab({ doctor_id: "doc-e", patient_ref: "hasta 1", day: "2026-11-02", amount_cents: TL(1_200), lab_name: "Lab X" }),
+      lab({ doctor_id: "doc-d", patient_ref: "hasta 2", day: "2026-11-03", amount_cents: TL(800), lab_name: "Lab Y" }),
+      // Costs that net to zero lose nothing: no warning.
+      lab({ doctor_id: "doc-c", patient_ref: "hasta 3", day: "2026-11-04", amount_cents: TL(500), lab_name: "Lab X" }),
+      lab({ doctor_id: "doc-c", patient_ref: "hasta 3", day: "2026-11-05", amount_cents: TL(-500), lab_name: "Lab X" }),
+      // A doctor unknown to `doctors` is named after the cost row.
+      lab({ doctor_id: "doc-x", doctor_name: "Hekim X", patient_ref: "hasta 4", day: "2026-11-06", amount_cents: TL(100), lab_name: "Lab Y" }),
+      // Hekim A has a ciro rule but no ciro this month.
+      lab({ doctor_id: "doc-a", patient_ref: "hasta 5", day: "2026-11-07", amount_cents: TL(100), lab_name: "Lab X" }),
+    ];
+    const out = run({
+      month: "2026-11",
+      rules: [implant, a],
+      lines: [line({ doctor_id: "doc-d", try_cents: TL(300) })],
+      lab_costs: labs,
+    });
+    expect(out.warnings).toEqual([
+      { code: "UNRULED_LINES", doctor_id: "doc-d", doctor_name: "Hekim D", count: 1, try_cents: TL(300) },
+      { code: "UNRULED_LAB", doctor_id: "doc-d", doctor_name: "Hekim D", lab_cents: TL(800) },
+      { code: "UNRULED_LAB", doctor_id: "doc-e", doctor_name: "Hekim E", lab_cents: TL(1_200) },
+      { code: "UNRULED_LAB", doctor_id: "doc-x", doctor_name: "Hekim X", lab_cents: TL(100) },
+      {
+        code: "LAB_OVER_CIRO",
+        doctor_id: "doc-a",
+        doctor_name: "Hekim A",
+        rule_id: a.id,
+        segment: "standard",
+        lab_cents: TL(100),
+        ciro_after_deductions_cents: 0,
+        excess_cents: TL(100),
+      },
+    ]);
+    expect(warningText(out.warnings[1])).toBe(
+      "Hekim D: ₺800,00 lab maliyeti için ciro payı veya ortodonti kuralı yok; hakedişten düşülmedi."
+    );
+    expect(out.lab_results.filter((x) => x.rule_id === null)).toHaveLength(5);
+    expect(component(out, implant.id)).toMatchObject({ amount_cents: 0, qty: 0 });
+    expect(out.lab_summary.map((x) => [x.doctor_name, x.lab_name, x.cost_cents, x.deducted_cents, x.count])).toEqual([
+      ["Hekim A", "Lab X", TL(100), 0, 1],
+      ["Hekim C", "Lab X", 0, 0, 2],
+      ["Hekim D", "Lab Y", TL(800), 0, 1],
+      ["Hekim E", "Lab X", TL(1_200), 0, 1],
+      ["Hekim X", "Lab Y", TL(100), 0, 1],
+    ]);
+  });
+
+  it("ignores voided lab costs and costs of other months; results without them stay identical", () => {
+    const a = aStd();
+    const input: HkComputeInput = {
+      month: "2026-11",
+      doctors: DOCTORS,
+      payees: PAYEES,
+      rules: [
+        a,
+        rule({ kind: "clinic_ciro_share", payee_user_id: "u-c", share_bp: 500 }),
+        rule({ kind: "implant_piece", payee_user_id: "u-b", doctor_id: "doc-b", piece_cents: TL(1_500) }),
+      ],
+      lines: [
+        line({ doctor_id: "doc-a", method: "card", try_cents: TL(12_345.67) }),
+        line({ doctor_id: "doc-d", try_cents: TL(800) }),
+      ],
+      pieces: [piece({ doctor_id: "doc-b", qty: 2 })],
+      counterparty_user_ids: ["u-a"],
+    };
+    const before = computeMonth(input);
+    const after = computeMonth({
+      ...input,
+      lab_costs: [
+        lab({ doctor_id: "doc-a", patient_ref: "hasta 1", day: "2026-11-10", amount_cents: TL(5_000), lab_name: "Lab X", voided_at: "2026-11-11T08:00:00Z" }),
+        lab({ doctor_id: "doc-a", patient_ref: "hasta 1", day: "2026-10-31", amount_cents: TL(5_000), lab_name: "Lab X" }),
+        lab({ doctor_id: "doc-a", patient_ref: "hasta 1", day: "2026-12-01", amount_cents: TL(5_000), lab_name: "Lab X" }),
+        lab({ doctor_id: "doc-d", patient_ref: "hasta 2", day: "2026-10-15", amount_cents: TL(700), lab_name: "Lab Y" }),
+      ],
+    });
+    expect(after).toEqual(before);
+    expect(computeMonth({ ...input, lab_costs: [] })).toEqual(before);
+    expect(before.lab_results).toEqual([]);
+    expect(before.lab_summary).toEqual([]);
+    expect(before.lab_totals).toEqual([]);
+    // A ciro component without lab costs keeps exactly its 0031 keys.
+    expect(Object.keys(component(before, a.id)).sort()).toEqual(
+      ["amount_cents", "base_cents", "by_method", "doctor_id", "doctor_name", "kind", "lines_count", "piece_cents", "qty", "rule_id", "segment", "share_bp"].sort()
+    );
+  });
+});
+
+describe("minimum monthly floor (v1.4)", () => {
+  const floor = (payee: string, cents: number, from_month = "2026-11-01", to_month: string | null = null) =>
+    rule({ kind: "minimum_monthly", payee_user_id: payee, piece_cents: cents, from_month, to_month });
+  const salary = (payee: string, cents: number) => rule({ kind: "fixed_monthly", payee_user_id: payee, piece_cents: cents });
+  const bank = (payee: string, cents: number) => rule({ kind: "bank_portion", payee_user_id: payee, piece_cents: cents });
+  const bonus = (payee: string, cents: number): HkComputeAdjustment => ({
+    id: nextId("a"),
+    month: "2026-11-01",
+    payee_user_id: payee,
+    kind: "bonus",
+    amount_cents: cents,
+    description: "Örnek prim",
+  });
+  const payee = (out: HkComputeOutput, userId: string) => out.payees.find((p) => p.payee_user_id === userId)!;
+
+  it("pays the floor when the month is below it, and nothing more when it is equal or above", () => {
+    const a = aStd();
+    const m = floor("u-a", TL(5_000));
+    const linesOf = new Map<number, HkComputeLine[]>();
+    const at = (cents: number, rules: HkComputeRule[] = [a, m]) => {
+      if (!linesOf.has(cents)) linesOf.set(cents, [line({ doctor_id: "doc-a", try_cents: cents })]);
+      return run({ month: "2026-11", rules, lines: linesOf.get(cents)! });
+    };
+
+    // 25 % of 7.600 = 1.900 → topped up by 3.100 to the 5.000 floor.
+    const below = at(TL(7_600));
+    const p = payee(below, "u-a");
+    expect(p.total_cents).toBe(TL(5_000));
+    expect(p.components.map((c) => c.kind)).toEqual(["ciro_share", "minimum_topup"]);
+    expect(p.components[1]).toEqual({ kind: "minimum_topup", rule_id: m.id, amount_cents: TL(3_100) });
+    expect(component(below, a.id).amount_cents).toBe(TL(1_900));
+    expect(componentTitle(p.components[1])).toBe(MINIMUM_TOPUP_COMPONENT_LABEL);
+    expect(componentTitle(p.components[1])).toBe("Taban maaş tamamlaması");
+    expect(componentKey(p.components[1])).toBe(m.id);
+    expect(summarizePayee(p)).toMatchObject({ share_cents: TL(1_900), minimum_topup_cents: TL(3_100), total_cents: TL(5_000) });
+    expect(below.warnings).toEqual([]);
+
+    // Equal to or above the floor: the month is exactly that of the plain rules.
+    for (const cents of [TL(20_000), TL(40_000)]) {
+      expect(at(cents)).toEqual(at(cents, [a]));
+    }
+    expect(payeeTotal(at(TL(20_000)), "u-a")).toBe(TL(5_000));
+    expect(payeeTotal(at(TL(40_000)), "u-a")).toBe(TL(10_000));
+  });
+
+  it("compares the floor with every other component, bonuses and corrections included", () => {
+    const a = aStd();
+    const m = floor("u-a", TL(5_000));
+    const withBonus = run({
+      month: "2026-11",
+      rules: [a, m],
+      lines: [line({ doctor_id: "doc-a", try_cents: TL(7_600) })],
+      adjustments: [bonus("u-a", TL(1_000))],
+    });
+    expect(payee(withBonus, "u-a").components.map((c) => [c.kind, c.amount_cents])).toEqual([
+      ["ciro_share", TL(1_900)],
+      ["adjustments", TL(1_000)],
+      ["minimum_topup", TL(2_100)],
+    ]);
+    expect(payeeTotal(withBonus, "u-a")).toBe(TL(5_000));
+
+    // A correction month: the floor still holds (top-up = floor − a negative subtotal).
+    const dec = run({
+      month: "2026-12",
+      rules: [a, m],
+      lines: [line({ doctor_id: "doc-a", day: "2026-12-03", try_cents: TL(-1_800) })],
+    });
+    expect(payee(dec, "u-a").components.map((c) => c.amount_cents)).toEqual([TL(-450), TL(5_450)]);
+    expect(payeeTotal(dec, "u-a")).toBe(TL(5_000));
+  });
+
+  it("lists a payee with only a floor; tops up a lower salary; applies only within its months", () => {
+    const rules = [floor("u-p1", TL(17_000)), salary("u-p2", TL(15_000)), floor("u-p2", TL(17_000))];
+    const out = run({ month: "2026-11", rules, lines: [], counterparty_user_ids: ["u-p2"] });
+    expect(out.payees.map((p) => [p.payee_name, p.total_cents, p.components.map((c) => [c.kind, c.amount_cents])])).toEqual([
+      ["Personel Bir", TL(17_000), [["minimum_topup", TL(17_000)]]],
+      ["Personel İki", TL(17_000), [["fixed_monthly", TL(15_000)], ["minimum_topup", TL(2_000)]]],
+    ]);
+    // The topped-up total is what is owed: a counterparty is needed.
+    expect(out.warnings).toEqual([
+      { code: "NO_COUNTERPARTY", payee_user_id: "u-p1", payee_name: "Personel Bir", reason: "missing" },
+    ]);
+
+    const a = aStd();
+    const lines = [line({ doctor_id: "doc-a", try_cents: TL(1_000) })];
+    const later = floor("u-a", TL(5_000), "2026-12-01", "2026-12-01");
+    expect(run({ month: "2026-11", rules: [a, later], lines })).toEqual(run({ month: "2026-11", rules: [a], lines }));
+    expect(payeeTotal(run({ month: "2026-12", rules: [a, later], lines }), "u-a")).toBe(TL(5_000));
+    expect(run({ month: "2027-01", rules: [later], lines: [] }).payees).toEqual([]);
+
+    // Overlapping floors (only through invalid data): the highest one.
+    const low = floor("u-p1", TL(10_000), "2026-10-01");
+    const high = floor("u-p1", TL(12_000));
+    const both = run({ month: "2026-11", rules: [low, high], lines: [] });
+    expect(payee(both, "u-p1").components).toEqual([{ kind: "minimum_topup", rule_id: high.id, amount_cents: TL(12_000) }]);
+  });
+
+  it("splits the final total into bank and cash", () => {
+    const a = aStd();
+    const lines = [line({ doctor_id: "doc-a", try_cents: TL(7_600) })];
+    const out = run({ month: "2026-11", rules: [a, floor("u-a", TL(5_000)), bank("u-a", TL(4_000))], lines });
+    expect(payee(out, "u-a")).toMatchObject({ total_cents: TL(5_000), bank_cents: TL(4_000), cash_cents: TL(1_000) });
+    expect(out.warnings).toEqual([]);
+
+    // The bank part is compared with the topped-up total (5.000), not with the 1.900 hakediş.
+    const over = run({ month: "2026-11", rules: [a, floor("u-a", TL(5_000)), bank("u-a", TL(6_000))], lines });
+    expect(over.warnings).toEqual([
+      { code: "BANK_OVER_TOTAL", payee_user_id: "u-a", payee_name: "Hekim A", bank_cents: TL(6_000), total_cents: TL(5_000) },
+    ]);
+    const exact = run({ month: "2026-11", rules: [a, floor("u-a", TL(5_000)), bank("u-a", TL(5_000))], lines });
+    expect(payee(exact, "u-a")).toMatchObject({ bank_cents: TL(5_000), cash_cents: 0 });
+    expect(exact.warnings).toEqual([]);
+
+    const rows = [...out.payees, ...run({ month: "2026-11", rules: [salary("u-p1", TL(9_000)), floor("u-p1", TL(10_000))], lines: [] }).payees].map(
+      summarizePayee
+    );
+    expect(sumPayeeSummaries(rows)).toMatchObject({
+      share_cents: TL(1_900),
+      salary_cents: TL(9_000),
+      minimum_topup_cents: TL(3_100 + 1_000),
+      total_cents: TL(15_000),
+    });
+    expect(emptyPayeeSummary()).toMatchObject({ minimum_topup_cents: 0, lab_excess_cents: 0 });
+  });
+
+  it("checks minimum_monthly rules: fields, labels, overlaps per payee", () => {
+    expect(KIND_LABELS.minimum_monthly).toBe("Taban maaş (hangisi yüksekse)");
+    expect(RULE_FIELDS.minimum_monthly).toEqual({ doctor: false, segment: false, share: false, piece: true, deductions: false });
+    expect(pieceFieldLabel("minimum_monthly")).toBe("Aylık taban tutar (TL)");
+    expect(MINIMUM_MONTHLY_HINT).toBe("Ayın hakedişi bu tutarın altında kalırsa bu tutar ödenir.");
+    expect(kindAllowsAnyUser("minimum_monthly")).toBe(true);
+
+    const base: HkRuleInput = {
+      payee_user_id: "u-a",
+      doctor_id: null,
+      kind: "minimum_monthly",
+      segment: null,
+      share_bp: null,
+      piece_cents: TL(5_000),
+      deduct_cash_bp: 0,
+      deduct_card_bp: 0,
+      deduct_transfer_bp: 0,
+      deduct_financing_bp: 0,
+      from_month: "2026-11",
+      to_month: null,
+    };
+    expect(validateRule(base)).toBeNull();
+    expect(validateRule({ ...base, payee_user_id: null })).toBe("Taban maaş alacak kişiyi seçin.");
+    for (const bad of [0, -100, null, 12.5]) {
+      expect(validateRule({ ...base, piece_cents: bad })).toBe("Aylık taban tutar 0'dan büyük olmalı.");
+    }
+    expect(validateRule({ ...base, deduct_card_bp: 100 })).toBe("Bu kural türünde kesinti girilemez.");
+
+    const m1 = { ...floor("u-a", TL(5_000), "2026-11-01", "2026-12-01"), note: "" };
+    const s1 = { ...salary("u-a", TL(5_000)), note: "" };
+    const b1 = { ...bank("u-a", TL(5_000)), note: "" };
+    const rules = [m1, s1, b1];
+    expect(ruleOverlapKey(m1)).toBe("minimum_monthly|u-a");
+    expect(findOverlappingRule(rules, { ...m1, id: "new", from_month: "2026-12-01", to_month: null })?.id).toBe(m1.id);
+    expect(findOverlappingRule(rules, { ...m1, id: "new", from_month: "2027-01-01", to_month: null })).toBeUndefined();
+    expect(findOverlappingRule(rules, { ...m1, id: "new", payee_user_id: "u-b" })).toBeUndefined();
+    expect(minimumRuleOf(rules, "u-a", "2026-12")?.id).toBe(m1.id);
+    expect(minimumRuleOf(rules, "u-a", "2027-01")).toBeUndefined();
+    expect(minimumRuleOf(rules, "u-b", "2026-11")).toBeUndefined();
+  });
+});
+
+describe("lab summary helpers (v1.4)", () => {
+  it("splits an amount by weight with cumulative rounding that always adds up", () => {
+    expect(allocateByWeight(100, [1, 1, 1])).toEqual([33, 34, 33]);
+    expect(allocateByWeight(5, [1, 1])).toEqual([3, 2]);
+    expect(allocateByWeight(-5, [1, 1])).toEqual([-3, -2]);
+    // amount = total weight: every part is its own weight.
+    expect(allocateByWeight(1_000, [700, 300])).toEqual([700, 300]);
+    expect(allocateByWeight(-1_000, [-700, -300])).toEqual([-700, -300]);
+    expect(allocateByWeight(0, [3, 4])).toEqual([0, 0]);
+    expect(allocateByWeight(7, [3, -3])).toEqual([0, 0]);
+    expect(allocateByWeight(7, [])).toEqual([]);
+    for (const [amount, weights] of [
+      [999_999_999_999, [333_333, 666_667, 1]],
+      [1_000_000, [900_001, 599_999]],
+      [17, [5, 5, 5, 5]],
+    ] as const) {
+      expect(allocateByWeight(amount, weights).reduce((s, x) => s + x, 0)).toBe(amount);
+    }
+  });
+
+  it("groups lab cost rows and summary rows per lab, by lab name", () => {
+    const rows = [
+      { lab_name: "Lab Y", amount_cents: TL(300) },
+      { lab_name: "Lab X", amount_cents: TL(1_000) },
+      { lab_name: "Lab Y", amount_cents: TL(-100) },
+    ];
+    expect(groupLabCosts(rows)).toEqual([
+      { lab_name: "Lab X", cost_cents: TL(1_000), count: 1 },
+      { lab_name: "Lab Y", cost_cents: TL(200), count: 2 },
+    ]);
+    expect(groupLabCosts([])).toEqual([]);
+    expect(
+      labTotalsOf([
+        { doctor_id: "doc-a", doctor_name: "Hekim A", lab_name: "Lab Y", cost_cents: TL(500), deducted_cents: TL(500), count: 1 },
+        { doctor_id: "doc-a", doctor_name: "Hekim A", lab_name: "Lab X", cost_cents: TL(200), deducted_cents: 0, count: 2 },
+        { doctor_id: "doc-b", doctor_name: "Hekim B", lab_name: "Lab Y", cost_cents: TL(700), deducted_cents: TL(350), count: 3 },
+      ])
+    ).toEqual([
+      { lab_name: "Lab X", cost_cents: TL(200), deducted_cents: 0, count: 2 },
+      { lab_name: "Lab Y", cost_cents: TL(1_200), deducted_cents: TL(850), count: 4 },
+    ]);
+    expect(LAB_LABELS.tab).toBe("Lab özeti");
+    expect(LAB_LABELS.column).toBe("Lab");
+    expect(LAB_SUMMARY_HINT).toContain("Finans → Cariler");
+  });
+
+  it("groups the summary per doctor for the Lab özeti table and tells the lab warnings apart", () => {
+    const rows = [
+      { doctor_id: "doc-a", doctor_name: "Hekim A", lab_name: "Lab X", cost_cents: TL(200), deducted_cents: TL(200), count: 2 },
+      { doctor_id: "doc-a", doctor_name: "Hekim A", lab_name: "Lab Y", cost_cents: TL(500), deducted_cents: TL(300), count: 1 },
+      { doctor_id: "doc-s", doctor_name: "Hekim S", lab_name: "Lab Y", cost_cents: 0, deducted_cents: TL(75), count: 0 },
+    ];
+    expect(labSummaryByDoctor(rows)).toEqual([
+      { doctor_id: "doc-a", doctor_name: "Hekim A", rows: rows.slice(0, 2), cost_cents: TL(700), deducted_cents: TL(500), count: 3 },
+      { doctor_id: "doc-s", doctor_name: "Hekim S", rows: rows.slice(2), cost_cents: 0, deducted_cents: TL(75), count: 0 },
+    ]);
+    expect(labSummaryByDoctor([])).toEqual([]);
+    expect(isLabWarning({ code: "UNRULED_LAB", doctor_id: "doc-a", doctor_name: "Hekim A", lab_cents: 1 })).toBe(true);
+    expect(isLabWarning({ code: "UNRULED_LINES", doctor_id: "doc-a", doctor_name: "Hekim A", count: 1, try_cents: 1 })).toBe(false);
+    expect(LAB_DEDUCTION_TEXT).toContain("kesintilerinden sonra");
+  });
+
+  it("compares lab names in byte order (COLLATE \"C\"), code point by code point", () => {
+    expect(compareCodePoints("Lab Z", "Lab Ç")).toBe(-1);
+    expect(compareCodePoints("Lab Ç", "Lab Z")).toBe(1);
+    expect(compareCodePoints("Lab", "Lab X")).toBe(-1);
+    expect(compareCodePoints("Lab X", "Lab X")).toBe(0);
+    expect(compareCodePoints("lab", "Lab")).toBe(1);
+    // Beyond the BMP: U+1F600 (a surrogate pair in UTF-16) sorts after U+FF21, as in UTF-8.
+    expect(compareCodePoints("\u{1F600}", "Ａ")).toBe(1);
+    expect("\u{1F600}" < "Ａ").toBe(true);
+  });
+
+  it("shares a deducted amount over the labs in byte order of their names, as fin__hk_lab_alloc", () => {
+    // 1,01 TL of ciro, two 1,00 TL lab costs: 1,01 is deducted; byte order puts "Lab Z" (0x5A) before "Lab Ç" (U+00C7),
+    // so the rounding cent goes to Lab Z, while the rows are listed in Turkish order.
+    const r = rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "standard", share_bp: 5000 });
+    const out = run({
+      month: "2026-11",
+      rules: [r],
+      lines: [line({ doctor_id: "doc-b", try_cents: 101 })],
+      lab_costs: [
+        lab({ doctor_id: "doc-b", patient_ref: "hasta 1", day: "2026-11-11", amount_cents: 100, lab_name: "Lab Ç" }),
+        lab({ doctor_id: "doc-b", patient_ref: "hasta 2", day: "2026-11-12", amount_cents: 100, lab_name: "Lab Z" }),
+      ],
+    });
+    expect(component(out, r.id)).toMatchObject({ base_cents: 0, lab_cents: 101, lab_excess_cents: 99 });
+    expect(out.lab_summary.map((x) => [x.lab_name, x.cost_cents, x.deducted_cents])).toEqual([
+      ["Lab Ç", 100, 50],
+      ["Lab Z", 100, 51],
+    ]);
+    expect(out.lab_totals.map((x) => x.lab_name)).toEqual(["Lab Ç", "Lab Z"]);
+    expect(summarizePayee(out.payees[0])).toMatchObject({ lab_cents: 101, ciro_lab_cents: 101, lab_excess_cents: 99 });
+
+    // The same in the ortho walk: 1,01 TL recovered from 2,00 TL of lab costs of one patient.
+    const s = rule({ kind: "ortho_lab_first", payee_user_id: "u-s", doctor_id: "doc-s", share_bp: 5000 });
+    const ortho = run({
+      month: "2026-11",
+      rules: [s],
+      lines: [line({ doctor_id: "doc-s", patient_ref: "orto 1", try_cents: 101 })],
+      lab_costs: [
+        lab({ patient_ref: "orto 1", day: "2026-11-02", amount_cents: 100, lab_name: "Lab Ç" }),
+        lab({ patient_ref: "orto 1", day: "2026-11-03", amount_cents: 100, lab_name: "Lab Z" }),
+      ],
+    });
+    expect(ortho.lab_summary.map((x) => [x.lab_name, x.deducted_cents])).toEqual([
+      ["Lab Ç", 50],
+      ["Lab Z", 51],
+    ]);
+    // Ortho lab parts are by_method lab, not ciro_share lab_cents.
+    expect(summarizePayee(ortho.payees[0])).toMatchObject({ lab_cents: 101, ciro_lab_cents: 0 });
+  });
+
+  it("breaks ties like the SQL: warnings by doctor id after the name, equal floors by rule id", () => {
+    const doctors = [
+      { id: "doc-q2", name: "Hekim Aynı" },
+      { id: "doc-q1", name: "Hekim Aynı" },
+    ];
+    const out = computeMonth({
+      month: "2026-11",
+      doctors,
+      payees: PAYEES,
+      rules: [],
+      lines: [line({ doctor_id: "doc-q2", try_cents: TL(10) }), line({ doctor_id: "doc-q1", try_cents: TL(20) })],
+      lab_costs: [
+        lab({ doctor_id: "doc-q2", patient_ref: "hasta 1", day: "2026-11-02", amount_cents: TL(5), lab_name: "Lab X" }),
+        lab({ doctor_id: "doc-q1", patient_ref: "hasta 2", day: "2026-11-03", amount_cents: TL(6), lab_name: "Lab X" }),
+      ],
+    });
+    expect(out.warnings.map((w) => [w.code, "doctor_id" in w ? w.doctor_id : ""])).toEqual([
+      ["UNRULED_LINES", "doc-q1"],
+      ["UNRULED_LINES", "doc-q2"],
+      ["UNRULED_LAB", "doc-q1"],
+      ["UNRULED_LAB", "doc-q2"],
+    ]);
+    expect(out.lab_summary.map((x) => x.doctor_id)).toEqual(["doc-q1", "doc-q2"]);
+
+    // Overlapping equal floors (invalid data only): the lower rule id, whatever the input order.
+    const f1 = rule({ id: "r-floor-1", kind: "minimum_monthly", payee_user_id: "u-p1", piece_cents: TL(9_000) });
+    const f2 = rule({ id: "r-floor-2", kind: "minimum_monthly", payee_user_id: "u-p1", piece_cents: TL(9_000), from_month: "2026-10-01" });
+    for (const rules of [[f1, f2], [f2, f1]]) {
+      const p = run({ month: "2026-11", rules, lines: [] }).payees[0];
+      expect(p.components).toEqual([{ kind: "minimum_topup", rule_id: "r-floor-1", amount_cents: TL(9_000) }]);
+    }
   });
 });
 
@@ -1624,6 +2420,28 @@ describe("RPC wrappers (v1.3)", () => {
       p_from_month: "2026-11-01",
       p_to_month: "2027-03-01",
     });
+  });
+
+  it("saves a minimum_monthly rule by name (v1.4)", async () => {
+    const args = {
+      p_id: "r-2",
+      p_version: 1,
+      p_payee_user_id: "u-a",
+      p_doctor_id: null,
+      p_kind: "minimum_monthly" as const,
+      p_segment: null,
+      p_share_bp: null,
+      p_piece_cents: TL(5_000),
+      p_deduct_cash_bp: 0,
+      p_deduct_card_bp: 0,
+      p_deduct_transfer_bp: 0,
+      p_deduct_financing_bp: 0,
+      p_from_month: "2026-11-01",
+      p_to_month: null,
+      p_note: "",
+    };
+    await finHkSaveRule(args);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", args);
   });
 });
 

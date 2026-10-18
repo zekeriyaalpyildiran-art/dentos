@@ -3,7 +3,8 @@
 // Kurallar of the Hakediş pages (finance and prep modes, HakedisParts): the rules grouped by payee and the child age
 // limit. Only finance mode offers the editors, and only to 'finance' holders (fin_hk_save_rule / fin_hk_save_settings
 // stay finance-only in 0031); the prep section shows the same list read-only. v1.3 (0032): kind bank_portion, the fixed
-// monthly part of a payee's total paid by bank (any active user, like the fixed monthly salary).
+// monthly part of a payee's total paid by bank (any active user, like the fixed monthly salary). v1.4 (0032): kind
+// minimum_monthly, the monthly floor of a payee's total (any active user), and how lab costs reach the hakediş.
 
 import { useState } from "react";
 import { HakedisTabs, useHkReference, type HkMode } from "./HakedisParts";
@@ -37,7 +38,10 @@ import {
   HK_METHODS,
   HK_SEGMENTS,
   KIND_LABELS,
+  LAB_DEDUCTION_TEXT,
   METHOD_LABELS,
+  MINIMUM_MONTHLY_HINT,
+  MINIMUM_TOPUP_COMPONENT_LABEL,
   RULE_FIELDS,
   SEGMENT_LABELS,
   bpToInput,
@@ -63,8 +67,8 @@ import {
 type DialogState = { record: HkRuleJson | null; payeeUserId?: string };
 
 /**
- * Hakediş rules need a doctors row or the owner role (fin_hk_save_rule); a fixed monthly salary and a bank amount
- * (kindAllowsAnyUser) any user.
+ * Hakediş rules need a doctors row or the owner role (fin_hk_save_rule); a fixed monthly salary, a bank amount and a
+ * floor (kindAllowsAnyUser) any user.
  */
 function canHaveHakedisRules(p: Pick<HkPayeeRefJson, "doctor_id" | "role">): boolean {
   return !!p.doctor_id || p.role === "owner";
@@ -131,6 +135,12 @@ export function HakedisRulesView({ mode }: { mode: HkMode }) {
           kısmıdır. Toplamı değiştirmez; ay özetinde ödeme “Bankadan” ve “Elden” (toplamdan kalan) diye bölünür. Aynı
           kişi için ayları çakışan iki bankadan ödenen tutar kuralı olamaz.
         </p>
+        <p>
+          Taban maaş (hangisi yüksekse): kişinin o ayki toplamı (hakediş, maaş, prim ve diğer dahil) bu tutarın altında
+          kalırsa aradaki fark “{MINIMUM_TOPUP_COMPONENT_LABEL}” olarak eklenir ve taban tutar ödenir; toplam yüksekse
+          bir şey eklenmez. Aynı kişi için ayları çakışan iki taban maaş kuralı olamaz.
+        </p>
+        <p>Lab giderleri: {LAB_DEDUCTION_TEXT}</p>
       </div>
 
       {groups.size === 0 ? (
@@ -279,6 +289,7 @@ function ChildAgeLimitCard({
 function rateText(r: HkRuleJson): string {
   if (r.kind === "implant_piece") return `${formatTL(r.piece_cents)} / implant`;
   if (r.kind === "fixed_monthly" || r.kind === "bank_portion") return `${formatTL(r.piece_cents)} / ay`;
+  if (r.kind === "minimum_monthly") return `en az ${formatTL(r.piece_cents)} / ay`;
   return formatBp(r.share_bp);
 }
 
@@ -436,10 +447,11 @@ function RuleDialog({
   const f = RULE_FIELDS[form.kind];
   const salary = form.kind === "fixed_monthly";
   const bank = form.kind === "bank_portion";
+  const minimum = form.kind === "minimum_monthly";
   const anyUser = kindAllowsAnyUser(form.kind);
   const current = record ? refData.rules.find((r) => r.id === record.id) ?? record : null;
-  // A salary or a bank amount may go to any active user; hakediş rules to doctors and the owner (the server checks the
-  // same).
+  // A salary, a bank amount or a floor may go to any active user; hakediş rules to doctors and the owner (the server
+  // checks the same).
   const payees = refData.payees.filter(
     (p) => (p.is_active && (anyUser || canHaveHakedisRules(p))) || p.user_id === form.payee_user_id
   );
@@ -473,7 +485,13 @@ function RuleDialog({
     if (f.piece) {
       const p = parseTL(form.piece);
       if (!p.ok) {
-        const label = salary ? "Aylık net maaş" : bank ? "Aylık bankadan ödenen tutar" : "Adet başı tutar";
+        const label = salary
+          ? "Aylık net maaş"
+          : bank
+            ? "Aylık bankadan ödenen tutar"
+            : minimum
+              ? "Aylık taban tutar"
+              : "Adet başı tutar";
         return setFormError(`${label}: ${p.error}`);
       }
       pieceCents = p.cents;
@@ -508,7 +526,7 @@ function RuleDialog({
     if (invalid) return setFormError(invalid);
     if (!anyUser && payee && !canHaveHakedisRules(payee)) {
       return setFormError(
-        "Hakediş yalnızca hekimlere ve klinik sahibine tanımlanabilir. Personel için “Sabit aylık maaş” ya da “Bankadan ödenen sabit tutar” seçin."
+        "Hakediş yalnızca hekimlere ve klinik sahibine tanımlanabilir. Personel için “Sabit aylık maaş”, “Bankadan ödenen sabit tutar” ya da “Taban maaş” seçin."
       );
     }
 
@@ -543,7 +561,15 @@ function RuleDialog({
       <form onSubmit={submit} className="space-y-4">
         <div className="grid gap-4 md:grid-cols-2">
           <Field
-            label={salary ? "Maaş alacak kişi" : bank ? "Bankadan ödeme alacak kişi" : "Hakediş sahibi"}
+            label={
+              salary
+                ? "Maaş alacak kişi"
+                : bank
+                  ? "Bankadan ödeme alacak kişi"
+                  : minimum
+                    ? "Taban maaş alacak kişi"
+                    : "Hakediş sahibi"
+            }
             hint={anyUser ? "Klinikteki herhangi bir aktif kullanıcı (personel ya da hekim)." : "Hekimler ve klinik sahibi."}
           >
             <select className={inputClass} value={form.payee_user_id} onChange={(e) => setPayee(e.target.value)} required>
@@ -621,7 +647,9 @@ function RuleDialog({
                   ? "Her ay ödenecek net tutar. SGK ve vergi muhasebede takip edilir; prim her ay ayrıca girilir."
                   : bank
                     ? BANK_PORTION_HINT
-                    : undefined
+                    : minimum
+                      ? MINIMUM_MONTHLY_HINT
+                      : undefined
               }
             >
               <input className={inputClass} inputMode="decimal" value={form.piece} onChange={(e) => set("piece", e.target.value)} required />

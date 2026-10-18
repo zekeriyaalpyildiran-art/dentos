@@ -272,8 +272,15 @@ describe("Hasta işaretleri (patient marks at the reception desk)", () => {
 });
 
 describe("Hakediş ve maaş (hakediş and payroll preparation, 0031)", () => {
-  const PREP_PAGES = ["/hakedis", "/hakedis/lines", "/hakedis/payroll", "/hakedis/rules"];
-  const FINANCE_PAGES = ["/finance/hakedis", "/finance/hakedis/lines", "/finance/hakedis/payroll", "/finance/hakedis/rules"];
+  // "lab": Lab özeti (0032, v1.4).
+  const PREP_PAGES = ["/hakedis", "/hakedis/lines", "/hakedis/lab", "/hakedis/payroll", "/hakedis/rules"];
+  const FINANCE_PAGES = [
+    "/finance/hakedis",
+    "/finance/hakedis/lines",
+    "/finance/hakedis/lab",
+    "/finance/hakedis/payroll",
+    "/finance/hakedis/rules",
+  ];
 
   it("is in the menu of hakedis_prepare, finance and finance_readonly holders, whatever the role", () => {
     for (const role of STAFF_ROLES) {

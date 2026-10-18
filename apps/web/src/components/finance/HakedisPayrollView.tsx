@@ -7,7 +7,8 @@
 // are added to the doctor's hakediş entry. A closed month shows the closing statements' amounts (what Finans got), and
 // the live calculation only as a hint when a rule changed since. v1.3 (0032): the bank / cash split of each person's
 // month (bank_portion rule, part of the total) and the BANK_OVER_TOTAL warnings of the listed people (in a closed
-// month from the closing statements: a negative cash part).
+// month from the closing statements: a negative cash part). v1.4 (0032): the minimum top-up (minimum_monthly rule) is
+// part of the month's payroll; staff with a floor are listed like staff with a salary.
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
@@ -39,6 +40,7 @@ import {
   ADJUSTMENT_KIND_LABELS,
   HK_ADJUSTMENT_DESCRIPTION_MAX,
   HK_ADJUSTMENT_KINDS,
+  MINIMUM_TOPUP_COMPONENT_LABEL,
   SPLIT_LABELS,
   bankOverText,
   bankSplitOf,
@@ -79,9 +81,14 @@ interface PersonRow {
   salaryCents: number;
   bonusCents: number;
   otherCents: number;
+  /** 0032: the minimum_topup component (the payee's floor minus the rest; 0 when the floor did not apply) */
+  topupCents: number;
   /** the payee's whole month total (a doctor's hakediş included) */
   payeeTotal: number;
-  /** the live calculation's salary + bonus + other (differs in a closed month when a rule changed after the close) */
+  /**
+   * the live calculation's salary + bonus + other + minimum top-up (differs in a closed month when a rule changed after
+   * the close)
+   */
   livePayroll: number;
   /** closed month without a closing statement for this person (nothing was written to Finans for them) */
   noStatement: boolean;
@@ -95,6 +102,10 @@ interface PersonRow {
 
 function hasPayrollComponent(components: readonly HkComponentJson[]): boolean {
   return components.some((c) => c.kind === "fixed_monthly" || c.kind === "adjustments");
+}
+
+function hasTopup(components: readonly HkComponentJson[]): boolean {
+  return components.some((c) => c.kind === "minimum_topup");
 }
 
 function personRows(ref: HkReferenceJson, data: HkMonthPayload, month: string): PersonRow[] {
@@ -116,6 +127,7 @@ function personRows(ref: HkReferenceJson, data: HkMonthPayload, month: string): 
         salaryCents: 0,
         bonusCents: 0,
         otherCents: 0,
+        topupCents: 0,
         payeeTotal: 0,
         livePayroll: 0,
         noStatement: false,
@@ -127,11 +139,14 @@ function personRows(ref: HkReferenceJson, data: HkMonthPayload, month: string): 
     return row;
   };
   const isStaff = (userId: string) => !people.get(userId)?.doctor_id;
-  // Everyone with a salary rule this month, even before the month's figures mention them; staff with a bank amount
-  // (0032) too (a doctor's bank amount belongs to the hakediş, shown in Ay özeti).
+  // Everyone with a salary rule this month, even before the month's figures mention them; staff with a bank amount or
+  // a floor (0032) too (a doctor's bank amount and floor belong to the hakediş, shown in Ay özeti).
   for (const r of ref.rules) {
     if (!ruleActiveIn(r, month)) continue;
-    if (r.kind === "fixed_monthly" || (r.kind === "bank_portion" && isStaff(r.payee_user_id))) {
+    if (
+      r.kind === "fixed_monthly" ||
+      ((r.kind === "bank_portion" || r.kind === "minimum_monthly") && isStaff(r.payee_user_id))
+    ) {
       rowOf(r.payee_user_id, r.payee_name);
     }
   }
@@ -141,7 +156,7 @@ function personRows(ref: HkReferenceJson, data: HkMonthPayload, month: string): 
     for (const st of data.statements) {
       if (
         hasPayrollComponent(st.breakdown.components) ||
-        (isStaff(st.payee_user_id) && bankSplitOf(st.breakdown) !== null)
+        (isStaff(st.payee_user_id) && (bankSplitOf(st.breakdown) !== null || hasTopup(st.breakdown.components)))
       ) {
         rowOf(st.payee_user_id, st.payee_name);
       }
@@ -151,10 +166,11 @@ function personRows(ref: HkReferenceJson, data: HkMonthPayload, month: string): 
     if (!hasPayrollComponent(p.components) && !rows.has(p.payee_user_id)) continue;
     const s = summarizePayee(p);
     const row = rowOf(p.payee_user_id, p.payee_name);
-    row.livePayroll = s.salary_cents + s.bonus_cents + s.other_cents;
+    row.livePayroll = s.salary_cents + s.bonus_cents + s.other_cents + s.minimum_topup_cents;
     row.salaryCents = s.salary_cents;
     row.bonusCents = s.bonus_cents;
     row.otherCents = s.other_cents;
+    row.topupCents = s.minimum_topup_cents;
     row.payeeTotal = p.total_cents;
     row.bankCents = s.bank_cents;
     row.cashCents = s.cash_cents;
@@ -168,6 +184,7 @@ function personRows(ref: HkReferenceJson, data: HkMonthPayload, month: string): 
         row.salaryCents = 0;
         row.bonusCents = 0;
         row.otherCents = 0;
+        row.topupCents = 0;
         row.payeeTotal = 0;
         row.bankCents = null;
         row.cashCents = null;
@@ -177,6 +194,7 @@ function personRows(ref: HkReferenceJson, data: HkMonthPayload, month: string): 
       row.salaryCents = s.salary_cents;
       row.bonusCents = s.bonus_cents;
       row.otherCents = s.other_cents;
+      row.topupCents = s.minimum_topup_cents;
       row.payeeTotal = st.total_cents;
       row.bankCents = s.bank_cents;
       row.cashCents = s.cash_cents;
@@ -233,6 +251,8 @@ export function HakedisPayrollView({ mode }: { mode: HkMode }) {
   // 0032: Bankadan / Elden columns when a listed person has a bank part. Warnings follow the shown figures: the live
   // BANK_OVER_TOTAL of the listed people in an open month, the closing statements' negative cash part in a closed one.
   const showBank = rows.some((r) => r.bankCents !== null);
+  // 0032 (v1.4): the minimum top-up column when a listed person's floor applies.
+  const showTopup = rows.some((r) => r.topupCents !== 0);
   const listed = new Set(rows.map((r) => r.userId));
   const bankWarnings: { key: string; text: string }[] = closed
     ? rows
@@ -302,6 +322,9 @@ export function HakedisPayrollView({ mode }: { mode: HkMode }) {
                     <th className="py-2 pr-3 font-semibold text-right whitespace-nowrap">Sabit maaş (net)</th>
                     <th className="py-2 pr-3 font-semibold text-right">Prim</th>
                     <th className="py-2 pr-3 font-semibold text-right">Diğer</th>
+                    {showTopup && (
+                      <th className="py-2 pr-3 font-semibold text-right whitespace-nowrap">{MINIMUM_TOPUP_COMPONENT_LABEL}</th>
+                    )}
                     <th className="py-2 pr-3 font-semibold text-right whitespace-nowrap">Bu ay ödenecek</th>
                     {showBank && (
                       <>
@@ -315,13 +338,13 @@ export function HakedisPayrollView({ mode }: { mode: HkMode }) {
                 <tbody>
                   {rows.length === 0 ? (
                     <tr>
-                      <td colSpan={showBank ? 8 : 6} className="py-6 text-center text-gray-500">
+                      <td colSpan={6 + (showBank ? 2 : 0) + (showTopup ? 1 : 0)} className="py-6 text-center text-gray-500">
                         Bu ay için maaş kuralı ya da prim kaydı yok.
                       </td>
                     </tr>
                   ) : (
                     rows.map((r) => {
-                      const payroll = r.salaryCents + r.bonusCents + r.otherCents;
+                      const payroll = r.salaryCents + r.bonusCents + r.otherCents + r.topupCents;
                       // Open month: the rule's amount until the calculation lists it; closed: the statement's.
                       const salary = closed ? r.salaryCents : r.salaryCents || (r.salaryRule?.piece_cents ?? 0);
                       return (
@@ -358,6 +381,11 @@ export function HakedisPayrollView({ mode }: { mode: HkMode }) {
                           <td className={`py-2 pr-3 text-right tabular-nums whitespace-nowrap ${r.otherCents < 0 ? "text-red-600" : ""}`}>
                             {r.otherCents ? formatTL(r.otherCents) : "—"}
                           </td>
+                          {showTopup && (
+                            <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap">
+                              {r.topupCents ? formatTL(r.topupCents) : "—"}
+                            </td>
+                          )}
                           <td className={`py-2 pr-3 text-right tabular-nums whitespace-nowrap font-semibold ${payroll < 0 ? "text-red-600" : ""}`}>
                             {r.noStatement ? <span className="text-amber-700 font-normal">Döküm yok</span> : formatTL(payroll)}
                             {!r.noStatement && r.isDoctor && r.payeeTotal !== payroll && (
@@ -421,6 +449,8 @@ export function HakedisPayrollView({ mode }: { mode: HkMode }) {
               )}{" "}
               sayfasından girer. Ay kapatılınca personelin maaşı ve primi Finans&apos;a personel gideri olarak, hekimin
               primi hakediş kaydıyla birlikte yazılır. Avans yoktur; kesinti için eksi tutarlı “Diğer” satırı girin.
+              {showTopup &&
+                ` ${MINIMUM_TOPUP_COMPONENT_LABEL}: kişinin bu ayki toplamı Kurallar'daki taban maaşın altında kaldığı için eklenen fark.`}
               {showBank &&
                 " Bankadan: kişinin bu ay bankadan ödenen sabit tutarı (Kurallar'daki “Bankadan ödenen sabit tutar”); Elden: bu ayın toplamından kalan kısım (hekimde hakediş dahil toplamdan). Toplamı değiştirmez; ay kapatılınca Finans kaydının açıklamasına yazılır."}
             </p>

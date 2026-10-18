@@ -3,7 +3,8 @@
 // Shared pieces of the Hakediş pages, in two modes (0031): 'finance' under Finans → Hakediş (/finance/hakedis/…) and
 // 'prep' in the 'Hakediş ve maaş' section (/hakedis/…) of the 'hakedis_prepare' holders. Reference data, the month in
 // the address (?month=YYYY-MM, kept when switching between the pages), the month payload, the sub-tabs, the month
-// picker, the void dialog of lines / pieces / lab costs / adjustments and the component breakdown.
+// picker, the void dialog of lines / pieces / lab costs / adjustments and the component breakdown (0032: the lab costs
+// taken off a ciro_share base and the minimum top-up).
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -11,6 +12,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   ADJUSTMENT_KIND_LABELS,
   HK_METHODS,
+  LAB_LABELS,
   METHOD_LABELS,
   addMonths,
   componentTitle,
@@ -170,11 +172,15 @@ export const HK_LATER_CLOSED_TEXT =
 const SUB_TABS = [
   { path: "", label: "Ay özeti", keepMonth: true },
   { path: "/lines", label: "Satırlar ve hastalar", keepMonth: true },
+  { path: "/lab", label: LAB_LABELS.tab, keepMonth: true },
   { path: "/payroll", label: "Maaş ve prim", keepMonth: true },
   { path: "/rules", label: "Kurallar", keepMonth: false },
 ];
 
-/** Ay özeti / Satırlar ve hastalar / Maaş ve prim / Kurallar of the mode; the chosen month travels along. */
+/**
+ * Ay özeti / Satırlar ve hastalar / Lab özeti (0032) / Maaş ve prim / Kurallar of the mode; the chosen month travels
+ * along.
+ */
 export function HakedisTabs({ mode, month }: { mode: HkMode; month?: string | null }) {
   const pathname = usePathname();
   return (
@@ -400,11 +406,17 @@ export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
               </table>
             </div>
           )}
+          {typeof c.lab_cents === "number" && <CiroLabLine c={c} />}
           <p className="text-gray-700">
             Matrah {formatTL(c.base_cents ?? 0)} × {formatBp(c.share_bp)} = <strong>{formatTL(c.amount_cents)}</strong>
             {typeof c.lines_count === "number" ? ` · ${c.lines_count} satır` : ""}
           </p>
         </>
+      )}
+      {c.kind === "minimum_topup" && (
+        <p className="text-gray-700">
+          Ayın toplamı taban tutarın altında kaldı; aradaki fark <strong>{formatTL(c.amount_cents)}</strong> tamamlandı.
+        </p>
       )}
       {c.kind === "implant_piece" && (
         <p className="text-gray-700">
@@ -439,6 +451,26 @@ export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
       )}
       {c.kind === "ortho_lab_first" && c.lab_patients && c.lab_patients.length > 0 && <LabPatientsTable rows={c.lab_patients} />}
     </div>
+  );
+}
+
+/**
+ * 0032, ciro_share with lab costs of the month: ciro after the method deductions − the deducted lab costs = matrah,
+ * and the part of the lab costs left with the clinic when they exceed the ciro (LAB_OVER_CIRO).
+ */
+function CiroLabLine({ c }: { c: Pick<HkMyComponentJson, "base_cents" | "lab_cents" | "lab_excess_cents"> }) {
+  const lab = c.lab_cents ?? 0;
+  const excess = c.lab_excess_cents ?? 0;
+  const base = c.base_cents ?? 0;
+  return (
+    <p className="text-gray-700">
+      Kesintiler sonrası ciro {formatTL(base + lab)} − ayın lab gideri {formatTL(lab)} = matrah {formatTL(base)}
+      {excess > 0 && (
+        <span className="block text-amber-700">
+          Ayın lab gideri {formatTL(lab + excess)}; ciroyu aşan {formatTL(excess)} hakedişten düşülmedi, klinikte kalır.
+        </span>
+      )}
+    </p>
   );
 }
 

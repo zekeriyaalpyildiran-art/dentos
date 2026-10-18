@@ -1,8 +1,8 @@
 "use client";
 
 // Ay özeti of the Hakediş pages (finance and prep modes, HakedisParts): per payee the month's figures (with the bank /
-// cash split of 0032 when a payee has a bank part), the warnings, the close / reopen of the month (finance mode only)
-// and the lines per doctor.
+// cash split of 0032 when a payee has a bank part; v1.4: the lab costs taken off the ciro in the Lab column and the
+// minimum top-up), the warnings, the close / reopen of the month (finance mode only) and the lines per doctor.
 
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
@@ -22,7 +22,9 @@ import { formatDay, formatMonth, formatTL, formatTimestamp, toFinanceError, type
 import {
   HK_METHODS,
   KIND_LABELS,
+  LAB_LABELS,
   METHOD_LABELS,
+  MINIMUM_TOPUP_COMPONENT_LABEL,
   SEGMENT_LABELS,
   SPLIT_LABELS,
   bankSplitOf,
@@ -33,6 +35,7 @@ import {
   formatBp,
   hkCanPrepare,
   hkLedgerVisible,
+  isLabWarning,
   monthKey,
   sumPayeeSummaries,
   summarizePayee,
@@ -52,7 +55,8 @@ export const HK_PREP_CLOSE_TEXT = "Ayı klinik sahibi Finans → Hakediş'ten ka
 
 /**
  * Hakediş month (spec §2, v1.2): per payee ciro by payment method, implant part, lab, deductions, matrah, rate, share,
- * implants, management share, fixed salary, bonus / other and total, the bank / cash split (v1.3), the warnings, the
+ * implants, management share, fixed salary, bonus / other and total, the bank / cash split (v1.3), the minimum top-up
+ * and the lab costs taken off the ciro (v1.4; per doctor and lab in Lab özeti), the warnings, the
  * close / reopen of the month (finance mode) and the lines per doctor. Figures come from fin_hk_month (fin__hk_compute in the database); nothing is
  * recomputed here. Ledger figures (paid / remaining, finance entry links) only when the server sends them.
  */
@@ -126,6 +130,7 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
           <StatusCard
             data={current}
             mode={mode}
+            labHref={`${base}/lab?month=${month}`}
             busy={loading}
             onClose={() => setDialog("close")}
             onReopen={() => setDialog("reopen")}
@@ -165,6 +170,20 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                   ) : (
                     "yanlışsa klinik sahibine bildirin."
                   )}
+                </p>
+              )}
+              {current.warnings.some(isLabWarning) && (
+                <p className="pt-1">
+                  Lab uyarıları ayın kapatılmasını engellemez. Hekim ve laboratuvar ayrıntısı{" "}
+                  <Link href={`${base}/lab?month=${month}`} className="underline">
+                    {LAB_LABELS.tab}
+                  </Link>{" "}
+                  sayfasındadır
+                  {current.warnings.some((w) => w.code === "UNRULED_LAB")
+                    ? mode === "finance"
+                      ? "; lab gideri düşülmeyen hekim için ciro payı kuralını Kurallar sayfasından ekleyin ya da lab giderinin hekimini düzeltin."
+                      : "; lab giderinin hekimini kontrol edin, kural eksikse klinik sahibine bildirin."
+                    : "."}
                 </p>
               )}
             </div>
@@ -223,12 +242,15 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
 function StatusCard({
   data,
   mode,
+  labHref,
   busy,
   onClose,
   onReopen,
 }: {
   data: HkMonthPayload;
   mode: HkMode;
+  /** the month's Lab özeti page */
+  labHref: string;
   busy: boolean;
   onClose: () => void;
   onReopen: () => void;
@@ -236,6 +258,9 @@ function StatusCard({
   const closed = data.status === "closed";
   const grand = data.payees.reduce((sum, p) => sum + p.total_cents, 0);
   const finance = mode === "finance";
+  // 0032: the month's lab costs of every doctor and what the hakediş took off (lab_totals; absent before 0032).
+  const labCost = data.lab_totals?.reduce((sum, t) => sum + t.cost_cents, 0) ?? 0;
+  const labDeducted = data.lab_totals?.reduce((sum, t) => sum + t.deducted_cents, 0) ?? 0;
   return (
     <Card>
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -292,6 +317,22 @@ function StatusCard({
           <span className="font-semibold">Toplam hakediş ve maaş</span>
           <span className="tabular-nums font-semibold">{formatTL(grand)}</span>
         </div>
+        {data.lab_totals && data.lab_totals.length > 0 && (
+          <div className="flex justify-between gap-4 py-1 border-b sm:col-span-2">
+            <span className="text-gray-700">
+              Ayın lab giderleri ·{" "}
+              <Link href={labHref} className="text-blue-600 hover:underline">
+                {LAB_LABELS.tab}
+              </Link>
+            </span>
+            <span className="tabular-nums text-right">
+              {formatTL(labCost)}
+              <span className="block text-xs text-gray-500">
+                {LAB_LABELS.deducted.toLocaleLowerCase("tr")} {formatTL(labDeducted)}
+              </span>
+            </span>
+          </div>
+        )}
       </div>
     </Card>
   );
@@ -318,9 +359,12 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
   const ledger = hkLedgerVisible(data);
   const showSalary = data.payees.some((p) => p.components.some((c) => c.kind === "fixed_monthly"));
   const showAdjustments = data.payees.some((p) => p.components.some((c) => c.kind === "adjustments"));
+  // 0032 (v1.4): the minimum top-up column when a payee's floor applies this month.
+  const showTopup = rows.some((r) => r.s.minimum_topup_cents !== 0);
   // 0032: Bankadan / Elden when a payee has a bank part this month (part of the total, never on top of it).
   const showBank = rows.some((r) => r.s.bank_cents !== null);
-  const colCount = 16 + (showSalary ? 1 : 0) + (showAdjustments ? 1 : 0) + (showBank ? 2 : 0);
+  const colCount =
+    16 + (showSalary ? 1 : 0) + (showAdjustments ? 1 : 0) + (showTopup ? 1 : 0) + (showBank ? 2 : 0);
 
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto text-gray-900">
@@ -334,7 +378,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
               </th>
             ))}
             <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">İmplant payı</th>
-            <th className="px-3 py-3 font-semibold text-right">Lab</th>
+            <th className="px-3 py-3 font-semibold text-right">{LAB_LABELS.column}</th>
             <th className="px-3 py-3 font-semibold text-right">Kesintiler</th>
             <th className="px-3 py-3 font-semibold text-right">Matrah</th>
             <th className="px-3 py-3 font-semibold text-right">Oran</th>
@@ -343,6 +387,9 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
             <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">Yönetim payı</th>
             {showSalary && <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">Sabit maaş</th>}
             {showAdjustments && <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">Prim ve diğer</th>}
+            {showTopup && (
+              <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">{MINIMUM_TOPUP_COMPONENT_LABEL}</th>
+            )}
             <th className="px-3 py-3 font-semibold text-right">Toplam</th>
             {showBank && (
               <>
@@ -375,7 +422,12 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                       </td>
                     ))}
                     <td className={NUM}>{s.implant_cents ? formatTL(-s.implant_cents) : "—"}</td>
-                    <td className={NUM}>{s.lab_cents ? formatTL(-s.lab_cents) : "—"}</td>
+                    <td className={NUM}>
+                      {s.lab_cents ? formatTL(-s.lab_cents) : "—"}
+                      {s.lab_excess_cents > 0 && (
+                        <div className="text-xs text-amber-700">klinikte kalan {formatTL(s.lab_excess_cents)}</div>
+                      )}
+                    </td>
                     <td className={NUM}>{s.deduction_cents ? formatTL(-s.deduction_cents) : "—"}</td>
                     <td className={NUM}>{dash(s.base_cents)}</td>
                     <td className={NUM}>{s.share_bps.length ? s.share_bps.map((bp) => formatBp(bp)).join(" / ") : "—"}</td>
@@ -395,6 +447,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                     {showAdjustments && (
                       <td className={`${NUM} ${s.adjustments_cents < 0 ? "text-red-600" : ""}`}>{dash(s.adjustments_cents)}</td>
                     )}
+                    {showTopup && <td className={NUM}>{dash(s.minimum_topup_cents)}</td>}
                     <td className={`${NUM} font-semibold ${payee.total_cents < 0 ? "text-red-600" : ""}`}>{formatTL(payee.total_cents)}</td>
                     {showBank && <SplitCells bank={s.bank_cents} cash={s.cash_cents} />}
                     <td className="px-3 py-2 text-xs whitespace-nowrap">
@@ -468,6 +521,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
               <td className={NUM}>{dash(totals.management_cents)}</td>
               {showSalary && <td className={NUM}>{dash(totals.salary_cents)}</td>}
               {showAdjustments && <td className={NUM}>{dash(totals.adjustments_cents)}</td>}
+              {showTopup && <td className={NUM}>{dash(totals.minimum_topup_cents)}</td>}
               <td className={NUM}>{formatTL(totals.total_cents)}</td>
               {showBank && <SplitCells bank={totals.bank_cents} cash={totals.cash_cents} />}
               <td colSpan={2} />
@@ -476,11 +530,14 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
         )}
       </table>
       <p className="px-4 py-3 text-xs text-gray-500 border-t">
-        Ödeme şekli sütunları hekimin brüt tahsilatıdır. İmplant payı ve (ortodontide) lab gideri ciroya girmez;
-        kesintiler ödeme şekline göre kalan tutardan düşülür, oran matraha uygulanır. Yönetim payı kliniğin brüt
-        cirosundan hesaplanır. Sabit maaş net tutardır; prim ve diğer satırları o ayın elle girilen tutarlarıdır (eksi
+        Ödeme şekli sütunları hekimin brüt tahsilatıdır. İmplant payı ciroya girmez; kesintiler ödeme şekline göre
+        kalan tutardan düşülür. Lab: ortodontide hastanın ödemelerinden önce karşılanan lab gideri, ciro payında ayın
+        lab gideri (kesintilerden sonra düşülür; ciroyu aşan kısım klinikte kalır). Oran matraha uygulanır. Yönetim
+        payı kliniğin brüt cirosundan hesaplanır. Sabit maaş net tutardır; prim ve diğer satırları o ayın elle girilen tutarlarıdır (eksi
         tutar kesintidir). Ay kapatılınca hekimin bütün tutarları tek hakediş kaydına, personelin maaşı ve primi
         personel gideri olarak Finans&apos;a yazılır.
+        {showTopup &&
+          ` ${MINIMUM_TOPUP_COMPONENT_LABEL}: kişinin bu ayki toplamı taban maaşının altında kaldığı için eklenen fark.`}
         {showBank &&
           " Bankadan: kişinin bu ay bankadan (resmi maaş olarak) ödenen sabit tutarı; Elden: toplamdan kalan kısım. Bu bölünme toplamı değiştirmez; ay kapatılınca Finans kaydının açıklamasına yazılır."}
       </p>
@@ -743,6 +800,7 @@ function CloseDialog({
   const unruled = data.warnings.filter((w) => w.code === "UNRULED_LINES" || w.code === "UNRULED_PIECES");
   const negative = data.payees.filter((p) => p.total_cents < 0);
   const bankOver = data.warnings.filter((w) => w.code === "BANK_OVER_TOTAL");
+  const labWarnings = data.warnings.filter(isLabWarning);
   const [accept, setAccept] = useState(false);
   const [error, setError] = useState<FinanceError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -771,6 +829,8 @@ function CloseDialog({
           değiştirilemez; düzeltmeler son kapatılan aydan sonraki bir aya düzeltme satırı olarak girilir.
           {data.payees.some((p) => bankSplitOf(p)) &&
             " Bankadan ödenen sabit tutarı olan kişinin kaydının açıklamasına bankadan ve elden ödenecek kısımlar yazılır; kayıt tutarı yine toplamdır."}
+          {data.payees.some((p) => p.components.some((c) => c.kind === "minimum_topup")) &&
+            " Taban maaşı tamamlanan kişinin kaydının açıklamasına taban maaş tamamlaması ayrıca yazılır."}
         </p>
         <div className="rounded border">
           {data.payees.length === 0 ? (
@@ -804,6 +864,16 @@ function CloseDialog({
               ))}
             </ul>
             <p>Tutarlar değişmez; ay yine de kapatılabilir.</p>
+          </div>
+        )}
+        {labWarnings.length > 0 && (
+          <div className="p-3 rounded bg-amber-50 text-amber-900 text-sm space-y-1">
+            <ul className="list-disc pl-5 space-y-1">
+              {labWarnings.map((w, i) => (
+                <li key={i}>{warningText(w)}</li>
+              ))}
+            </ul>
+            <p>Tutarlar bu şekilde yazılır; ay yine de kapatılabilir.</p>
           </div>
         )}
         {unruled.length > 0 && (
