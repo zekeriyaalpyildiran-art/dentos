@@ -6,7 +6,10 @@
 // the same. 0033: lines imported from Macro carry the Macro doctor, operation, tooth and file number, method
 // 'Ödenmemiş', and no doctor for the clinic / an outside doctor (clinic ciro only); they are voided, never edited (the
 // next import of their range replaces them). Imported pieces of the clinic get their performing doctor or "Hakediş
-// yok" here (fin_hk_assign_piece).
+// yok" here (fin_hk_assign_piece). 0034 (v2.1): ANY imported piece can get another performing doctor, "Hakediş yok" or
+// its Macro default back (kept across re-imports; only the piece fee moves, the revenue lines stay with the Macro
+// doctor); outside doctors' pieces arrive as "Hakediş yok". (v2.2): lines and lab costs show where their patient group
+// comes from (the doctor's unmarked default included) and the patient marks carry an explicit child / adult choice.
 // ?tab=pieces | lab | marks opens that sub-tab (e.g. the Lab özeti's link to the lab costs); default: the lines.
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -52,11 +55,18 @@ import {
   HK_METHODS,
   HK_MIN_BIRTH_DATE,
   HK_SEGMENTS,
+  IMPORTED_PIECE_VOID_TEXT,
   KIND_LABELS,
   LAB_DEDUCTION_TEXT,
+  MARK_GROUP_HINT,
+  MARK_GROUP_LABELS,
+  MARK_GROUP_UNSET_LABEL,
   METHOD_LABELS,
+  PIECE_OVERRIDE_HINT,
   SEGMENT_LABELS,
+  SEGMENT_SOURCE_LABELS,
   SOURCE_LABELS,
+  UNMARKED_DEFAULT_LABEL,
   ageOn,
   childAgeLimitOf,
   extDoctorOf,
@@ -70,19 +80,29 @@ import {
   finHkVoidPiece,
   hkCanPrepare,
   markFor,
+  markGroupOf,
+  markGroupText,
   markIsChildOn,
   normalizePatientRef,
+  pieceDefaultModeOf,
+  pieceMacroText,
+  piecePerformerText,
+  pieceResetLabel,
   ruleActiveIn,
+  segmentSourceOf,
+  unmarkedDefaultDoctorIds,
   validateBirthDate,
   type HkCurrency,
   type HkLabCostJson,
   type HkLineJson,
+  type HkMarkGroup,
   type HkMarkJson,
   type HkMethod,
   type HkMonthPayload,
   type HkPieceJson,
   type HkReferenceJson,
   type HkSegment,
+  type HkSegmentSource,
 } from "@/lib/hakedis";
 import { CURRENCIES, CURRENCY_LABELS, formatMoney } from "@/lib/payments";
 
@@ -407,7 +427,22 @@ export function HakedisLinesView({ mode }: { mode: HkMode }) {
       {dialog?.kind === "void-piece" && (
         <HkVoidDialog
           title={dialog.record.proc_group_id ? "İşlem kaydını iptal et" : "İmplant kaydını iptal et"}
-          body={`${formatDay(dialog.record.day)} · ${dialog.record.patient_name} · ${dialog.record.proc_group_name ? `${dialog.record.proc_group_name} · ` : ""}${dialog.record.qty} adet. Kayıt silinmez, iptal edilmiş olarak kalır.${dialog.record.source === "import" ? " Aralık Macro'dan yeniden yüklenirse yeni satırlar yazılır." : ""}`}
+          body={`${formatDay(dialog.record.day)} · ${dialog.record.patient_name} · ${dialog.record.proc_group_name ? `${dialog.record.proc_group_name} · ` : ""}${dialog.record.qty} adet. Kayıt silinmez, iptal edilmiş olarak kalır.`}
+          extra={
+            dialog.record.source === "import" ? (
+              // 0034 (v2.1): a re-import brings a voided imported piece back; choosing the doctor is the lasting fix.
+              <div className="p-3 rounded bg-amber-50 text-amber-900 text-sm space-y-2">
+                <p>{IMPORTED_PIECE_VOID_TEXT}</p>
+                <button
+                  type="button"
+                  className={buttonSecondary}
+                  onClick={() => setDialog({ kind: "assign", records: [dialog.record] })}
+                >
+                  Hekimi değiştir
+                </button>
+              </div>
+            ) : undefined
+          }
           onVoid={(reason) => finHkVoidPiece({ p_id: dialog.record.id, p_version: dialog.record.version, p_reason: reason })}
           onDone={(text) => done(text)}
           onClose={() => setDialog(null)}
@@ -444,6 +479,16 @@ const NO_DOCTOR = "__none__";
 function extModeText(refData: HkReferenceJson, extDoctor: string | null | undefined): string {
   const m = extDoctor ? extDoctorOf(refData.ext_doctors ?? [], extDoctor) : undefined;
   return m ? EXT_DOCTOR_MODE_LABELS[m.mode] : "Hekimsiz";
+}
+
+/**
+ * The note under a resolved patient group (0034 segment_source); before 0034 the given fallback. The doctor's unmarked
+ * default is highlighted: an adult patient still needs an adult mark.
+ */
+function SegmentSourceNote({ source, fallback }: { source: HkSegmentSource | null | undefined; fallback?: string }) {
+  const text = source ? SEGMENT_SOURCE_LABELS[source] : fallback ?? "";
+  if (!text) return null;
+  return <div className={`text-xs ${source === "unmarked_default" ? "text-amber-700" : "text-gray-500"}`}>{text}</div>;
 }
 
 /** The Macro details of an imported line / piece: operation, tooth, file number. */
@@ -512,6 +557,8 @@ function LinesTab({
   );
   const liveRows = rows.filter((l) => !l.voided_at);
   const sum = (pick: (l: HkLineJson) => number) => liveRows.reduce((s, l) => s + pick(l), 0);
+  // 0034: lines counted as a child's only through the doctor's unmarked default (adult patients need a mark).
+  const unmarkedChild = data.lines.filter((l) => !l.voided_at && l.segment_source === "unmarked_default").length;
 
   return (
     <div className="space-y-3">
@@ -627,7 +674,10 @@ function LinesTab({
                       ) : (
                         <>
                           {l.resolved_segment ? SEGMENT_LABELS[l.resolved_segment] : "—"}
-                          <div className="text-xs text-gray-500">{l.segment ? "elle seçildi" : mark ? "hasta işaretinden" : ""}</div>
+                          <SegmentSourceNote
+                            source={l.segment_source}
+                            fallback={l.segment ? "elle seçildi" : mark ? "hasta işaretinden" : ""}
+                          />
                         </>
                       )}
                     </td>
@@ -687,6 +737,8 @@ function LinesTab({
       <p className="text-xs text-gray-500">
         Tutar, tahsilatın TL karşılığıdır; eksi tutar düzeltme satırıdır. İmplant payı hekimin cirosuna girmez (implant
         adet başı ödenir). Hasta grubu, satırda elle seçilmediyse hasta işaretinden gelir.
+        {unmarkedChild > 0 &&
+          ` Çocuk kuralında “${UNMARKED_DEFAULT_LABEL}” seçili hekimin işaretsiz hastası çocuk sayılır (“${SEGMENT_SOURCE_LABELS.unmarked_default}”; bu ay ${unmarkedChild} satır); hasta yetişkinse “İşaretle” ile “${MARK_GROUP_LABELS.adult}” seçin.`}
         {hasImport &&
           ` Macro'dan aktarılan satırlar işlem gününe göredir (ortodontide ödeme gününe göre); “${METHOD_LABELS.unpaid}” işlemin ay sonuna kadar ödenmemiş kısmıdır. Bu satırlar düzenlenmez: yanlışsa Macro'da düzeltip aralığı yeniden yükleyin ya da satırı iptal edin. Hekimsiz satırlar (klinik / dışarıdan hekim) yalnız klinik cirosuna girer. Macro satırlarının hasta anahtarı dosya numarasıdır (macro:…); hastanın Macro'dan önce adla ya da dosya numarasıyla girilmiş işareti ve lab giderleri bu satırlara da uygulanır, yüklemeden sonra adla girilen işaret dosya numarasına kaydedilir.`}
       </p>
@@ -728,16 +780,14 @@ function PiecesTab({
 }) {
   const [showVoided, setShowVoided] = useState(false);
   const [onlyUnassigned, setOnlyUnassigned] = useState(false);
+  const [onlyAssigned, setOnlyAssigned] = useState(false);
   const [group, setGroup] = useState("");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const unassignedOf = (p: HkPieceJson) => !p.voided_at && !p.doctor_id && !p.assigned_none;
-  // Only clinic pieces get their doctor here (fin_hk_assign_piece): unassigned / "Hakediş yok" ones, or pieces whose
-  // Macro doctor is mapped to the clinic. Another Macro doctor's piece is corrected in Macro (a re-import puts it back
-  // under the mapped doctor).
-  const assignable = (p: HkPieceJson) =>
-    !p.voided_at &&
-    p.source === "import" &&
-    (!p.doctor_id || !!p.assigned_none || extDoctorOf(refData.ext_doctors ?? [], p.ext_doctor ?? "")?.mode === "clinic");
+  // 0034 (v2.1): every live imported piece gets its performing doctor here (fin_hk_assign_piece), whatever its Macro
+  // doctor's mode; manual / clinical pieces are voided and entered again instead.
+  const assignable = (p: HkPieceJson) => !p.voided_at && p.source === "import";
+  const hasImport = data.pieces.some((p) => p.source === "import");
   const groupOptions = useMemo(() => {
     const map = new Map<string, string>();
     for (const p of data.pieces) map.set(p.proc_group_id ?? "", p.proc_group_name ?? "İmplant (elle girilen)");
@@ -747,6 +797,7 @@ function PiecesTab({
     (p) =>
       (showVoided || !p.voided_at) &&
       (!onlyUnassigned || unassignedOf(p)) &&
+      (!onlyAssigned || (!p.voided_at && !!p.assigned)) &&
       (!group || (p.proc_group_id ?? "") === (group === NO_DOCTOR ? "" : group))
   );
   const activeRules = refData.rules.filter((r) => ruleActiveIn(r, month));
@@ -756,6 +807,7 @@ function PiecesTab({
   );
   const live = rows.filter((p) => !p.voided_at);
   const unassigned = data.pieces.filter(unassignedOf);
+  const overridden = data.pieces.filter((p) => !p.voided_at && !!p.assigned).length;
   const byGroup = new Map<string, number>();
   for (const p of live) {
     const name = p.proc_group_name ?? "İmplant";
@@ -826,6 +878,12 @@ function PiecesTab({
           <input type="checkbox" checked={onlyUnassigned} onChange={(e) => setOnlyUnassigned(e.target.checked)} />
           Yalnız hekimi seçilmemişler
         </label>
+        {hasImport && (
+          <label className="flex items-center gap-2 text-sm text-gray-800 pb-2">
+            <input type="checkbox" checked={onlyAssigned} onChange={(e) => setOnlyAssigned(e.target.checked)} />
+            Yalnız elle seçilenler{overridden > 0 ? ` (${overridden})` : ""}
+          </label>
+        )}
         <label className="flex items-center gap-2 text-sm text-gray-800 pb-2">
           <input type="checkbox" checked={showVoided} onChange={(e) => setShowVoided(e.target.checked)} />
           İptal edilenleri göster
@@ -866,6 +924,7 @@ function PiecesTab({
               rows.map((p) => {
                 const voided = !!p.voided_at;
                 const hint = voided ? null : pieceRuleHint(p, implantDoctors, procedureKeys);
+                const macro = pieceMacroText(p);
                 return (
                   <tr key={p.id} className={`border-b last:border-b-0 align-top ${voided ? "text-gray-400" : ""}`}>
                     {editable && (
@@ -881,15 +940,26 @@ function PiecesTab({
                       </td>
                     )}
                     <td className={`py-2 pr-3 whitespace-nowrap ${voided ? "line-through" : ""}`}>{formatDay(p.day)}</td>
-                    <td className="py-2 pr-3 whitespace-nowrap">
-                      {p.doctor_id ? (
-                        p.doctor_name
-                      ) : p.assigned_none ? (
-                        <span className="text-gray-600">Hakediş yok</span>
-                      ) : (
-                        <span className="text-amber-700 font-medium">Hekim seçilmedi</span>
+                    <td className="py-2 pr-3">
+                      <div className="whitespace-nowrap">
+                        {p.doctor_id ? (
+                          p.doctor_name
+                        ) : p.assigned_none ? (
+                          <span className="text-gray-600">{piecePerformerText(p)}</span>
+                        ) : (
+                          <span className="text-amber-700 font-medium">Hekim seçilmedi</span>
+                        )}
+                        {p.assigned && (
+                          <span className="ml-2 inline-block px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                            elle seçildi
+                          </span>
+                        )}
+                      </div>
+                      {macro && (
+                        <div className="text-xs text-gray-500">
+                          {p.assigned ? `Macro: ${macro} → işlemi yapan: ${piecePerformerText(p)}` : `Macro: ${macro}`}
+                        </div>
                       )}
-                      {p.ext_doctor && <div className="text-xs text-gray-500">Macro: {p.ext_doctor}</div>}
                       {hint && <div className={`text-xs ${hint.warn ? "text-amber-700" : "text-gray-500"}`}>{hint.text}</div>}
                     </td>
                     <td className="py-2 pr-3">
@@ -913,7 +983,7 @@ function PiecesTab({
                     <td className="py-2 text-right whitespace-nowrap space-x-3">
                       {editable && assignable(p) && (
                         <button type="button" className="text-blue-600 hover:underline" onClick={() => onAssign([p])}>
-                          {p.doctor_id || p.assigned_none ? "Değiştir" : "Ata"}
+                          {unassignedOf(p) ? "Ata" : "Hekimi değiştir"}
                         </button>
                       )}
                       {editable && !voided && (
@@ -932,18 +1002,28 @@ function PiecesTab({
       <p className="text-xs text-gray-500 mt-3">
         Bu ay: {byGroup.size === 0 ? "kayıt yok" : Array.from(byGroup, ([name, qty]) => `${name} ${qty}`).join(", ")}.
         İmplantların tutarı takan hekimin “İmplant (adet başı)” kuralından, gruplu işlemlerin tutarı hekimin “İşlem başı
-        ücret” kuralından hesaplanır; eksi adet düzeltmedir. Yalnız Macro&apos;da klinik adına gelen işlemlere burada hekim
-        atanır: işlemi yapan hekimi “Ata” ile seçin, hakediş verilmeyecekse “Hakediş yok” seçin; aralık yeniden yüklenince
-        bu seçimler aynı satırlara taşınır. Başka bir hekim adına gelen işlemde hekim yanlışsa Macro&apos;da düzeltip aralığı
-        yeniden yükleyin.
+        ücret” kuralından hesaplanır; eksi adet düzeltmedir.
+        {hasImport &&
+          ` ${PIECE_OVERRIDE_HINT} Klinik adına gelen işlemde işlemi yapan hekimi “Ata” ile seçin; hakediş verilmeyecekse “Hakediş yok” seçin. Dışarıdan hekimlerin işlemleri “Hakediş yok” olarak gelir; işlemi bir DentOS hekimi yaptıysa “Hekimi değiştir” ile seçin.`}
       </p>
     </Card>
   );
 }
 
+type AssignChoice = "doctor" | "none" | "default";
+
+/** What the "back to the Macro default" choice does, per default (0034). */
+const RESET_HINTS: Record<ReturnType<typeof pieceDefaultModeOf>, string> = {
+  doctor: "Elle seçim kaldırılır; işlem Macro'daki hekimin hakedişine girer.",
+  clinic: "Elle seçim kaldırılır; işlem hekim seçilene kadar kimsenin hakedişine girmez.",
+  outside: "Elle seçim kaldırılır; dışarıdan hekimin işlemi kimsenin hakedişine girmez.",
+  manual: "",
+};
+
 /**
- * The doctor of imported clinic pieces (fin_hk_assign_piece, one call per piece): the performing doctor, "Hakediş yok", or
- * back to unassigned. Pieces whose save fails are listed; the others are saved.
+ * The performing doctor of imported pieces (fin_hk_assign_piece, one call per piece; 0034: any imported piece): a
+ * DentOS doctor, "Hakediş yok", or back to the piece's Macro default (the mapped doctor, unassigned, or "Hakediş yok"
+ * for an outside doctor's piece). Pieces whose save fails are listed; the others are saved.
  */
 function AssignPieceDialog({
   refData,
@@ -960,14 +1040,16 @@ function AssignPieceDialog({
 }) {
   const first = records[0];
   const same = records.every((p) => p.doctor_id === first?.doctor_id && !!p.assigned_none === !!first?.assigned_none);
-  const [choice, setChoice] = useState<"doctor" | "none" | "unassigned">(() =>
-    same && first?.assigned_none ? "none" : "doctor"
-  );
+  const [choice, setChoice] = useState<AssignChoice>(() => (same && first?.assigned_none ? "none" : "doctor"));
   const [doctorId, setDoctorId] = useState(() => (same ? first?.doctor_id ?? "" : ""));
   const [formError, setFormError] = useState<string | null>(null);
   const [error, setError] = useState<FinanceError | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
+  // One label when every piece goes back to the same default, else a general one.
+  const resetLabels = Array.from(new Set(records.map((p) => pieceResetLabel(p))));
+  const resetLabel = resetLabels.length === 1 && resetLabels[0] ? resetLabels[0] : "Macro'daki varsayılana dön";
+  const mixedDefaults = resetLabels.length > 1;
 
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -1007,12 +1089,19 @@ function AssignPieceDialog({
     <Modal title={records.length > 1 ? `${records.length} işleme hekim ata` : "İşlemi yapan hekim"} onClose={onClose} busy={busy}>
       <form onSubmit={submit} className="space-y-4">
         {records.length === 1 && first && (
-          <p className="text-sm text-gray-700">
-            {formatDay(first.day)} · {first.patient_name} · {first.proc_group_name ?? "İmplant"}
-            {first.procedure ? ` (${first.procedure}${first.tooth ? `, diş ${first.tooth}` : ""})` : ""}
-            {first.ext_doctor ? ` · Macro: ${first.ext_doctor}` : ""}
-          </p>
+          <div className="text-sm text-gray-700 space-y-0.5">
+            <p>
+              {formatDay(first.day)} · {first.patient_name} · {first.proc_group_name ?? "İmplant"}
+              {first.procedure ? ` (${first.procedure}${first.tooth ? `, diş ${first.tooth}` : ""})` : ""}
+            </p>
+            {pieceMacroText(first) && <p className="text-xs text-gray-500">Macro: {pieceMacroText(first)}</p>}
+            <p className="text-xs text-gray-500">
+              Şu an: {piecePerformerText(first)}
+              {first.assigned ? " (elle seçildi)" : ""}
+            </p>
+          </div>
         )}
+        <p className="text-xs text-gray-500">{PIECE_OVERRIDE_HINT}</p>
         <fieldset className="space-y-2">
           <label className="flex items-start gap-2 text-sm text-gray-800">
             <input type="radio" name="assign" className="mt-1" checked={choice === "doctor"} onChange={() => setChoice("doctor")} />
@@ -1031,14 +1120,15 @@ function AssignPieceDialog({
             </span>
           </label>
           <label className="flex items-start gap-2 text-sm text-gray-800">
-            <input
-              type="radio"
-              name="assign"
-              className="mt-1"
-              checked={choice === "unassigned"}
-              onChange={() => setChoice("unassigned")}
-            />
-            <span>Seçimi kaldır (hekim seçilmedi)</span>
+            <input type="radio" name="assign" className="mt-1" checked={choice === "default"} onChange={() => setChoice("default")} />
+            <span>
+              {resetLabel}
+              <span className="block text-xs text-gray-500">
+                {mixedDefaults
+                  ? "Her işlem kendi Macro hekimine döner: DentOS hekimi adına gelen o hekime, klinik adına gelen hekim seçilmemiş hâline, dışarıdan hekim adına gelen “Hakediş yok”a."
+                  : RESET_HINTS[first ? pieceDefaultModeOf(first) : "manual"]}
+              </span>
+            </span>
           </label>
         </fieldset>
         {busy && records.length > 1 && (
@@ -1192,14 +1282,9 @@ function LabCostRule({ cost, rule }: { cost: HkLabCostJson; rule: HkReferenceJso
           ? ` (hasta grubu ${SEGMENT_LABELS[cost.resolved_segment].toLocaleLowerCase("tr")}, kuralı olmadığı için standart)`
           : ""}
       </div>
+      {segment && <SegmentSourceNote source={cost.segment_source} />}
     </>
   );
-}
-
-/** Child patient column of a mark: by age (today) when there is a birth date, else the manual mark. */
-function markChildText(m: HkMarkJson, today: string, childAgeLimit: number): string {
-  if (m.birth_date) return markIsChildOn(m, today, childAgeLimit) ? "Evet (yaşa göre)" : "Hayır (yaşa göre)";
-  return m.is_child ? "Evet" : "—";
 }
 
 function MarksTab({
@@ -1249,7 +1334,7 @@ function MarksTab({
               <th className="py-2 pr-3 font-semibold">Kendi hastası olduğu hekim</th>
               <th className="py-2 pr-3 font-semibold">Doğum tarihi</th>
               <th className="py-2 pr-3 font-semibold text-right">Yaş</th>
-              <th className="py-2 pr-3 font-semibold">Çocuk hasta</th>
+              <th className="py-2 pr-3 font-semibold">Grup</th>
               <th className="py-2 pr-3 font-semibold">Not</th>
               <th className="py-2" />
             </tr>
@@ -1274,7 +1359,7 @@ function MarksTab({
                     <td className="py-2 pr-3">{m.own_doctor_name ?? "—"}</td>
                     <td className="py-2 pr-3 whitespace-nowrap">{formatDay(m.birth_date)}</td>
                     <td className="py-2 pr-3 text-right tabular-nums">{age === null ? "—" : Math.max(age, 0)}</td>
-                    <td className="py-2 pr-3 whitespace-nowrap">{markChildText(m, today, childAgeLimit)}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{markGroupText(m, today, childAgeLimit)}</td>
                     <td className="py-2 pr-3 text-xs text-gray-600">{m.note || "—"}</td>
                     <td className="py-2 text-right">
                       {canWrite && (
@@ -1291,9 +1376,11 @@ function MarksTab({
         </table>
       </div>
       <p className="text-xs text-gray-500 mt-3">
-        İşaret, satırda hasta grubu elle seçilmediyse kullanılır: hasta o hekimin kendi hastasıysa “Hekimin kendi hastası”,
-        değilse ve ödeme gününde {childAgeLimit} yaşından küçükse “Çocuk hasta” (doğum tarihi yoksa “Çocuk hasta”
-        işaretine bakılır), hiçbiri değilse “Standart”. Yaş bugüne göredir; hesapta her ödemenin günündeki yaş kullanılır.
+        İşaret, satırda hasta grubu elle seçilmediyse kullanılır: hasta o hekimin kendi hastasıysa “Hekimin kendi hastası”;
+        değilse doğum tarihi varsa ödeme gününde {childAgeLimit} yaşından küçükse “Çocuk hasta”, değilse “Standart”;
+        doğum tarihi yoksa “Grup” seçimi (“{MARK_GROUP_LABELS.child}” / “{MARK_GROUP_LABELS.adult}”). Grubu belirtilmemiş
+        hasta, çocuk kuralında “{UNMARKED_DEFAULT_LABEL}” seçili hekimde “Çocuk hasta”, diğer hekimlerde “Standart”
+        sayılır. Yaş bugüne göredir; hesapta her ödemenin günündeki yaş kullanılır.
         Doğum tarihi ve kendi hastası olduğu hekim resepsiyonda “Hasta işaretleri” sayfasından da girilebilir. Değişiklik
         açık ayların hesabına hemen yansır; kapatılmış ayların dökümleri değişmez.
       </p>
@@ -1396,11 +1483,24 @@ function LineDialog({
     ? [
         mark.own_doctor_name ? `${mark.own_doctor_name} hekiminin kendi hastası` : null,
         markIsChildOn(mark, form.day, childAgeLimitOf(refData.settings)) ? "çocuk hasta" : null,
+        // 0034: the adult mark counts only without a birth date.
+        markAge === null && !mark.is_child && mark.is_adult ? "yetişkin" : null,
         markAge !== null ? `ödeme gününde ${Math.max(markAge, 0)} yaşında` : null,
       ]
         .filter(Boolean)
         .join(", ")
     : "";
+  // 0034: no child / adult information and the doctor's child rule of the line's month counts unmarked patients as
+  // children.
+  const unmarkedDoctors = useMemo(
+    () => unmarkedDefaultDoctorIds(refData.rules, form.day.slice(0, 7)),
+    [refData.rules, form.day]
+  );
+  const unmarkedChild =
+    !form.segment &&
+    !!form.doctor_id &&
+    segmentSourceOf({ segment: null, doctor_id: form.doctor_id, day: form.day }, mark, unmarkedDoctors.has(form.doctor_id)) ===
+      "unmarked_default";
 
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -1480,6 +1580,9 @@ function LineDialog({
             hint={hintLines(
               patientNoHint(patientRef, form.patient_name, known),
               markText ? `Hasta işareti: ${markText}.` : null,
+              unmarkedChild
+                ? `Hastanın grubu belirtilmemiş; bu hekimin çocuk kuralında “${UNMARKED_DEFAULT_LABEL}” seçili olduğu için “Çocuk hasta” sayılır. Yetişkinse hasta işaretinden “${MARK_GROUP_LABELS.adult}” seçin.`
+                : null,
               otherMark
                 ? `Bu adla hasta no “${otherMark.patient_ref}” ile kayıtlı bir hasta işareti var; bu kayda uygulanmaz.`
                 : null
@@ -1794,10 +1897,18 @@ function LabCostDialog({
   );
 }
 
+/** The child / adult choices of the mark dialog (0034): unset first. */
+const MARK_GROUP_CHOICES: [HkMarkGroup | "", string][] = [
+  ["", MARK_GROUP_UNSET_LABEL],
+  ["child", MARK_GROUP_LABELS.child],
+  ["adult", MARK_GROUP_LABELS.adult],
+];
+
 /**
- * Patient mark (fin_hk_save_mark): patient no, own-portfolio doctor, birth date and / or child patient, note; one per
- * patient. The birth date and the patient no are always sent, so an edit here keeps those entered at the reception
- * (Hasta işaretleri).
+ * Patient mark (fin_hk_save_mark): patient no, own-portfolio doctor, birth date and / or the child / adult choice (0034:
+ * "Belirtilmedi" / "Çocuk" / "Yetişkin"; unmarked patients follow the line doctor's default), note; one per patient.
+ * The birth date and the patient no are always sent, so an edit here keeps those entered at the reception (Hasta
+ * işaretleri); both flags are always sent (never both true).
  */
 function MarkDialog({
   refData,
@@ -1829,7 +1940,7 @@ function MarkDialog({
   const [no, setNo] = useState(originalNo);
   const [ownDoctorId, setOwnDoctorId] = useState(record?.own_doctor_id ?? "");
   const [birth, setBirth] = useState(record?.birth_date ?? "");
-  const [isChild, setIsChild] = useState(record?.is_child ?? false);
+  const [group, setGroup] = useState<HkMarkGroup | "">(() => markGroupOf(record) ?? "");
   const [note, setNote] = useState(record?.note ?? "");
   const [formError, setFormError] = useState<string | null>(null);
   const [error, setError] = useState<FinanceError | null>(null);
@@ -1860,7 +1971,8 @@ function MarkDialog({
         p_patient_ref: no.trim() || (originalNo ? null : patientRefFor(name, known, original)),
         p_patient_name: name.trim(),
         p_own_doctor_id: ownDoctorId || null,
-        p_is_child: isChild,
+        p_is_child: group === "child",
+        p_is_adult: group === "adult",
         p_note: note.trim(),
         p_birth_date: birth || null,
       });
@@ -1900,7 +2012,7 @@ function MarkDialog({
             birthError ??
             (age !== null
               ? `Bugün ${Math.max(age, 0)} yaşında. Ödeme gününde ${childAgeLimit} yaşından küçükse “Çocuk hasta” grubuna girer.`
-              : "Bilinmiyorsa boş bırakın; o zaman aşağıdaki “Çocuk hasta” işaretine bakılır.")
+              : "Bilinmiyorsa boş bırakın; o zaman aşağıdaki grup seçimine bakılır.")
           }
         >
           <input
@@ -1912,10 +2024,29 @@ function MarkDialog({
             onChange={(e) => setBirth(e.target.value)}
           />
         </Field>
-        <label className={`flex items-center gap-2 text-sm ${birth ? "text-gray-400" : "text-gray-800"}`}>
-          <input type="checkbox" checked={isChild} onChange={(e) => setIsChild(e.target.checked)} disabled={!!birth} />
-          Çocuk hasta{birth ? " (doğum tarihi varken yaşa göre belirlenir)" : ""}
-        </label>
+        <fieldset className="space-y-1">
+          <legend className="text-sm font-semibold text-gray-800 mb-1">Grup</legend>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {MARK_GROUP_CHOICES.map(([value, label]) => (
+              <label
+                key={value || "unset"}
+                className={`flex items-center gap-2 text-sm ${birth ? "text-gray-400" : "text-gray-800"}`}
+              >
+                <input
+                  type="radio"
+                  name="mark-group"
+                  checked={group === value}
+                  onChange={() => setGroup(value)}
+                  disabled={!!birth}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-gray-500">
+            {birth ? "Doğum tarihi varken grup yaşa göre belirlenir; bu seçim kullanılmaz." : MARK_GROUP_HINT}
+          </p>
+        </fieldset>
         <Field label="Not">
           <textarea className={inputClass} rows={2} maxLength={500} value={note} onChange={(e) => setNote(e.target.value)} />
         </Field>

@@ -17,10 +17,12 @@ import { UUID_RE, formatDay, newId, toFinanceError, type FinanceError } from "@/
 import {
   HK_MARKS_LIST_LIMIT,
   HK_MIN_BIRTH_DATE,
+  MARK_GROUP_LABELS,
   ageOn,
   hkMarksAccess,
   hkMarksList,
   hkSaveMark,
+  markGroupOf,
   normalizePatientRef,
   validateBirthDate,
   type HkMarkDoctorJson,
@@ -32,7 +34,8 @@ import {
  * Hasta işaretleri (hakediş v1.1): the reception marks a patient as a doctor's own-portfolio patient and enters the
  * birth date (the child patient group follows the age on each payment day). hk_marks_access / hk_marks_list /
  * hk_save_mark need no finance permission and carry patient names, doctor names and birth dates only, never an amount.
- * The child mark and the note stay with the finance Hakediş pages. Reception, admins and the owner (layout.tsx).
+ * The child / adult mark (0034: "Grup", shown read-only) and the note stay with the finance Hakediş pages; an adult
+ * birth date entered here still makes the patient an adult. Reception, admins and the owner (layout.tsx).
  */
 export default function HastaIsaretleriPage() {
   return (
@@ -48,6 +51,16 @@ type DialogState = { record: HkMarkRowJson | null; name?: string };
 /** The patient key is the normalized name unless a patient no was entered (then it is shown as "Hasta no"). */
 function patientNo(m: Pick<HkMarkRowJson, "patient_ref" | "patient_name">): string {
   return m.patient_ref === normalizePatientRef(m.patient_name) ? "" : m.patient_ref;
+}
+
+/**
+ * "Grup" column (0034): with a birth date the group follows the age on each payment day; else the finance child /
+ * adult mark; "—" = not stated (the doctor's default applies).
+ */
+function groupText(m: Pick<HkMarkRowJson, "birth_date" | "is_child" | "is_adult">): string {
+  if (m.birth_date) return "Yaşa göre";
+  const group = markGroupOf(m);
+  return group ? MARK_GROUP_LABELS[group] : "—";
 }
 
 function ageText(birth: string | null, today: string): string {
@@ -128,6 +141,9 @@ function MarksDesk() {
         </p>
         <p>
           <strong>Doğum tarihi:</strong> çocuk hasta grubu, hastanın her ödeme günündeki yaşına göre belirlenir.
+          Doğum tarihi yoksa finansın “Grup” seçimi (Çocuk / Yetişkin) kullanılır; o da yoksa hekimin ayarına göre
+          sayılır (çocuk hastası çok olan hekimde işaretsiz hasta çocuk sayılabilir). Yetişkin bir hastanın doğum
+          tarihini girmek yeterlidir.
         </p>
         <p>
           Hasta adını tahsilat kayıtlarındaki gibi yazın (büyük / küçük harf ve boşluk fark etmez). Kapanmış bir ayda
@@ -260,9 +276,6 @@ function MarksList({
     const no = patientNo(m);
     return no ? <div className="text-xs text-gray-500">Hasta no: {no}</div> : null;
   };
-  // The finance child mark is used only while there is no birth date; shown so the desk knows it is there.
-  const childNote = (m: HkMarkRowJson) =>
-    m.is_child && !m.birth_date ? <div className="text-xs text-gray-500">Finans: çocuk hasta olarak işaretli</div> : null;
 
   return (
     <Card>
@@ -280,7 +293,7 @@ function MarksList({
                 Doğum tarihi: {formatDay(m.birth_date)}
                 {m.birth_date ? ` · ${ageText(m.birth_date, today)} yaş` : ""}
               </div>
-              {childNote(m)}
+              <div className="text-sm text-gray-700">Grup: {groupText(m)}</div>
               {lockedNote(m)}
             </div>
             <button type="button" className="text-blue-600 hover:underline min-h-[44px] shrink-0" onClick={() => onEdit(m)}>
@@ -297,6 +310,7 @@ function MarksList({
               <th className="py-2 pr-3 font-semibold">Hekimin kendi hastası</th>
               <th className="py-2 pr-3 font-semibold">Doğum tarihi</th>
               <th className="py-2 pr-3 font-semibold text-right">Yaş</th>
+              <th className="py-2 pr-3 font-semibold">Grup</th>
               <th className="py-2" />
             </tr>
           </thead>
@@ -306,12 +320,12 @@ function MarksList({
                 <td className="py-2 pr-3">
                   <div className="font-medium">{m.patient_name}</div>
                   {noNote(m)}
-                  {childNote(m)}
                   {lockedNote(m)}
                 </td>
                 <td className="py-2 pr-3">{m.own_doctor_name ?? "—"}</td>
                 <td className="py-2 pr-3 whitespace-nowrap">{formatDay(m.birth_date)}</td>
                 <td className="py-2 pr-3 text-right tabular-nums">{ageText(m.birth_date, today)}</td>
+                <td className="py-2 pr-3 whitespace-nowrap">{groupText(m)}</td>
                 <td className="py-2 text-right">
                   <button type="button" className="text-blue-600 hover:underline" onClick={() => onEdit(m)}>
                     Düzenle

@@ -4,7 +4,9 @@
 // "işlem bazlı" and payments "tedavi ödeme bazlı") are read in the browser (hakedis-macro.ts), the day range is chosen,
 // unmapped Macro doctors are mapped and operation names attached to procedure groups, then the server checks the
 // import without writing (fin_hk_import_macro p_dry_run) and "Yükle" writes it, replacing the earlier import of the
-// same days. 'finance' or 'hakedis_prepare' holders write; the summary carries no ledger data.
+// same days. 'finance' or 'hakedis_prepare' holders write; the summary carries no ledger data. 0034 (v2.1): outside
+// doctors' pieces are stored as "Hakediş yok", every chosen performing doctor is carried to the new rows, and pieces a
+// user had voided that come back are listed so that the preparer chooses again.
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
@@ -25,6 +27,7 @@ import {
   type HkImportMacroArgs,
   type HkImportSummaryJson,
   type HkProcGroupJson,
+  type HkReturnedVoidedJson,
   type HkReferenceJson,
 } from "@/lib/hakedis";
 import {
@@ -460,9 +463,9 @@ export function HakedisImportView({ mode }: { mode: HkMode }) {
             <Link href={`${base}/lines?month=${result.from.slice(0, 7)}`} className={buttonSecondary}>
               Satırları aç
             </Link>
-            {result.unassigned_pieces > 0 && (
+            {(result.unassigned_pieces > 0 || (result.returned_voided_count ?? 0) > 0) && (
               <Link href={`${base}/lines?month=${result.from.slice(0, 7)}&tab=pieces`} className={buttonSecondary}>
-                Atanmamış işlemleri aç
+                {result.unassigned_pieces > 0 ? "Atanmamış işlemleri aç" : "İmplant ve işlemleri aç"}
               </Link>
             )}
           </div>
@@ -525,6 +528,12 @@ export function HakedisImportView({ mode }: { mode: HkMode }) {
               <p>
                 Klinik adına gelen {check.summary.unassigned_pieces} işlem için işlemi yapan hekimi sonra Satırlar ve
                 hastalar → İmplant ve işlemler sekmesinden seçin.
+              </p>
+            )}
+            {(check.summary.returned_voided_count ?? 0) > 0 && (
+              <p className="text-amber-800">
+                Daha önce elle iptal edilmiş {check.summary.returned_voided_count} işlem yeniden gelecek ve iptal
+                edilmeden kaydedilecek; yükledikten sonra hekimini İmplant ve işlemler sekmesinden yeniden seçin.
               </p>
             )}
             <ErrorBox error={error} />
@@ -616,7 +625,8 @@ function DoctorsCard({
   const mapping = refData.ext_doctors ?? [];
   const groups = refData.proc_groups ?? [];
   const stats = new Map((imp?.stats.doctors ?? []).map((d) => [d.key, d]));
-  // Rows the server keeps as pieces: operations of an active group.
+  // Rows the server keeps as pieces: operations of an active group (doctor / clinic / outside doctors; outside ones as
+  // "Hakediş yok"). Only an ignored Macro name stores none.
   const grouped = new Map<string, number>();
   for (const p of imp?.pieces ?? []) {
     if (!procGroupOfOperation(groups, p.procedure)) continue;
@@ -685,7 +695,12 @@ function DoctorsCard({
                     {s && s.zero_price > 0 && <div className="text-xs text-gray-500">{s.zero_price} adet 0 TL</div>}
                   </td>
                   <td className={NUM}>{s ? s.lines : "—"}</td>
-                  <td className={NUM}>{m && (m.mode === "doctor" || m.mode === "clinic") ? grouped.get(d.key) ?? 0 : "—"}</td>
+                  <td className={NUM}>
+                    {m && m.mode !== "ignore" ? grouped.get(d.key) ?? 0 : "—"}
+                    {m?.mode === "outside" && (grouped.get(d.key) ?? 0) > 0 && (
+                      <div className="text-xs text-gray-500">“Hakediş yok”</div>
+                    )}
+                  </td>
                   {MACRO_LINE_METHODS.map((method) => (
                     <td key={method} className={NUM}>
                       {tl ? dash(tl[method]) : "—"}
@@ -710,7 +725,8 @@ function DoctorsCard({
       <p className="text-xs text-gray-500 mt-3">
         Tutarlar rapordaki para birimindedir (TL sütunları); dövizli satırlar sunucuda kayıtlı kurla TL&apos;ye çevrilir.
         Satır: hakedişe giden tahsilat / üretim satırları (0 TL işlemler satır üretmez). Gruplu işlem: işlem adı aktif bir
-        gruba bağlı satırlar; yalnız bunlar işlem (adet) olarak kaydedilir. Dışarıdan hekimin işlemleri sayılmaz.
+        gruba bağlı satırlar; yalnız bunlar işlem (adet) olarak kaydedilir. Dışarıdan hekimin işlemleri “Hakediş yok”
+        olarak kaydedilir; işlemi bir DentOS hekimi yaptıysa sonra İmplant ve işlemler sekmesinden seçilir.
       </p>
     </Card>
   );
@@ -936,12 +952,23 @@ function ImportSummary({ summary, title }: { summary: HkImportSummaryJson; title
       <ul className="text-xs text-gray-600 space-y-0.5">
         {summary.carried_assignments > 0 && (
           <li>
-            Önceki yüklemede seçilen {summary.carried_assignments} işlem hekimi / “Hakediş yok” seçimi yeni satırlara{" "}
-            {dry ? "taşınacak" : "taşındı"}.
+            Önceki yüklemede elle seçilen {summary.carried_assignments} işlem hekimi / “Hakediş yok” seçimi yeni
+            satırlara {dry ? "taşınacak" : "taşındı"}.
+          </li>
+        )}
+        {(summary.outside_pieces ?? 0) > 0 && (
+          <li>
+            Dışarıdan hekimlerin {summary.outside_pieces} işlemi “Hakediş yok” olarak {dry ? "kaydedilecek" : "kaydedildi"};
+            gerekirse “İmplant ve işlemler” sekmesinden değiştirilebilir.
           </li>
         )}
         {summary.skipped_lines > 0 && <li>Yok sayılan hekimlerin {summary.skipped_lines} satırı yüklenmez.</li>}
-        {summary.skipped_pieces > 0 && <li>Dışarıdan / yok sayılan hekimlerin {summary.skipped_pieces} işlemi sayılmaz.</li>}
+        {summary.skipped_pieces > 0 && (
+          <li>
+            {summary.outside_pieces === undefined ? "Dışarıdan / yok sayılan" : "Yok sayılan"} hekimlerin{" "}
+            {summary.skipped_pieces} işlemi sayılmaz.
+          </li>
+        )}
         {summary.ungrouped_pieces > 0 && (
           <li>Gruba bağlı olmayan {summary.ungrouped_pieces} işlem satırı normal tedavidir (işlem adedi olarak kaydedilmez).</li>
         )}
@@ -951,6 +978,7 @@ function ImportSummary({ summary, title }: { summary: HkImportSummaryJson; title
           </li>
         )}
       </ul>
+      <ReturnedVoided rows={summary.returned_voided ?? []} count={summary.returned_voided_count} dry={dry} />
       {summary.doctors.length > 0 && (
         <div className="overflow-x-auto">
           <table className="w-full text-xs md:text-sm">
@@ -993,6 +1021,15 @@ function ImportSummary({ summary, title }: { summary: HkImportSummaryJson; title
                         ? String(d.pieces_qty)
                         : "—"}
                     {d.unassigned_pieces > 0 && <div className="text-amber-700">{d.unassigned_pieces} atanmamış</div>}
+                    {(d.outside_pieces ?? 0) > 0 && (
+                      <div className="text-gray-500">{d.outside_pieces} “Hakediş yok” (dışarıdan hekim)</div>
+                    )}
+                    {(d.carried_assignments ?? 0) > 0 && (
+                      <div className="text-gray-500">{d.carried_assignments} elle seçim taşındı</div>
+                    )}
+                    {(d.returned_voided ?? 0) > 0 && (
+                      <div className="text-amber-700">{d.returned_voided} iptal edilmiş işlem geri geldi</div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1020,6 +1057,58 @@ function ImportSummary({ summary, title }: { summary: HkImportSummaryJson; title
           . Gerekirse kuru girip yeniden yükleyin.
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Pieces a user had voided that the import brings back live (0034, v2.1 decision 5): no automatic void; the preparer
+ * chooses the doctor again (or "Hakediş yok") in the pieces tab.
+ */
+function ReturnedVoided({ rows, count, dry }: { rows: HkReturnedVoidedJson[]; count?: number; dry: boolean }) {
+  const n = count ?? rows.length;
+  if (n === 0) return null;
+  const shown = rows.slice(0, 50);
+  return (
+    <div className="p-3 rounded bg-amber-50 text-amber-900 text-sm space-y-2">
+      <p className="font-semibold">Daha önce elle iptal edilmiş {n} işlem yeniden geldi</p>
+      <p className="text-xs">
+        Bu işlemler iptal edilmeden {dry ? "kaydedilecek" : "kaydedildi"}. İşlemi başka bir hekim yaptıysa ya da hakediş
+        verilmeyecekse “İmplant ve işlemler” sekmesinden “Hekimi değiştir” ile hekimi ya da “Hakediş yok”u seçin;
+        gerekiyorsa işlemi yeniden iptal edin.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-left border-b border-amber-200">
+              <th className="py-1 pr-3 font-semibold">Tarih</th>
+              <th className="py-1 pr-3 font-semibold">Hasta</th>
+              <th className="py-1 pr-3 font-semibold">İşlem</th>
+              <th className="py-1 pr-3 font-semibold">Diş</th>
+              <th className="py-1 pr-3 font-semibold">Macro hekimi</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((r) => (
+              <tr key={r.n} className="border-b border-amber-100 last:border-b-0 align-top">
+                <td className="py-1 pr-3 whitespace-nowrap">{formatDay(r.day)}</td>
+                <td className="py-1 pr-3">
+                  {r.patient_name}
+                  {r.patient_no ? <span className="text-amber-700"> · dosya no {r.patient_no}</span> : null}
+                </td>
+                <td className="py-1 pr-3">
+                  {r.procedure}
+                  {r.proc_group_name ? <span className="text-amber-700"> ({r.proc_group_name})</span> : null}
+                  {r.qty !== 1 ? ` × ${r.qty}` : ""}
+                </td>
+                <td className="py-1 pr-3">{r.tooth || "—"}</td>
+                <td className="py-1 pr-3">{r.ext_doctor}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.length > shown.length && <p className="text-xs">İlk {shown.length} işlem gösteriliyor.</p>}
     </div>
   );
 }

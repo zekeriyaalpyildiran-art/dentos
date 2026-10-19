@@ -1,8 +1,9 @@
 // Hakediş engine mirror (spec §1 "Calculation", §2; v1.1 child patients by age; v1.2 staff payroll: fixed_monthly
 // salaries and bonus / other adjustments; v1.3 bank / cash split: bank_portion rules; v1.4 lab costs deducted from
 // the ciro, minimum_monthly floors and the doctor × lab summary; v2 Macro import: unpaid lines, lines without a
-// doctor, procedure groups and procedure_piece rules). Made-up doctors, staff, patients, labs, groups, rates and
-// amounts only.
+// doctor, procedure groups and procedure_piece rules; v2.1 the performing doctor of any imported piece; v2.2 unmarked
+// patients counted as children for a flagged doctor and the adult mark). Made-up doctors, staff, patients, labs,
+// groups, rates and amounts only.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -25,6 +26,7 @@ import {
   computeMonth,
   DEDUCT_LABELS,
   emptyPayeeSummary,
+  EXT_DOCTOR_MODE_HINTS,
   EXT_DOCTOR_MODE_LABELS,
   extDoctorOf,
   findImplantPieceConflict,
@@ -60,6 +62,9 @@ import {
   LAB_SUMMARY_HINT,
   labSummaryByDoctor,
   labTotalsOf,
+  MARK_GROUP_LABELS,
+  markGroupOf,
+  markGroupText,
   markIsChildOn,
   MINIMUM_MONTHLY_HINT,
   METHOD_LABELS,
@@ -73,19 +78,32 @@ import {
   normalizePatientRef,
   opNameMoves,
   parsePercent,
+  OUTSIDE_PIECE_TEXT,
   pickDefaultMonth,
+  PIECE_OVERRIDE_HINT,
+  pieceChoiceIsOverride,
+  pieceDefaultModeOf,
+  pieceDefaultOf,
   pieceFieldLabel,
+  pieceMacroText,
+  piecePerformerText,
+  pieceResetLabel,
   procGroupOfOperation,
   resolveSegment,
   roundHalfAwayDiv,
   RULE_FIELDS,
   ruleActiveIn,
+  ruleAllowsUnmarkedDefault,
   ruleDeductBp,
   ruleOverlapKey,
   salaryRuleOf,
+  SEGMENT_SOURCE_LABELS,
+  segmentSourceOf,
   SPLIT_LABELS,
   sumPayeeSummaries,
   summarizePayee,
+  UNMARKED_DEFAULT_LABEL,
+  unmarkedDefaultDoctorIds,
   validateAdjustment,
   validateBirthDate,
   validateChildAgeLimit,
@@ -288,7 +306,7 @@ describe("ciro_share", () => {
     expect(b).toMatchObject({ gross: TL(30_000), implant: TL(10_000), eligible: TL(20_000), deduction: TL(2_200) });
     expect(component(out, r.id).base_cents).toBe(TL(17_800));
     expect(component(out, r.id).amount_cents).toBe(TL(4_450));
-    expect(out.line_results).toEqual([{ id: l.id, segment: "standard", rule_id: r.id, lab_part: 0 }]);
+    expect(out.line_results).toEqual([{ id: l.id, segment: "standard", segment_source: "none", rule_id: r.id, lab_part: 0 }]);
   });
 
   it("takes negative correction lines into the buckets", () => {
@@ -556,8 +574,12 @@ describe("child patients by age (v1.1)", () => {
       run({ month, rules: [bStd, bChild], lines: [feb, mar], marks, settings: { child_age_limit } });
 
     // Limit 15: 14 on 28 February 2027 (child), 15 on 1 March 2027 (standard).
-    expect(at("2027-02", 15).line_results).toEqual([{ id: feb.id, segment: "child", rule_id: bChild.id, lab_part: 0 }]);
-    expect(at("2027-03", 15).line_results).toEqual([{ id: mar.id, segment: "standard", rule_id: bStd.id, lab_part: 0 }]);
+    expect(at("2027-02", 15).line_results).toEqual([
+      { id: feb.id, segment: "child", segment_source: "birth_date", rule_id: bChild.id, lab_part: 0 },
+    ]);
+    expect(at("2027-03", 15).line_results).toEqual([
+      { id: mar.id, segment: "standard", segment_source: "birth_date", rule_id: bStd.id, lab_part: 0 },
+    ]);
     expect(payeeTotal(at("2027-02", 15), "u-b")).toBe(TL(320));
     expect(payeeTotal(at("2027-03", 15), "u-b")).toBe(TL(250));
     // Default 14: both are standard.
@@ -1477,8 +1499,8 @@ describe("lab costs on the ciro (v1.4)", () => {
     expect(out.warnings).toEqual([]);
     expect(out.line_results).toEqual(without.line_results);
     expect(out.lab_results).toEqual([
-      { id: labs[0].id, segment: "standard", rule_id: r.id },
-      { id: labs[1].id, segment: "standard", rule_id: r.id },
+      { id: labs[0].id, segment: "standard", segment_source: "none", rule_id: r.id },
+      { id: labs[1].id, segment: "standard", segment_source: "none", rule_id: r.id },
     ]);
     expect(out.lab_summary).toEqual([
       { doctor_id: "doc-a", doctor_name: "Hekim A", lab_name: "Lab X", cost_cents: TL(9_400), deducted_cents: TL(9_400), count: 1 },
@@ -1614,11 +1636,11 @@ describe("lab costs on the ciro (v1.4)", () => {
     const out = run({ month: "2026-11", rules, lines, marks, lab_costs: Object.values(labs) });
     const res = (c: HkComputeLabCost) => out.lab_results.find((x) => x.id === c.id);
 
-    expect(res(labs.bChildByAge)).toEqual({ id: labs.bChildByAge.id, segment: "child", rule_id: bChild.id });
-    expect(res(labs.bBirthday)).toEqual({ id: labs.bBirthday.id, segment: "standard", rule_id: bStd.id });
-    expect(res(labs.bOtherOwn)).toEqual({ id: labs.bOtherOwn.id, segment: "standard", rule_id: bStd.id });
-    expect(res(labs.cOwn)).toEqual({ id: labs.cOwn.id, segment: "own", rule_id: cOwn.id });
-    expect(res(labs.cChildNoRule)).toEqual({ id: labs.cChildNoRule.id, segment: "child", rule_id: cStd.id });
+    expect(res(labs.bChildByAge)).toMatchObject({ id: labs.bChildByAge.id, segment: "child", rule_id: bChild.id });
+    expect(res(labs.bBirthday)).toMatchObject({ id: labs.bBirthday.id, segment: "standard", rule_id: bStd.id });
+    expect(res(labs.bOtherOwn)).toMatchObject({ id: labs.bOtherOwn.id, segment: "standard", rule_id: bStd.id });
+    expect(res(labs.cOwn)).toEqual({ id: labs.cOwn.id, segment: "own", segment_source: "own", rule_id: cOwn.id });
+    expect(res(labs.cChildNoRule)).toMatchObject({ id: labs.cChildNoRule.id, segment: "child", rule_id: cStd.id });
 
     expect(component(out, bChild.id)).toMatchObject({ lab_cents: TL(1_000), base_cents: TL(9_000), amount_cents: TL(2_880) });
     expect(component(out, bStd.id)).toMatchObject({ lab_cents: TL(2_450), base_cents: TL(7_550), amount_cents: TL(1_887.5) });
@@ -2356,8 +2378,11 @@ describe("RPC wrappers (v1.1)", () => {
     await hkSaveMark(mark);
     expect(rpcMock).toHaveBeenLastCalledWith("hk_save_mark", mark);
 
+    // 0034: the adult flag is always sent (null when left out: the server keeps the saved one).
     await finHkSaveMark({ ...mark, p_is_child: false, p_note: "" });
-    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_mark", { ...mark, p_is_child: false, p_note: "" });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_mark", { ...mark, p_is_child: false, p_note: "", p_is_adult: null });
+    await finHkSaveMark({ ...mark, p_is_child: false, p_note: "", p_is_adult: true });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_mark", { ...mark, p_is_child: false, p_note: "", p_is_adult: true });
 
     rpcMock.mockResolvedValueOnce({ data: [{ id: "m-1" }], error: null });
     expect(await hkMarksList("  Hasta ")).toEqual([{ id: "m-1" }]);
@@ -2460,13 +2485,15 @@ describe("RPC wrappers (v1.3)", () => {
       p_note: "",
     };
     await finHkSaveRule(args);
-    // 0033: the unpaid deduction and the procedure group are always sent (0 / null when left out).
+    // 0033: the unpaid deduction and the procedure group are always sent (0 / null when left out); 0034: the unmarked
+    // default too (null when left out: the server keeps the saved flag).
     expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", {
       ...args,
       p_from_month: "2026-11-01",
       p_to_month: "2027-03-01",
       p_deduct_unpaid_bp: 0,
       p_proc_group_id: null,
+      p_unmarked_default: null,
     });
   });
 
@@ -2489,7 +2516,12 @@ describe("RPC wrappers (v1.3)", () => {
       p_note: "",
     };
     await finHkSaveRule(args);
-    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", { ...args, p_deduct_unpaid_bp: 0, p_proc_group_id: null });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", {
+      ...args,
+      p_deduct_unpaid_bp: 0,
+      p_proc_group_id: null,
+      p_unmarked_default: null,
+    });
   });
 });
 
@@ -2629,8 +2661,8 @@ describe("lines without a doctor (v2)", () => {
     expect(component(out, mgmt.id)).toMatchObject({ base_cents: TL(10_100), amount_cents: TL(303), lines_count: 3 });
     expect(component(out, a.id)).toMatchObject({ base_cents: TL(3_000), lines_count: 1 });
     expect(out.line_results.filter((x) => x.rule_id === null)).toEqual([
-      { id: clinicLine.id, segment: "standard", rule_id: null, lab_part: 0 },
-      { id: outsideLine.id, segment: "child", rule_id: null, lab_part: 0 },
+      { id: clinicLine.id, segment: "standard", segment_source: "none", rule_id: null, lab_part: 0 },
+      { id: outsideLine.id, segment: "child", segment_source: "child_mark", rule_id: null, lab_part: 0 },
     ]);
   });
 });
@@ -3062,13 +3094,14 @@ describe("RPC wrappers (v2)", () => {
       p_proc_group_id: "g-cek",
     };
     await finHkSaveRule(args);
-    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", { ...args, p_deduct_unpaid_bp: 0 });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", { ...args, p_deduct_unpaid_bp: 0, p_unmarked_default: null });
     await finHkSaveRule({ ...args, p_kind: "ciro_share", p_proc_group_id: null, p_deduct_unpaid_bp: 1100 });
     expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", {
       ...args,
       p_kind: "ciro_share",
       p_proc_group_id: null,
       p_deduct_unpaid_bp: 1100,
+      p_unmarked_default: null,
     });
   });
 });
@@ -3118,5 +3151,418 @@ describe("Macro import helpers (v2)", () => {
       "Macro hekim adı en fazla 120 karakter olabilir."
     );
     expect(validateExtDoctor({ ext_name: "Dr Örnek", mode: "doctor", doctor_id: "doc-a" })).toBeNull();
+  });
+});
+
+describe("unmarked patients count as children (v2.2)", () => {
+  // Hekim B (pediatric): child rule 40 % with the unmarked default; Hekim C: child rule 32 % without it.
+  const rules = (flag: boolean | undefined = true) => {
+    const bStd = rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "standard", share_bp: 2500 });
+    const bChild = rule({
+      kind: "ciro_share",
+      payee_user_id: "u-b",
+      doctor_id: "doc-b",
+      segment: "child",
+      share_bp: 4000,
+      unmarked_default: flag,
+    });
+    const cStd = rule({ kind: "ciro_share", payee_user_id: "u-c", doctor_id: "doc-c", segment: "standard", share_bp: 2500 });
+    const cChild = rule({ kind: "ciro_share", payee_user_id: "u-c", doctor_id: "doc-c", segment: "child", share_bp: 3200 });
+    return { bStd, bChild, cStd, cChild };
+  };
+  const marks: HkComputeMark[] = [
+    { patient_ref: "yetiskin 1", own_doctor_id: null, is_child: false, is_adult: true },
+    { patient_ref: "cocuk 1", own_doctor_id: null, is_child: true, is_adult: false },
+    // A birth date decides before the child / adult flags.
+    { patient_ref: "dogum cocuk", own_doctor_id: null, is_child: false, is_adult: true, birth_date: "2018-05-01" },
+    { patient_ref: "dogum yetiskin", own_doctor_id: null, is_child: true, birth_date: "1990-01-01" },
+    // Only another doctor's own patient: no child / adult information for Hekim B.
+    { patient_ref: "kendi c", own_doctor_id: "doc-c", is_child: false },
+    // The own doctor beats every mark.
+    { patient_ref: "kendi b", own_doctor_id: "doc-b", is_child: false, is_adult: true },
+  ];
+  const t = TL(10_000);
+  const scenario = () => ({
+    bUnmarked1: line({ doctor_id: "doc-b", patient_ref: "isaretsiz 1", try_cents: t }),
+    bUnmarked2a: line({ doctor_id: "doc-b", patient_ref: "isaretsiz 2", try_cents: t }),
+    bUnmarked2b: line({ doctor_id: "doc-b", patient_ref: "isaretsiz 2", try_cents: t, day: "2026-11-20" }),
+    bAdult: line({ doctor_id: "doc-b", patient_ref: "yetiskin 1", try_cents: t }),
+    bChildMark: line({ doctor_id: "doc-b", patient_ref: "cocuk 1", try_cents: t }),
+    bBirthChild: line({ doctor_id: "doc-b", patient_ref: "dogum cocuk", try_cents: t }),
+    bBirthAdult: line({ doctor_id: "doc-b", patient_ref: "dogum yetiskin", try_cents: t }),
+    bOtherOwn: line({ doctor_id: "doc-b", patient_ref: "kendi c", try_cents: t }),
+    bOwn: line({ doctor_id: "doc-b", patient_ref: "kendi b", try_cents: t }),
+    bOverride: line({ doctor_id: "doc-b", patient_ref: "isaretsiz 3", segment: "standard", try_cents: t }),
+    cUnmarked: line({ doctor_id: "doc-c", patient_ref: "isaretsiz 1", try_cents: t }),
+    cOwn: line({ doctor_id: "doc-c", patient_ref: "kendi c", try_cents: t }),
+  });
+
+  it("counts a flagged doctor's unmarked patients as children, in the order line, own, birth date, child, adult", () => {
+    const { bStd, bChild, cStd, cChild } = rules();
+    const lines = scenario();
+    const out = run({ month: "2026-11", rules: [bStd, bChild, cStd, cChild], lines: Object.values(lines), marks });
+    const res = (l: HkComputeLine) => out.line_results.find((r) => r.id === l.id)!;
+
+    expect(res(lines.bUnmarked1)).toMatchObject({ segment: "child", segment_source: "unmarked_default", rule_id: bChild.id });
+    expect(res(lines.bUnmarked2a)).toMatchObject({ segment: "child", segment_source: "unmarked_default" });
+    expect(res(lines.bAdult)).toMatchObject({ segment: "standard", segment_source: "adult_mark", rule_id: bStd.id });
+    expect(res(lines.bChildMark)).toMatchObject({ segment: "child", segment_source: "child_mark", rule_id: bChild.id });
+    expect(res(lines.bBirthChild)).toMatchObject({ segment: "child", segment_source: "birth_date", rule_id: bChild.id });
+    expect(res(lines.bBirthAdult)).toMatchObject({ segment: "standard", segment_source: "birth_date", rule_id: bStd.id });
+    expect(res(lines.bOtherOwn)).toMatchObject({ segment: "child", segment_source: "unmarked_default", rule_id: bChild.id });
+    // No 'own' rule for Hekim B → the standard rule.
+    expect(res(lines.bOwn)).toMatchObject({ segment: "own", segment_source: "own", rule_id: bStd.id });
+    expect(res(lines.bOverride)).toMatchObject({ segment: "standard", segment_source: "line", rule_id: bStd.id });
+    // Hekim C's child rule has no flag: an unmarked patient stays standard.
+    expect(res(lines.cUnmarked)).toMatchObject({ segment: "standard", segment_source: "none", rule_id: cStd.id });
+    expect(res(lines.cOwn)).toMatchObject({ segment: "own", segment_source: "own", rule_id: cStd.id });
+
+    expect(component(out, bChild.id)).toMatchObject({ lines_count: 6, base_cents: TL(60_000), amount_cents: TL(24_000) });
+    expect(component(out, bStd.id)).toMatchObject({ lines_count: 4, base_cents: TL(40_000), amount_cents: TL(10_000) });
+    expect(component(out, cStd.id)).toMatchObject({ lines_count: 2, amount_cents: TL(5_000) });
+    expect(component(out, cChild.id)).toMatchObject({ lines_count: 0, amount_cents: 0 });
+    expect(payeeTotal(out, "u-b")).toBe(TL(34_000));
+
+    // One informational warning per flagged doctor: distinct patient keys and lines from the unmarked default.
+    expect(out.warnings).toEqual([
+      { code: "UNMARKED_AS_CHILD", doctor_id: "doc-b", doctor_name: "Hekim B", patients: 3, lines: 4 },
+    ]);
+    expect(warningText(out.warnings[0])).toBe(
+      "Hekim B: 3 hasta işaretsiz olduğu için çocuk sayıldı (4 satır); yetişkinse işaretleyin."
+    );
+  });
+
+  it("leaves every result identical without the flag and the adult mark", () => {
+    const { bStd, bChild, cStd, cChild } = rules(false);
+    const lines = Object.values(scenario());
+    const withFalse = run({ month: "2026-11", rules: [bStd, bChild, cStd, cChild], lines, marks });
+    const bare = (r: HkComputeRule): HkComputeRule => {
+      const copy = { ...r };
+      delete copy.unmarked_default;
+      return copy;
+    };
+    const noAdult = marks.map((m) => ({ ...m, is_adult: undefined }));
+    const before = run({ month: "2026-11", rules: [bStd, bChild, cStd, cChild].map(bare), lines, marks: noAdult });
+    // The adult flag alone changes no segment (no information still means standard).
+    expect(withFalse.payees).toEqual(before.payees);
+    expect(withFalse.warnings).toEqual([]);
+    expect(withFalse.line_results.map((r) => [r.segment, r.rule_id])).toEqual(
+      before.line_results.map((r) => [r.segment, r.rule_id])
+    );
+    // 0030 order through resolveSegment's defaults.
+    const day = "2026-11-10";
+    expect(resolveSegment({ segment: null, doctor_id: "doc-b", day }, null)).toBe("standard");
+    expect(resolveSegment({ segment: null, doctor_id: "doc-b", day }, null, HK_DEFAULT_CHILD_AGE_LIMIT, true)).toBe("child");
+    expect(resolveSegment({ segment: null, doctor_id: "doc-b", day }, marks[0], HK_DEFAULT_CHILD_AGE_LIMIT, true)).toBe(
+      "standard"
+    );
+  });
+
+  it("segmentSourceOf follows the SQL order exactly", () => {
+    const day = "2026-11-10";
+    const at = (segment: HkComputeLine["segment"], doctor_id: string | null = "doc-b") => ({ segment, doctor_id, day });
+    const m = (p: Partial<HkComputeMark>): HkComputeMark => ({ patient_ref: "x", own_doctor_id: null, is_child: false, ...p });
+    expect(segmentSourceOf(at("child"), m({ own_doctor_id: "doc-b" }), true)).toBe("line");
+    expect(segmentSourceOf(at(null), m({ own_doctor_id: "doc-b", birth_date: "2018-01-01", is_child: true }), true)).toBe("own");
+    expect(segmentSourceOf(at(null), m({ birth_date: "1990-01-01", is_child: true }), true)).toBe("birth_date");
+    expect(segmentSourceOf(at(null), m({ is_child: true }), true)).toBe("child_mark");
+    expect(segmentSourceOf(at(null), m({ is_adult: true }), true)).toBe("adult_mark");
+    expect(segmentSourceOf(at(null), m({ own_doctor_id: "doc-c" }), true)).toBe("unmarked_default");
+    expect(segmentSourceOf(at(null), undefined, true)).toBe("unmarked_default");
+    expect(segmentSourceOf(at(null), undefined, false)).toBe("none");
+    expect(segmentSourceOf(at(null, null), m({ own_doctor_id: "doc-c" }))).toBe("none");
+    // An unreadable birth date counts as none (the child flag is used).
+    expect(segmentSourceOf(at(null), m({ birth_date: "bozuk", is_child: true }))).toBe("child_mark");
+    expect(SEGMENT_SOURCE_LABELS.unmarked_default).toBe("işaretsiz — hekimin varsayılanı");
+    expect(SEGMENT_SOURCE_LABELS.none).toBe("");
+  });
+
+  it("applies the flag of the line's month only", () => {
+    const bStd = rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "standard", share_bp: 2500 });
+    const bChildNov = rule({
+      kind: "ciro_share",
+      payee_user_id: "u-b",
+      doctor_id: "doc-b",
+      segment: "child",
+      share_bp: 4000,
+      to_month: "2026-11-01",
+    });
+    const bChildDec = rule({
+      kind: "ciro_share",
+      payee_user_id: "u-b",
+      doctor_id: "doc-b",
+      segment: "child",
+      share_bp: 4000,
+      unmarked_default: true,
+      from_month: "2026-12-01",
+    });
+    const nov = line({ doctor_id: "doc-b", patient_ref: "isaretsiz 1", try_cents: t });
+    const dec = line({ doctor_id: "doc-b", patient_ref: "isaretsiz 1", try_cents: t, day: "2026-12-03" });
+    const rs = [bStd, bChildNov, bChildDec];
+    expect(run({ month: "2026-11", rules: rs, lines: [nov, dec] }).line_results).toEqual([
+      { id: nov.id, segment: "standard", segment_source: "none", rule_id: bStd.id, lab_part: 0 },
+    ]);
+    const outDec = run({ month: "2026-12", rules: rs, lines: [nov, dec] });
+    expect(outDec.line_results).toEqual([
+      { id: dec.id, segment: "child", segment_source: "unmarked_default", rule_id: bChildDec.id, lab_part: 0 },
+    ]);
+    expect(outDec.warnings).toEqual([
+      { code: "UNMARKED_AS_CHILD", doctor_id: "doc-b", doctor_name: "Hekim B", patients: 1, lines: 1 },
+    ]);
+  });
+
+  it("resolves lab costs the same way on their day; they never count in the warning", () => {
+    const { bStd, bChild } = rules();
+    const labs = {
+      unmarked: lab({ doctor_id: "doc-b", patient_ref: "isaretsiz 1", day: "2026-11-05", amount_cents: TL(1_000), lab_name: "Lab X" }),
+      adult: lab({ doctor_id: "doc-b", patient_ref: "yetiskin 1", day: "2026-11-05", amount_cents: TL(500), lab_name: "Lab X" }),
+      birth: lab({ doctor_id: "doc-b", patient_ref: "dogum cocuk", day: "2026-11-05", amount_cents: TL(200), lab_name: "Lab Y" }),
+    };
+    const out = run({
+      month: "2026-11",
+      rules: [bStd, bChild],
+      lines: [
+        line({ doctor_id: "doc-b", patient_ref: "cocuk 1", try_cents: t }),
+        line({ doctor_id: "doc-b", patient_ref: "yetiskin 1", try_cents: t }),
+      ],
+      marks,
+      lab_costs: Object.values(labs),
+    });
+    expect(out.lab_results).toEqual([
+      { id: labs.unmarked.id, segment: "child", segment_source: "unmarked_default", rule_id: bChild.id },
+      { id: labs.adult.id, segment: "standard", segment_source: "adult_mark", rule_id: bStd.id },
+      { id: labs.birth.id, segment: "child", segment_source: "birth_date", rule_id: bChild.id },
+    ]);
+    expect(component(out, bChild.id)).toMatchObject({ lab_cents: TL(1_200), base_cents: TL(8_800), amount_cents: TL(3_520) });
+    expect(component(out, bStd.id)).toMatchObject({ lab_cents: TL(500), base_cents: TL(9_500), amount_cents: TL(2_375) });
+    expect(out.warnings).toEqual([]);
+  });
+
+  it("lists the warning per doctor after UNASSIGNED_PIECES, by doctor name", () => {
+    const { bStd, bChild } = rules();
+    const aChild = rule({
+      kind: "ciro_share",
+      payee_user_id: "u-a",
+      doctor_id: "doc-a",
+      segment: "child",
+      share_bp: 3100,
+      unmarked_default: true,
+    });
+    const out = run({
+      month: "2026-11",
+      rules: [bStd, bChild, aStd(), aChild],
+      lines: [
+        line({ doctor_id: "doc-b", patient_ref: "isaretsiz 1", try_cents: t }),
+        line({ doctor_id: "doc-a", patient_ref: "isaretsiz 4", try_cents: t }),
+        line({ doctor_id: "doc-a", patient_ref: "isaretsiz 5", try_cents: t }),
+      ],
+      pieces: [piece({ doctor_id: null, qty: 1, proc_group_id: "g-cek", source: "import" })],
+      proc_groups: GROUPS,
+    });
+    expect(out.warnings.map((w) => [w.code, "doctor_name" in w ? w.doctor_name : null])).toEqual([
+      ["UNASSIGNED_PIECES", null],
+      ["UNMARKED_AS_CHILD", "Hekim A"],
+      ["UNMARKED_AS_CHILD", "Hekim B"],
+    ]);
+    expect(out.warnings[1]).toMatchObject({ patients: 2, lines: 2 });
+  });
+
+  it("allows the flag only on a child ciro_share rule", () => {
+    const base: HkRuleInput = {
+      payee_user_id: "u-b",
+      doctor_id: "doc-b",
+      kind: "ciro_share",
+      segment: "child",
+      share_bp: 4000,
+      piece_cents: null,
+      deduct_cash_bp: 0,
+      deduct_card_bp: 0,
+      deduct_transfer_bp: 0,
+      deduct_financing_bp: 0,
+      from_month: "2026-11",
+      to_month: null,
+    };
+    expect(validateRule({ ...base, unmarked_default: true })).toBeNull();
+    const refused = `“${UNMARKED_DEFAULT_LABEL}” yalnızca çocuk hasta grubunun ciro payı kuralında seçilir.`;
+    expect(validateRule({ ...base, segment: "standard", unmarked_default: true })).toBe(refused);
+    expect(validateRule({ ...base, kind: "ortho_lab_first", segment: null, unmarked_default: true })).toBe(refused);
+    expect(validateRule({ ...base, segment: "standard", unmarked_default: false })).toBeNull();
+    expect(ruleAllowsUnmarkedDefault({ kind: "ciro_share", segment: "child" })).toBe(true);
+    expect(ruleAllowsUnmarkedDefault({ kind: "ciro_share", segment: "own" })).toBe(false);
+    expect(ruleAllowsUnmarkedDefault({ kind: "implant_piece", segment: null })).toBe(false);
+  });
+
+  it("names the child / adult choice of a mark", () => {
+    const today = "2026-11-10";
+    expect(markGroupOf({ is_child: true, is_adult: false })).toBe("child");
+    expect(markGroupOf({ is_child: false, is_adult: true })).toBe("adult");
+    expect(markGroupOf({ is_child: false })).toBeNull();
+    expect(markGroupOf(null)).toBeNull();
+    expect(markGroupText({ is_adult: true }, today)).toBe(MARK_GROUP_LABELS.adult);
+    expect(markGroupText({ is_child: true }, today)).toBe("Çocuk");
+    expect(markGroupText({}, today)).toBe("—");
+    // The birth date decides first (by the age on the day).
+    expect(markGroupText({ birth_date: "2018-05-01", is_adult: true }, today)).toBe("Çocuk (yaşa göre)");
+    expect(markGroupText({ birth_date: "1990-01-01", is_child: true }, today)).toBe("Yetişkin (yaşa göre)");
+    expect(markGroupText({ birth_date: "2011-11-11" }, today, 15)).toBe("Çocuk (yaşa göre)");
+    expect(markGroupText({ birth_date: "2011-11-10" }, today, 15)).toBe("Yetişkin (yaşa göre)");
+  });
+});
+
+describe("performing doctor of imported pieces (v2.1)", () => {
+  type P = Parameters<typeof piecePerformerText>[0] & { macro_doctor_name?: string | null; ext_doctor?: string | null };
+  const doctorPiece: P = {
+    source: "import",
+    default_mode: "doctor",
+    macro_doctor_id: "doc-a",
+    macro_doctor_name: "Hekim A",
+    ext_doctor: "DR ÖRNEK A",
+    doctor_id: "doc-a",
+    doctor_name: "Hekim A",
+    assigned_none: false,
+    assigned: false,
+  };
+  const clinicPiece: P = { ...doctorPiece, default_mode: "clinic", macro_doctor_id: null, macro_doctor_name: null, doctor_id: null, doctor_name: null };
+  const outsidePiece: P = { ...clinicPiece, default_mode: "outside", assigned_none: true };
+
+  it("reads the Macro default of a piece", () => {
+    expect(pieceDefaultModeOf({ source: "import" })).toBe("clinic");
+    expect(pieceDefaultModeOf({ source: "manual" })).toBe("manual");
+    expect(pieceDefaultModeOf({ source: "clinical" })).toBe("manual");
+    expect(pieceDefaultModeOf(outsidePiece)).toBe("outside");
+    expect(pieceDefaultOf(doctorPiece)).toEqual({ doctor_id: "doc-a", none: false });
+    expect(pieceDefaultOf(clinicPiece)).toEqual({ doctor_id: null, none: false });
+    expect(pieceDefaultOf(outsidePiece)).toEqual({ doctor_id: null, none: true });
+  });
+
+  it("tells an override from the default like fin_hk_assign_piece", () => {
+    expect(pieceChoiceIsOverride(doctorPiece, { doctor_id: "doc-a", none: false })).toBe(false);
+    expect(pieceChoiceIsOverride(doctorPiece, { doctor_id: "doc-s", none: false })).toBe(true);
+    expect(pieceChoiceIsOverride(doctorPiece, { doctor_id: null, none: true })).toBe(true);
+    expect(pieceChoiceIsOverride(clinicPiece, { doctor_id: "doc-s", none: false })).toBe(true);
+    expect(pieceChoiceIsOverride(clinicPiece, { doctor_id: null, none: true })).toBe(true);
+    expect(pieceChoiceIsOverride(outsidePiece, { doctor_id: null, none: true })).toBe(false);
+    expect(pieceChoiceIsOverride(outsidePiece, { doctor_id: "doc-s", none: false })).toBe(true);
+  });
+
+  it("labels the reset choice and the performer", () => {
+    expect(pieceResetLabel(doctorPiece)).toBe("Macro'daki hekime dön (Hekim A)");
+    expect(pieceResetLabel(clinicPiece)).toBe("Seçimi kaldır (hekim seçilmedi)");
+    expect(pieceResetLabel(outsidePiece)).toBe("Dışarıdan hekim (hakediş yok)");
+    expect(pieceResetLabel({ source: "manual" })).toBe("");
+    expect(piecePerformerText(doctorPiece)).toBe("Hekim A");
+    expect(piecePerformerText({ ...doctorPiece, doctor_id: "doc-s", doctor_name: "Hekim S", assigned: true })).toBe("Hekim S");
+    expect(piecePerformerText({ ...doctorPiece, doctor_id: null, doctor_name: null, assigned_none: true, assigned: true })).toBe(
+      "Hakediş yok"
+    );
+    expect(piecePerformerText(outsidePiece)).toBe(OUTSIDE_PIECE_TEXT);
+    expect(piecePerformerText(clinicPiece)).toBe("Hekim seçilmedi");
+    expect(PIECE_OVERRIDE_HINT).toContain("Ciro (tahsilat) satırları Macro'daki hekimde kalır");
+    expect(EXT_DOCTOR_MODE_HINTS.outside).toContain("Hakediş yok");
+  });
+
+  it("counts a moved piece for its new doctor; an outside piece at 'Hakediş yok' never warns", () => {
+    const sCek = rule({ kind: "procedure_piece", payee_user_id: "u-s", doctor_id: "doc-s", proc_group_id: "g-cek", piece_cents: TL(430) });
+    const aCek = rule({ kind: "procedure_piece", payee_user_id: "u-a", doctor_id: "doc-a", proc_group_id: "g-cek", piece_cents: TL(380) });
+    const out = run({
+      month: "2026-11",
+      rules: [sCek, aCek],
+      lines: [],
+      proc_groups: GROUPS,
+      pieces: [
+        // Macro: Hekim A, left at the default.
+        piece({ doctor_id: "doc-a", qty: 1, proc_group_id: "g-cek", source: "import" }),
+        // Macro: Hekim A, performed by Hekim S (override).
+        piece({ doctor_id: "doc-s", qty: 1, proc_group_id: "g-cek", source: "import" }),
+        // Outside doctor at its default ("Hakediş yok"), and one given to Hekim S.
+        piece({ doctor_id: null, qty: 1, proc_group_id: "g-cek", source: "import", assigned_none: true }),
+        piece({ doctor_id: "doc-s", qty: 1, proc_group_id: "g-cek", source: "import" }),
+      ],
+    });
+    expect(component(out, sCek.id)).toMatchObject({ qty: 2, amount_cents: TL(860) });
+    expect(component(out, aCek.id)).toMatchObject({ qty: 1, amount_cents: TL(380) });
+    expect(out.warnings).toEqual([]);
+  });
+});
+
+describe("RPC wrappers (v2.1 / v2.2)", () => {
+  beforeEach(() => {
+    rpcMock.mockReset();
+    rpcMock.mockResolvedValue({ data: { already_saved: false, record: {} }, error: null });
+  });
+
+  it("sends the unmarked default, the adult mark and a piece reset by name", async () => {
+    const args = {
+      p_id: "r-9",
+      p_version: 2,
+      p_payee_user_id: "u-b",
+      p_doctor_id: "doc-b",
+      p_kind: "ciro_share" as const,
+      p_segment: "child" as const,
+      p_share_bp: 4000,
+      p_piece_cents: null,
+      p_deduct_cash_bp: 0,
+      p_deduct_card_bp: 1100,
+      p_deduct_transfer_bp: 900,
+      p_deduct_financing_bp: 0,
+      p_from_month: "2026-11-01",
+      p_to_month: null,
+      p_note: "",
+      p_deduct_unpaid_bp: 1100,
+      p_proc_group_id: null,
+      p_unmarked_default: true,
+    };
+    await finHkSaveRule(args);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", args);
+    await finHkSaveRule({ ...args, p_unmarked_default: false });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", { ...args, p_unmarked_default: false });
+
+    const mark = {
+      p_id: "m-9",
+      p_version: 1,
+      p_patient_ref: "macro:77",
+      p_patient_name: "Hasta Yetmiş Yedi",
+      p_own_doctor_id: null,
+      p_is_child: false,
+      p_is_adult: true,
+      p_note: "",
+      p_birth_date: null,
+    };
+    await finHkSaveMark(mark);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_mark", mark);
+
+    // Neither a doctor nor "Hakediş yok": back to the piece's Macro default.
+    await finHkAssignPiece({ p_id: "p-9", p_version: 3, p_doctor_id: null, p_none: false });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_assign_piece", { p_id: "p-9", p_version: 3, p_doctor_id: null, p_none: false });
+  });
+});
+
+describe("page helpers (v2.1 / v2.2)", () => {
+  it("finds the doctors whose child rule counts unmarked patients as children in a month", () => {
+    const rules = [
+      rule({ kind: "ciro_share", payee_user_id: "u-b", doctor_id: "doc-b", segment: "child", share_bp: 4000, unmarked_default: true }),
+      rule({
+        kind: "ciro_share",
+        payee_user_id: "u-a",
+        doctor_id: "doc-a",
+        segment: "child",
+        share_bp: 3100,
+        unmarked_default: true,
+        to_month: "2026-11-01",
+      }),
+      rule({ kind: "ciro_share", payee_user_id: "u-c", doctor_id: "doc-c", segment: "child", share_bp: 3200 }),
+      // Invalid data (the server refuses it): a standard rule with the flag is ignored.
+      rule({ kind: "ciro_share", payee_user_id: "u-c", doctor_id: "doc-c", segment: "standard", share_bp: 2500, unmarked_default: true }),
+    ];
+    expect(Array.from(unmarkedDefaultDoctorIds(rules, "2026-11")).sort()).toEqual(["doc-a", "doc-b"]);
+    expect(Array.from(unmarkedDefaultDoctorIds(rules, "2026-12-01"))).toEqual(["doc-b"]);
+    expect(unmarkedDefaultDoctorIds(rules, "2026-10").size).toBe(0);
+  });
+
+  it("names the Macro doctor of a piece with its mapped DentOS doctor when they differ", () => {
+    expect(pieceMacroText({ ext_doctor: "DR ÖRNEK A", macro_doctor_name: "Hekim A" })).toBe("DR ÖRNEK A (Hekim A)");
+    expect(pieceMacroText({ ext_doctor: "HEKİM A", macro_doctor_name: "Hekim A" })).toBe("HEKİM A");
+    expect(pieceMacroText({ ext_doctor: "KLİNİK ÖRNEK", macro_doctor_name: null })).toBe("KLİNİK ÖRNEK");
+    expect(pieceMacroText({})).toBe("");
   });
 });

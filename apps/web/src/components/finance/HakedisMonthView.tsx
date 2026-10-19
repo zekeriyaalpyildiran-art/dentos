@@ -3,7 +3,8 @@
 // Ay özeti of the Hakediş pages (finance and prep modes, HakedisParts): per payee the month's figures (with the bank /
 // cash split of 0032 when a payee has a bank part; v1.4: the lab costs taken off the ciro in the Lab column and the
 // minimum top-up; 0033: the 'Ödenmemiş' column and the procedure piece fees), the warnings, the close / reopen of the
-// month (finance mode only) and the lines and pieces per doctor (by procedure group).
+// month (finance mode only) and the lines and pieces per doctor (by procedure group). 0034: the informational
+// UNMARKED_AS_CHILD warning (a doctor's unmarked patients counted as children) with a link to the marks.
 
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
@@ -181,6 +182,17 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                     Satırlar ve hastalar → İmplant ve işlemler
                   </Link>{" "}
                   sekmesinden seçin.
+                </p>
+              )}
+              {current.warnings.some((w) => w.code === "UNMARKED_AS_CHILD") && (
+                <p className="pt-1">
+                  Bilgi amaçlıdır, ayın kapatılmasını engellemez. Hekimin çocuk kuralı işaretsiz hastaları çocuk sayar;
+                  yetişkin hastayı{" "}
+                  <Link href={`${base}/lines?month=${month}`} className="underline">
+                    Satırlar ve hastalar
+                  </Link>{" "}
+                  sayfasında satırdaki “İşaretle” ile “Yetişkin” olarak işaretleyin (hasta grubu notu “işaretsiz — hekimin
+                  varsayılanı” olan satırlar).
                 </p>
               )}
               {current.warnings.some(isLabWarning) && (
@@ -880,6 +892,7 @@ function CloseDialog({
   const bankOver = data.warnings.filter((w) => w.code === "BANK_OVER_TOTAL");
   const labWarnings = data.warnings.filter(isLabWarning);
   const unassigned = data.warnings.filter((w) => w.code === "UNASSIGNED_PIECES");
+  const unmarked = data.warnings.filter((w) => w.code === "UNMARKED_AS_CHILD");
   const [accept, setAccept] = useState(false);
   const [error, setError] = useState<FinanceError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -963,6 +976,16 @@ function CloseDialog({
               ))}
             </ul>
             <p>Bu işlemler kimsenin hakedişine girmeden ay kapatılabilir; kapandıktan sonra atanamaz.</p>
+          </div>
+        )}
+        {unmarked.length > 0 && (
+          <div className="p-3 rounded bg-amber-50 text-amber-900 text-sm space-y-1">
+            <ul className="list-disc pl-5 space-y-1">
+              {unmarked.map((w, i) => (
+                <li key={i}>{warningText(w)}</li>
+              ))}
+            </ul>
+            <p>Bu hastalar çocuk sayılarak kapatılır; kapandıktan sonra işaret o ayın dökümünü değiştirmez.</p>
           </div>
         )}
         {unruled.length > 0 && (

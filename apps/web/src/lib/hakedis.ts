@@ -16,7 +16,11 @@
 // deduct_unpaid_bp; lines of a Macro doctor mapped to the clinic or to an outside doctor have no doctor and count only
 // in the clinic ciro (clinic_ciro_share); procedure groups (fin_hk_proc_groups: Macro operation names) and rule kind
 // procedure_piece = a fixed amount per piece of one group for one doctor; imported pieces of the clinic wait for the
-// performing doctor (fin_hk_assign_piece, UNASSIGNED_PIECES).
+// performing doctor (fin_hk_assign_piece, UNASSIGNED_PIECES), and v2.1 / v2.2 (0034_hakedis_override_unmarked.sql):
+// the performing doctor of ANY imported piece can be chosen (another doctor, "Hakediş yok" or back to its Macro default,
+// kept across re-imports; an outside doctor's pieces are stored as "Hakediş yok"; only the piece moves, the revenue lines
+// stay with the Macro doctor), and a doctor's child ciro_share rule can count the unmarked patients as children
+// (unmarked_default) with an explicit adult mark (is_adult); a line's segment and its source follow segmentSourceOf.
 // Every rate and amount is data entered by the owner (basis points and integer cents); nothing here is hard-coded.
 // Month arguments are sent as 'YYYY-MM-01' dates; month values read back may be 'YYYY-MM' or 'YYYY-MM-DD', so every
 // helper compares them through monthKey().
@@ -72,10 +76,32 @@ export type HkMonthStatus = "open" | "closed";
 /**
  * How the lines and pieces of a Macro doctor name are imported (fin_hk_ext_doctors.mode, 0033): 'doctor' = a DentOS
  * doctor (doctor_id); 'clinic' = the clinic's own revenue (no doctor; its pieces wait for the performing doctor);
- * 'outside' = an outside doctor without hakediş (no doctor; revenue in the clinic ciro, pieces not counted); 'ignore' =
- * not imported at all.
+ * 'outside' = an outside doctor without hakediş (no doctor; revenue in the clinic ciro; from 0034 its pieces are stored
+ * as "Hakediş yok" and can be given to a DentOS doctor); 'ignore' = not imported at all.
  */
 export type HkExtDoctorMode = "doctor" | "clinic" | "outside" | "ignore";
+/**
+ * The Macro default of a piece (fin_hk_pieces.macro_mode, 0034 PieceJson default_mode): 'doctor' = the DentOS doctor
+ * the Macro name was mapped to at import (macro_doctor_id); 'clinic' = no doctor until one is chosen; 'outside' =
+ * "Hakediş yok"; 'manual' = a manual / clinical piece (no Macro default, never reassigned).
+ */
+export type HkPieceDefaultMode = "doctor" | "clinic" | "outside" | "manual";
+/**
+ * Where the segment of a revenue line / lab cost comes from (0034 segment_source, fin__hk_segment_src; segmentSourceOf):
+ * the line's own segment, the mark's own doctor = the line's doctor, the mark's birth date, its child flag, its adult
+ * flag, the doctor's unmarked default (no child / adult information, active child ciro_share rule with
+ * unmarked_default → child), or no information (→ standard).
+ */
+export type HkSegmentSource =
+  | "line"
+  | "own"
+  | "birth_date"
+  | "child_mark"
+  | "adult_mark"
+  | "unmarked_default"
+  | "none";
+/** The explicit child / adult choice of a patient mark (0034: is_child / is_adult, exclusive; null = neither). */
+export type HkMarkGroup = "child" | "adult";
 
 /** Display order everywhere (tables, rules editor deduction fields). */
 export const HK_METHODS: readonly HkMethod[] = ["cash", "card", "transfer", "financing"];
@@ -129,7 +155,9 @@ export const EXT_DOCTOR_MODE_LABELS: Record<HkExtDoctorMode, string> = {
 export const EXT_DOCTOR_MODE_HINTS: Record<HkExtDoctorMode, string> = {
   doctor: "Satırları seçilen hekimin cirosuna girer.",
   clinic: "Ciro kliniğe aittir, hiçbir hekimin cirosuna girmez; işlemleri yapan hekimi siz seçersiniz.",
-  outside: "Hakediş hesaplanmaz; ciro klinik toplamına girer, işlem ücretleri sayılmaz.",
+  outside:
+    "Hakediş hesaplanmaz; ciro klinik toplamına girer. İşlemleri “Hakediş yok” olarak kaydedilir; gerekirse işlemi " +
+    "yapan hekim sonra seçilir.",
   ignore: "Bu hekimin satırları aktarılmaz.",
 };
 
@@ -138,6 +166,61 @@ export const SEGMENT_LABELS: Record<HkSegment, string> = {
   child: "Çocuk hasta",
   own: "Hekimin kendi hastası",
 };
+
+/**
+ * The note under a line's / lab cost's resolved segment (0034 segment_source); "" when nothing is worth saying (no
+ * child / adult information: standard).
+ */
+export const SEGMENT_SOURCE_LABELS: Record<HkSegmentSource, string> = {
+  line: "elle seçildi",
+  own: "hasta işaretinden (kendi hastası)",
+  birth_date: "doğum tarihinden",
+  child_mark: "hasta işaretinden (çocuk)",
+  adult_mark: "hasta işaretinden (yetişkin)",
+  unmarked_default: "işaretsiz — hekimin varsayılanı",
+  none: "",
+};
+
+/** "Grup" column of the patient marks (0034): the explicit child / adult choice. */
+export const MARK_GROUP_LABELS: Record<HkMarkGroup, string> = {
+  child: "Çocuk",
+  adult: "Yetişkin",
+};
+
+/** The mark dialog's choice when the mark has neither flag (0034). */
+export const MARK_GROUP_UNSET_LABEL = "Belirtilmedi (hekimin varsayılanı)";
+
+/** Hint of the mark dialog's child / adult choice (0034). */
+export const MARK_GROUP_HINT =
+  "Doğum tarihi varsa grup yaşa göre belirlenir. “Belirtilmedi” seçilirse hasta, hekimin çocuk kuralında “İşaretsiz " +
+  "hastalar bu gruba girer” seçiliyse çocuk, değilse standart sayılır.";
+
+/** Rules editor checkbox of a child ciro_share rule (0034, fin_hk_rules.unmarked_default). */
+export const UNMARKED_DEFAULT_LABEL = "İşaretsiz hastalar bu gruba girer";
+
+/** Rules editor hint of the unmarked default (0034). */
+export const UNMARKED_DEFAULT_HINT =
+  "Hekimin hastalarının çoğu çocuksa işaretleyin; o zaman yalnız yetişkin hastalar “Yetişkin” olarak işaretlenir.";
+
+/**
+ * Pieces tab hint (0034, v2.1): the performing doctor of an imported piece is chosen in DentOS and kept across
+ * re-imports; only the piece fee moves.
+ */
+export const PIECE_OVERRIDE_HINT =
+  "İşlemi Macro'daki hekimden başka biri yaptıysa buradan seçin; seçim aralık yeniden yüklenince korunur. Ciro " +
+  "(tahsilat) satırları Macro'daki hekimde kalır; yalnız implant / işlem başı ücreti seçilen hekime yazılır.";
+
+/** The doctor cell of an outside doctor's piece left at its Macro default (0034). */
+export const OUTSIDE_PIECE_TEXT = "Dışarıdan hekim — hakediş yok";
+
+/**
+ * Void dialog of an imported piece (0034, v2.1 decision 5): a re-import brings a voided piece back (it is stored live
+ * and listed in the import summary), so choosing the doctor is the lasting fix.
+ */
+export const IMPORTED_PIECE_VOID_TEXT =
+  "Bu işlem Macro'dan geldi: aralık yeniden yüklenirse tekrar gelir ve iptal edilmiş kalmaz (yükleme özetinde “daha " +
+  "önce elle iptal edilmiş” olarak listelenir). İşlemi başka bir hekim yaptıysa ya da hakediş verilmeyecekse iptal " +
+  "yerine “Hekimi değiştir” ile hekimi ya da “Hakediş yok”u seçin.";
 
 export const KIND_LABELS: Record<HkKind, string> = {
   ciro_share: "Ciro payı",
@@ -464,6 +547,15 @@ export function markFor<M>(
   );
 }
 
+/** The explicit child / adult choice of a mark (0034): is_child → child, is_adult → adult, else null. */
+export function markGroupOf(
+  m: { is_child?: boolean | null; is_adult?: boolean | null } | null | undefined
+): HkMarkGroup | null {
+  if (m?.is_child) return "child";
+  if (m?.is_adult) return "adult";
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Child patients by age (v1.1 item 2): fin_settings.hk_child_age_limit and fin_hk_patient_marks.birth_date
 // ---------------------------------------------------------------------------
@@ -542,6 +634,21 @@ export function validateBirthDate(value: string | null | undefined, today: strin
   return null;
 }
 
+/**
+ * "Grup" column of a mark (0034): by the age on `day` when there is a birth date ("Çocuk (yaşa göre)" / "Yetişkin (yaşa
+ * göre)"), else the explicit child / adult choice, else "—" (the line doctor's default applies).
+ */
+export function markGroupText(
+  m: { birth_date?: string | null; is_child?: boolean | null; is_adult?: boolean | null },
+  day: string,
+  childAgeLimit: number = HK_DEFAULT_CHILD_AGE_LIMIT
+): string {
+  const age = m.birth_date ? ageOn(m.birth_date, day) : null;
+  if (age !== null) return `${MARK_GROUP_LABELS[age < childAgeLimit ? "child" : "adult"]} (yaşa göre)`;
+  const group = markGroupOf(m);
+  return group ? MARK_GROUP_LABELS[group] : "—";
+}
+
 // ---------------------------------------------------------------------------
 // JSON shapes (§1 RPC list). Money is integer cents (TL unless a currency is named), rates basis points.
 // ---------------------------------------------------------------------------
@@ -596,6 +703,11 @@ export interface HkRuleJson {
   /** 0033: procedure_piece only: the procedure group (fin_hk_proc_groups); null / absent otherwise */
   proc_group_id?: string | null;
   proc_group_name?: string | null;
+  /**
+   * 0034: a ciro_share rule of the child segment only: the doctor's patients without child / adult information count
+   * as children ("İşaretsiz hastalar bu gruba girer"); false elsewhere, absent before 0034
+   */
+  unmarked_default?: boolean;
   /** 1st of month */
   from_month: string;
   /** 1st of month, inclusive; null = open-ended */
@@ -743,6 +855,8 @@ export interface HkLineJson extends HkVoidable, HkStamped {
   segment: HkSegment | null;
   /** engine resolution; null on voided lines */
   resolved_segment: HkSegment | null;
+  /** 0034: where resolved_segment comes from (segmentSourceOf); null on voided lines, absent before 0034 */
+  segment_source?: HkSegmentSource | null;
   /** null = no rule (UNRULED_LINES) or voided */
   rule_id: string | null;
   rule_kind: HkKind | null;
@@ -780,7 +894,8 @@ export interface HkPieceJson extends HkVoidable, HkStamped {
   day: string;
   /**
    * 0033: null only on an imported piece of a Macro doctor mapped to the clinic (waiting for the performing doctor,
-   * fin_hk_assign_piece) or marked "no hakediş" (assigned_none)
+   * fin_hk_assign_piece) or marked "no hakediş" (assigned_none; 0034: also an outside doctor's piece by default). 0034:
+   * the performing doctor chosen in DentOS when it differs from the Macro default (assigned)
    */
   doctor_id: string | null;
   doctor_name: string | null;
@@ -800,10 +915,41 @@ export interface HkPieceJson extends HkVoidable, HkStamped {
   procedure?: string | null;
   tooth?: string | null;
   macro_patient_no?: string | null;
-  /** 0033: the preparer marked the piece "Hakediş yok" (no doctor, not counted, no warning) */
+  /**
+   * 0033: the preparer marked the piece "Hakediş yok" (no doctor, not counted, no warning); 0034: also an outside
+   * doctor's piece at its default
+   */
   assigned_none?: boolean;
   /** 0033: no doctor and not "Hakediş yok": waiting for the performing doctor (UNASSIGNED_PIECES) */
   is_unassigned?: boolean;
+  /**
+   * 0034: the DentOS doctor the Macro name was mapped to at import (default_mode 'doctor'); null otherwise. Kept on
+   * the piece: a later mapping change does not move it.
+   */
+  macro_doctor_id?: string | null;
+  macro_doctor_name?: string | null;
+  /**
+   * 0034: the preparer chose something else than the Macro default (another doctor, "Hakediş yok", the doctor of a
+   * clinic piece); a re-import of the range carries the choice to the same new row
+   */
+  assigned?: boolean;
+  /** 0034: the piece's Macro default ('manual' on manual / clinical pieces); absent before 0034 */
+  default_mode?: HkPieceDefaultMode;
+}
+
+/** A piece of the import summary that a user had voided and the re-import brought back live (0034 returned_voided). */
+export interface HkReturnedVoidedJson {
+  /** position of the row in p_pieces (1-based) */
+  n: number;
+  day: string;
+  /** the Macro doctor name as in the report */
+  ext_doctor: string;
+  patient_name: string;
+  patient_no: string | null;
+  procedure: string;
+  tooth: string | null;
+  proc_group_name: string | null;
+  qty: number;
 }
 
 export interface HkMarkJson extends HkStamped {
@@ -818,6 +964,11 @@ export interface HkMarkJson extends HkStamped {
   birth_date: string | null;
   /** manual child mark: used only while birth_date is null */
   is_child: boolean;
+  /**
+   * 0034: manual adult mark (never together with is_child): used only while birth_date is null; the patient is
+   * standard even for a doctor whose child rule counts unmarked patients as children. Absent before 0034.
+   */
+  is_adult?: boolean;
   note: string;
 }
 
@@ -848,6 +999,8 @@ export interface HkMarkRowJson {
   birth_date: string | null;
   /** finance-only field, shown read-only here */
   is_child: boolean;
+  /** 0034: finance-only field (adult mark), shown read-only here; absent before 0034 */
+  is_adult?: boolean;
   /**
    * the patient has payments (0032: or lab costs, which resolve their rule from the mark) in a closed month: own doctor
    * / birth date can be changed only by a finance writer (the server refuses others)
@@ -875,6 +1028,8 @@ export interface HkLabCostJson extends HkVoidable, HkStamped {
    */
   rule_id?: string | null;
   resolved_segment?: HkSegment | null;
+  /** 0034: where resolved_segment comes from (segmentSourceOf on the cost's day); absent before 0034 */
+  segment_source?: HkSegmentSource | null;
 }
 
 /** A monthly bonus / other row of a payee (fin_hk_adjustments, 0031). */
@@ -1113,6 +1268,19 @@ export type HkWarningJson =
       count: number;
       /** per group, by group name */
       groups: HkUnassignedGroupJson[];
+    }
+  | {
+      /**
+       * 0034: per doctor, the month's live lines counted as a child's only because the patient has no child / adult
+       * information and the doctor's child rule counts unmarked patients as children (segment_source
+       * 'unmarked_default'). Informational: an adult patient needs an adult mark; the close is not blocked.
+       */
+      code: "UNMARKED_AS_CHILD";
+      doctor_id: string;
+      doctor_name: string;
+      /** distinct patient keys */
+      patients: number;
+      lines: number;
     };
 
 /** A procedure group of the UNASSIGNED_PIECES warning (0033). */
@@ -1290,6 +1458,15 @@ export interface HkMyPieceJson {
   proc_group_name?: string | null;
   procedure?: string | null;
   tooth?: string | null;
+  /**
+   * 0034, an imported piece: the Macro doctor name, its default (macro_doctor_id / default_mode) and whether the
+   * performing doctor was chosen in DentOS (assigned: the piece moved to the caller from its Macro doctor)
+   */
+  ext_doctor?: string | null;
+  macro_doctor_id?: string | null;
+  macro_doctor_name?: string | null;
+  assigned?: boolean;
+  default_mode?: HkPieceDefaultMode;
 }
 
 export interface HkMyLabCostJson {
@@ -1412,9 +1589,17 @@ export interface HkSaveRuleArgs {
   p_deduct_unpaid_bp?: number;
   /** 0033: procedure_piece only, else null; sent as null when left out */
   p_proc_group_id?: string | null;
+  /**
+   * 0034: "İşaretsiz hastalar bu gruba girer", a ciro_share rule of the child segment only (the server refuses true
+   * elsewhere); sent as null when left out = keep the saved flag of a child ciro_share rule (false otherwise)
+   */
+  p_unmarked_default?: boolean | null;
 }
 
-/** Saves a rule; from 0033 p_deduct_unpaid_bp and p_proc_group_id are always sent (0 / null when left out). */
+/**
+ * Saves a rule; from 0033 p_deduct_unpaid_bp and p_proc_group_id are always sent (0 / null when left out), from 0034
+ * p_unmarked_default too (null when left out: the server keeps the saved flag).
+ */
 export function finHkSaveRule(args: HkSaveRuleArgs) {
   return rpc<HkWriteResult<HkRuleJson>>("fin_hk_save_rule", {
     ...args,
@@ -1422,6 +1607,7 @@ export function finHkSaveRule(args: HkSaveRuleArgs) {
     p_to_month: args.p_to_month ? monthStart(args.p_to_month) : null,
     p_deduct_unpaid_bp: args.p_deduct_unpaid_bp ?? 0,
     p_proc_group_id: args.p_proc_group_id ?? null,
+    p_unmarked_default: args.p_unmarked_default ?? null,
   });
 }
 
@@ -1480,9 +1666,12 @@ export function finHkVoidPiece(args: HkVoidArgs) {
 }
 
 /**
- * 0033: the doctor of an imported piece (typically one of a Macro doctor mapped to the clinic): the performing doctor
- * (p_doctor_id), "Hakediş yok" (p_none true, p_doctor_id null) or neither (back to unassigned). Live pieces of open
- * months only; 'finance' or 'hakedis_prepare'.
+ * The performing doctor of an imported piece: (0033) of a Macro doctor mapped to the clinic, (0034) of ANY imported
+ * piece whatever its Macro doctor's mode: a DentOS doctor (p_doctor_id), "Hakediş yok" (p_none true, p_doctor_id null)
+ * or neither = back to the piece's Macro default (pieceDefaultOf: the mapped doctor, unassigned, or "Hakediş yok" for an
+ * outside doctor's piece). The record's assigned flag tells whether the result differs from that default (a re-import
+ * keeps it). Only the piece moves; the revenue lines stay with the Macro doctor. Live pieces of open months only;
+ * 'finance' or 'hakedis_prepare'.
  */
 export function finHkAssignPiece(args: { p_id: string; p_version: number; p_doctor_id: string | null; p_none: boolean }) {
   return rpc<HkWriteResult<HkPieceJson>>("fin_hk_assign_piece", { ...args });
@@ -1606,7 +1795,7 @@ export interface HkImportDoctorSummaryJson {
   gross_by_method: Record<HkImportMethod, number>;
   /** the lines of implant-group operations (implant_cents = the whole TL amount) */
   implant_cents: number;
-  /** stored pieces (rows) and their Σ qty */
+  /** stored pieces (rows) and their Σ qty (0034: an outside doctor's rows included) */
   pieces: number;
   pieces_qty: number;
   /** stored pieces per group (Σ qty), by group name */
@@ -1615,8 +1804,14 @@ export interface HkImportDoctorSummaryJson {
   unassigned_pieces: number;
   /** rows of operations without an active group (not stored) */
   ungrouped_pieces: number;
-  /** rows of an outside / ignored Macro doctor (not stored) */
+  /** rows of an ignored Macro doctor (not stored; 0033: outside doctors' rows too) */
   skipped_pieces: number;
+  /** 0034: stored rows of an outside doctor ("Hakediş yok"); absent before 0034 */
+  outside_pieces?: number;
+  /** 0034: rows a user had voided that came back live (a count here; the list is in the summary) */
+  returned_voided?: number;
+  /** 0034: new rows that took an assigned old row's choice */
+  carried_assignments?: number;
 }
 
 /** An operation name of the payload in the import summary (0033): its active group, if any. */
@@ -1668,11 +1863,24 @@ export interface HkImportSummaryJson {
   try_total_cents: number;
   implant_total_cents: number;
   skipped_lines: number;
+  /** rows of ignored Macro doctors (not stored; 0033: outside doctors' rows too) */
   skipped_pieces: number;
+  /** rows of an operation without a group of a 'doctor' / 'clinic' / 'outside' Macro doctor (not stored) */
   ungrouped_pieces: number;
   unassigned_pieces: number;
-  /** "Hakediş yok" / doctor choices of replaced clinic pieces carried over to the same new rows */
+  /**
+   * doctor / "Hakediş yok" choices of replaced pieces carried over to the same new rows (0033: clinic pieces; 0034:
+   * every assigned piece, whatever its Macro doctor's mode)
+   */
   carried_assignments: number;
+  /** 0034: stored rows of outside doctors ("Hakediş yok", can be reassigned); absent before 0034 */
+  outside_pieces?: number;
+  /**
+   * 0034: new rows whose earlier row a user had voided (not 'Yeniden yüklendi') and that has no live old row: stored
+   * live, listed by day so that the preparer chooses again; absent before 0034
+   */
+  returned_voided?: HkReturnedVoidedJson[];
+  returned_voided_count?: number;
   replaced_lines?: number;
   replaced_pieces?: number;
   replaced_batches?: number;
@@ -1734,10 +1942,16 @@ export interface HkSaveMarkArgs {
   p_note: string;
   /** 'YYYY-MM-DD' or null; always sent so that an edit never drops a birth date entered at the reception */
   p_birth_date: string | null;
+  /**
+   * 0034: the adult mark (refused together with p_is_child); sent as null when left out = keep the saved flag unless
+   * the patient is now marked a child
+   */
+  p_is_adult?: boolean | null;
 }
 
+/** Saves a mark; from 0034 p_is_adult is always sent (null when left out: the server keeps the saved flag). */
 export function finHkSaveMark(args: HkSaveMarkArgs) {
-  return rpc<HkWriteResult<HkMarkJson>>("fin_hk_save_mark", { ...args });
+  return rpc<HkWriteResult<HkMarkJson>>("fin_hk_save_mark", { ...args, p_is_adult: args.p_is_adult ?? null });
 }
 
 /** fin_settings.hk_child_age_limit (1..18); 0022 settings conventions: no-op → already_saved, then PT409. */
@@ -1850,7 +2064,10 @@ export interface HkReceptionSaveMarkArgs {
   p_birth_date: string | null;
 }
 
-/** Creates / updates only the name, own doctor and birth date; is_child and note stay with fin_hk_save_mark. */
+/**
+ * Creates / updates only the name, own doctor and birth date; is_child, is_adult (0034) and note stay with
+ * fin_hk_save_mark (an adult birth date still makes the patient an adult).
+ */
 export function hkSaveMark(args: HkReceptionSaveMarkArgs) {
   return rpc<HkWriteResult<HkMarkRowJson>>("hk_save_mark", { ...args });
 }
@@ -1880,8 +2097,32 @@ export interface HkRuleInput {
   deduct_unpaid_bp?: number | null;
   /** 0033: procedure_piece only; absent = null */
   proc_group_id?: string | null;
+  /** 0034: a ciro_share rule of the child segment only; absent = false */
+  unmarked_default?: boolean | null;
   from_month: string;
   to_month: string | null;
+}
+
+/** 0034: "İşaretsiz hastalar bu gruba girer" exists only on a ciro_share rule of the child segment. */
+export function ruleAllowsUnmarkedDefault(r: { kind: HkKind; segment: HkSegment | null | undefined }): boolean {
+  return r.kind === "ciro_share" && r.segment === "child";
+}
+
+/**
+ * 0034: the doctors whose active child ciro_share rule in `month` counts unmarked patients as children (SQL udf of
+ * fin__hk_eval_lines; segmentSourceOf's `unmarkedChild` for a line of that month).
+ */
+export function unmarkedDefaultDoctorIds(
+  rules: readonly (Pick<HkRuleJson, "kind" | "segment" | "doctor_id" | "from_month" | "to_month"> & {
+    unmarked_default?: boolean | null;
+  })[],
+  month: string
+): Set<string> {
+  const out = new Set<string>();
+  for (const r of rules) {
+    if (r.doctor_id && r.unmarked_default && ruleAllowsUnmarkedDefault(r) && ruleActiveIn(r, month)) out.add(r.doctor_id);
+  }
+  return out;
 }
 
 /** Client-side mirror of the fin_hk_save_rule checks per kind; null when valid. Overlaps are checked by the server. */
@@ -1899,6 +2140,9 @@ export function validateRule(r: HkRuleInput): string | null {
   if (f.segment && !r.segment) return "Hasta grubunu seçin.";
   if (f.group && !r.proc_group_id) return "İşlem grubunu seçin.";
   if (!f.group && r.proc_group_id) return "İşlem grubu yalnızca işlem başı ücret kuralında seçilir.";
+  if (r.unmarked_default && !ruleAllowsUnmarkedDefault(r)) {
+    return `“${UNMARKED_DEFAULT_LABEL}” yalnızca çocuk hasta grubunun ciro payı kuralında seçilir.`;
+  }
   if (f.share && (r.share_bp === null || !Number.isInteger(r.share_bp) || r.share_bp < 1 || r.share_bp > 10000)) {
     return "Pay oranı %0,01 ile %100 arasında olmalı.";
   }
@@ -2155,6 +2399,81 @@ export function validateExtDoctor(m: { ext_name: string; mode: HkExtDoctorMode |
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Performing doctor of an imported piece (0034, v2.1: fin_hk_assign_piece on any imported piece)
+// ---------------------------------------------------------------------------
+
+type HkPieceDefaultFields = Pick<HkPieceJson, "source"> &
+  Partial<Pick<HkPieceJson, "default_mode" | "macro_doctor_id">>;
+
+/** The piece's Macro default; a payload before 0034 has none: an imported piece is then a clinic piece. */
+export function pieceDefaultModeOf(p: HkPieceDefaultFields): HkPieceDefaultMode {
+  if (p.default_mode) return p.default_mode;
+  return p.source === "import" ? "clinic" : "manual";
+}
+
+/**
+ * What fin_hk_assign_piece puts back with neither a doctor nor "Hakediş yok": the mapped DentOS doctor ('doctor'),
+ * no doctor ('clinic', waiting for the performing doctor) or "Hakediş yok" ('outside').
+ */
+export function pieceDefaultOf(p: HkPieceDefaultFields): { doctor_id: string | null; none: boolean } {
+  const mode = pieceDefaultModeOf(p);
+  return { doctor_id: mode === "doctor" ? p.macro_doctor_id ?? null : null, none: mode === "outside" };
+}
+
+/**
+ * fin_hk_assign_piece's assigned flag for an explicit choice (a doctor, or `none` = "Hakediş yok"; the server refuses
+ * both, a doctor is taken here): the result differs from the piece's Macro default.
+ */
+export function pieceChoiceIsOverride(
+  p: HkPieceDefaultFields,
+  choice: { doctor_id: string | null; none: boolean }
+): boolean {
+  const d = pieceDefaultOf(p);
+  const doctor = choice.doctor_id ?? null;
+  const none = doctor ? false : choice.none;
+  return doctor !== d.doctor_id || none !== d.none;
+}
+
+/** The assign dialog's "back to the Macro default" choice of a piece. */
+export function pieceResetLabel(
+  p: HkPieceDefaultFields & Partial<Pick<HkPieceJson, "macro_doctor_name" | "ext_doctor">>
+): string {
+  switch (pieceDefaultModeOf(p)) {
+    case "doctor":
+      return `Macro'daki hekime dön (${p.macro_doctor_name || p.ext_doctor || "Macro hekimi"})`;
+    case "outside":
+      return "Dışarıdan hekim (hakediş yok)";
+    case "clinic":
+      return "Seçimi kaldır (hekim seçilmedi)";
+    default:
+      return "";
+  }
+}
+
+/**
+ * The Macro doctor of an imported piece: the name in the report, with the DentOS doctor it was mapped to at import when
+ * that name differs ("DR ÖRNEK (Hekim A)"); "" without a Macro name.
+ */
+export function pieceMacroText(p: Partial<Pick<HkPieceJson, "ext_doctor" | "macro_doctor_name">>): string {
+  const ext = (p.ext_doctor ?? "").trim();
+  const mapped = (p.macro_doctor_name ?? "").trim();
+  if (!ext) return mapped;
+  return mapped && normalizePatientRef(mapped) !== normalizePatientRef(ext) ? `${ext} (${mapped})` : ext;
+}
+
+/**
+ * Who the piece counts for: the doctor's name; "Hakediş yok" (OUTSIDE_PIECE_TEXT for an outside doctor's piece left at
+ * its default); "Hekim seçilmedi" while it waits for the performing doctor.
+ */
+export function piecePerformerText(
+  p: HkPieceDefaultFields & Pick<HkPieceJson, "doctor_id" | "doctor_name"> & Partial<Pick<HkPieceJson, "assigned_none" | "assigned">>
+): string {
+  if (p.doctor_id) return p.doctor_name ?? "";
+  if (p.assigned_none) return pieceDefaultModeOf(p) === "outside" && !p.assigned ? OUTSIDE_PIECE_TEXT : "Hakediş yok";
+  return "Hekim seçilmedi";
+}
+
 /** fin_hk_adjustments.description length limit. */
 export const HK_ADJUSTMENT_DESCRIPTION_MAX = 500;
 /** |amount_cents| limit of fin_hk_save_adjustment (10.000.000.000 TL). */
@@ -2250,6 +2569,8 @@ export function warningText(w: HkWarningJson): string {
       const groups = (w.groups ?? []).map((g) => `${g.name} ${g.count}`).join(", ");
       return `Klinik adına aktarılan ${w.count} işlem için işlemi yapan hekim seçilmedi${groups ? ` (${groups})` : ""}; seçilene kadar hakedişe dahil edilmez.`;
     }
+    case "UNMARKED_AS_CHILD":
+      return `${w.doctor_name || "Hekim"}: ${w.patients} hasta işaretsiz olduğu için çocuk sayıldı (${w.lines} satır); yetişkinse işaretleyin.`;
     default:
       return "Bilinmeyen uyarı.";
   }
@@ -2571,6 +2892,11 @@ export type HkComputeRule = Pick<
   deduct_unpaid_bp?: number | null;
   /** 0033 (procedure_piece): the rule's procedure group */
   proc_group_id?: string | null;
+  /**
+   * 0034 (ciro_share, segment child): the doctor's patients without child / adult information count as children while
+   * the rule is active; absent = false
+   */
+  unmarked_default?: boolean | null;
 };
 
 export interface HkComputeLine {
@@ -2633,8 +2959,10 @@ export interface HkComputeMark {
   patient_ref: string;
   own_doctor_id: string | null;
   is_child: boolean;
-  /** 'YYYY-MM-DD'; when set, the age on the line's day decides the child segment instead of is_child */
+  /** 'YYYY-MM-DD'; when set, the age on the line's day decides the child segment instead of is_child / is_adult */
   birth_date?: string | null;
+  /** 0034: explicit adult (standard) mark, used after is_child and before the doctor's unmarked default */
+  is_adult?: boolean | null;
 }
 
 /** A bonus / other row (fin_hk_adjustments, 0031). */
@@ -2677,6 +3005,8 @@ export interface HkComputeInput {
 export interface HkLineResult {
   id: string;
   segment: HkSegment;
+  /** 0034: where the segment comes from (fin_hk_month lines segment_source) */
+  segment_source: HkSegmentSource;
   rule_id: string | null;
   lab_part: number;
 }
@@ -2685,6 +3015,8 @@ export interface HkLineResult {
 export interface HkLabCostResult {
   id: string;
   segment: HkSegment;
+  /** 0034: where the segment comes from (fin_hk_month lab_costs segment_source) */
+  segment_source: HkSegmentSource;
   /** the doctor's ortho_lab_first rule, else the segment's / standard ciro_share rule; null = UNRULED_LAB */
   rule_id: string | null;
 }
@@ -2713,18 +3045,61 @@ export function markIsChildOn(
 }
 
 /**
- * line.segment if set; else 'own' when the mark's own doctor is the line's doctor; else 'child' when the patient is a
- * child on the line's day (markIsChildOn); else standard. Same order as fin_hk__compute.
+ * Where the segment of a line / lab cost comes from: the ONE place of the order (mirror of 0034 fin__hk_segment_src):
+ * 'line' (the line's own segment) → 'own' (the mark's own doctor is the line's doctor) → 'birth_date' (the mark has a
+ * birth date) → 'child_mark' (is_child) → 'adult_mark' (is_adult) → 'unmarked_default' (no child / adult information
+ * and `unmarkedChild`: the line's doctor has an active child ciro_share rule with unmarked_default in the month) →
+ * 'none'. A mark naming another doctor as own doctor carries no child / adult information. An unreadable birth date
+ * counts as none (the database only holds real dates).
+ */
+export function segmentSourceOf(
+  line: Pick<HkComputeLine, "segment" | "day"> & { doctor_id: string | null },
+  mark: Pick<HkComputeMark, "own_doctor_id" | "is_child" | "birth_date" | "is_adult"> | null | undefined,
+  unmarkedChild = false
+): HkSegmentSource {
+  if (line.segment) return "line";
+  if (mark?.own_doctor_id && mark.own_doctor_id === line.doctor_id) return "own";
+  if (mark?.birth_date && ageOn(mark.birth_date, line.day) !== null) return "birth_date";
+  if (mark?.is_child) return "child_mark";
+  if (mark?.is_adult) return "adult_mark";
+  if (unmarkedChild) return "unmarked_default";
+  return "none";
+}
+
+/**
+ * The segment of a line / lab cost (mirror of fin__hk_segment): segmentSourceOf mapped to the segment — the line's own
+ * segment; 'own'; by the birth date the child segment while younger than the limit on the line's day (markIsChildOn),
+ * else standard; the child mark and the doctor's unmarked default → child; the adult mark and no information →
+ * standard. Without is_adult and `unmarkedChild` this is the 0030 order (override, own doctor, child, standard).
  */
 export function resolveSegment(
   line: Pick<HkComputeLine, "segment" | "day"> & { doctor_id: string | null },
-  mark: Pick<HkComputeMark, "own_doctor_id" | "is_child" | "birth_date"> | null | undefined,
-  childAgeLimit: number = HK_DEFAULT_CHILD_AGE_LIMIT
+  mark: Pick<HkComputeMark, "own_doctor_id" | "is_child" | "birth_date" | "is_adult"> | null | undefined,
+  childAgeLimit: number = HK_DEFAULT_CHILD_AGE_LIMIT,
+  unmarkedChild = false
 ): HkSegment {
-  if (line.segment) return line.segment;
-  if (mark?.own_doctor_id && mark.own_doctor_id === line.doctor_id) return "own";
-  if (markIsChildOn(mark, line.day, childAgeLimit)) return "child";
-  return "standard";
+  return segmentOfSource(segmentSourceOf(line, mark, unmarkedChild), line, mark, childAgeLimit);
+}
+
+function segmentOfSource(
+  source: HkSegmentSource,
+  line: Pick<HkComputeLine, "segment" | "day">,
+  mark: Pick<HkComputeMark, "is_child" | "birth_date"> | null | undefined,
+  childAgeLimit: number
+): HkSegment {
+  switch (source) {
+    case "line":
+      return line.segment ?? "standard";
+    case "own":
+      return "own";
+    case "birth_date":
+      return markIsChildOn(mark, line.day, childAgeLimit) ? "child" : "standard";
+    case "child_mark":
+    case "unmarked_default":
+      return "child";
+    default:
+      return "standard";
+  }
 }
 
 const isLive = (r: { voided_at?: string | null }) => !r.voided_at;
@@ -2760,15 +3135,18 @@ function ruleIndexOf(rules: readonly HkComputeRule[], month: string) {
     .sort((a, b) => byText(monthKey(b.from_month), monthKey(a.from_month)) || byText(a.id, b.id));
   const orthoByDoctor = new Map<string, HkComputeRule>();
   const ciroByKey = new Map<string, HkComputeRule>();
+  // 0034 (SQL udf): doctors with an active child ciro_share rule that counts unmarked patients as children.
+  const unmarkedDoctors = new Set<string>();
   for (const r of active) {
     if (!r.doctor_id) continue;
     if (r.kind === "ortho_lab_first" && !orthoByDoctor.has(r.doctor_id)) orthoByDoctor.set(r.doctor_id, r);
     const key = `${r.doctor_id}|${r.segment}`;
     if (r.kind === "ciro_share" && r.segment && !ciroByKey.has(key)) ciroByKey.set(key, r);
+    if (r.kind === "ciro_share" && r.segment === "child" && r.unmarked_default) unmarkedDoctors.add(r.doctor_id);
   }
   const ruleFor = (doctorId: string, segment: HkSegment): HkComputeRule | undefined =>
     orthoByDoctor.get(doctorId) ?? ciroByKey.get(`${doctorId}|${segment}`) ?? ciroByKey.get(`${doctorId}|standard`);
-  return { active, orthoByDoctor, ruleFor };
+  return { active, orthoByDoctor, ruleFor, unmarkedDoctors };
 }
 
 /**
@@ -2886,6 +3264,12 @@ function orthoWalk(
  * grouped pieces). UNRULED_PIECES covers only implant-type pieces when neither rule takes them; pieces of other groups
  * without a rule are ordinary treatments. UNASSIGNED_PIECES (last) sums the month's live pieces of a group that have no
  * doctor and are not marked "Hakediş yok", per group (by group name, then id).
+ * Segments (0034): every line and lab cost resolves through segmentSourceOf (line, own, birth date, child mark, adult
+ * mark, the doctor's unmarked default, none) with the doctor's unmarked default taken from the rules of the line's /
+ * cost's own month; line_results / lab_results carry the source. UNMARKED_AS_CHILD (after UNASSIGNED_PIECES, by doctor
+ * name, then id) counts per doctor the month's live lines whose source is 'unmarked_default' (lines and distinct
+ * patient keys; never a lab cost). Pieces still count by doctor_id (a piece moved by fin_hk_assign_piece counts for
+ * its new doctor).
  */
 export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const month = monthKey(input.month);
@@ -2910,7 +3294,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
 
   // Active rules; the newest from_month wins if invalid data ever has two for the same key.
   const index = ruleIndexOf(input.rules, month);
-  const { active, orthoByDoctor, ruleFor } = index;
+  const { active, orthoByDoctor, ruleFor, unmarkedDoctors } = index;
   // Rules that become components: every kind but bank_portion and minimum_monthly.
   const componentRules = active.filter(
     (r): r is HkComputeRule & { kind: HkRuleComponentKind } =>
@@ -2927,12 +3311,12 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       costIndex = ruleIndexOf(input.rules, costMonth);
       indexes.set(costMonth, costIndex);
     }
-    const segment = resolveSegment(
-      { segment: null, doctor_id: c.doctor_id, day: c.day },
-      markFor(marks, c),
-      childAgeLimit
-    );
-    return { segment, rule: costIndex.ruleFor(c.doctor_id, segment) };
+    // 0034: the doctor's unmarked default with the rules of the cost's own month (fin__hk_eval_lab_costs of that month).
+    const at = { segment: null, doctor_id: c.doctor_id, day: c.day };
+    const mark = markFor(marks, c);
+    const source = segmentSourceOf(at, mark, costIndex.unmarkedDoctors.has(c.doctor_id));
+    const segment = segmentOfSource(source, at, mark, childAgeLimit);
+    return { segment, source, rule: costIndex.ruleFor(c.doctor_id, segment) };
   };
 
   // Live lines up to the end of the month (earlier months feed the ortho walk only).
@@ -2985,11 +3369,21 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   // Revenue lines → rule (ortho first, then the segment's ciro rule, then the standard one).
   const lineResults: HkLineResult[] = [];
   const unruled = new Map<string, { count: number; try_cents: number }>();
+  // 0034: lines counted as a child's through the doctor's unmarked default (UNMARKED_AS_CHILD), per doctor.
+  const unmarkedAsChild = new Map<string, { patients: Set<string>; lines: number }>();
   for (const l of monthLines) {
-    const segment = resolveSegment(l, markFor(marks, l), childAgeLimit);
+    const mark = markFor(marks, l);
+    const source = segmentSourceOf(l, mark, !!l.doctor_id && unmarkedDoctors.has(l.doctor_id));
+    const segment = segmentOfSource(source, l, mark, childAgeLimit);
+    if (source === "unmarked_default" && l.doctor_id) {
+      const u = unmarkedAsChild.get(l.doctor_id) ?? { patients: new Set<string>(), lines: 0 };
+      u.patients.add(l.patient_ref);
+      u.lines += 1;
+      unmarkedAsChild.set(l.doctor_id, u);
+    }
     if (!l.doctor_id) {
       // 0033: clinic / outside doctor revenue: in the clinic ciro only, never unruled.
-      lineResults.push({ id: l.id, segment, rule_id: null, lab_part: 0 });
+      lineResults.push({ id: l.id, segment, segment_source: source, rule_id: null, lab_part: 0 });
       continue;
     }
     const rule = ruleFor(l.doctor_id, segment);
@@ -2998,7 +3392,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       u.count += 1;
       u.try_cents += l.try_cents;
       unruled.set(l.doctor_id, u);
-      lineResults.push({ id: l.id, segment, rule_id: null, lab_part: 0 });
+      lineResults.push({ id: l.id, segment, segment_source: source, rule_id: null, lab_part: 0 });
       continue;
     }
     const lab = rule.kind === "ortho_lab_first" ? walks.get(rule.id)?.labPart.get(l.id) ?? 0 : 0;
@@ -3010,7 +3404,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     b.lab += lab;
     b.eligible += l.try_cents - l.implant_cents - lab;
     c.lines_count += 1;
-    lineResults.push({ id: l.id, segment, rule_id: rule.id, lab_part: lab });
+    lineResults.push({ id: l.id, segment, segment_source: source, rule_id: rule.id, lab_part: lab });
   }
 
   // The month's live lab costs → rule, like a revenue line of the patient on the cost's day (0032). Costs of an ortho
@@ -3020,8 +3414,8 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const labsOfRule = new Map<string, HkComputeLabCost[]>();
   const unruledLab = new Map<string, number>();
   for (const c of monthLabs) {
-    const { segment, rule } = labRule(c);
-    labResults.push({ id: c.id, segment, rule_id: rule?.id ?? null });
+    const { segment, source, rule } = labRule(c);
+    labResults.push({ id: c.id, segment, segment_source: source, rule_id: rule?.id ?? null });
     if (!rule) {
       unruledLab.set(c.doctor_id, (unruledLab.get(c.doctor_id) ?? 0) + c.amount_cents);
     } else if (rule.kind === "ciro_share") {
@@ -3276,6 +3670,18 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       groups: unassignedGroups,
     });
   }
+  // 0034: per doctor, the lines counted as a child's through the unmarked default (last; by doctor name, then id).
+  const unmarkedWarnings: Extract<HkWarningJson, { code: "UNMARKED_AS_CHILD" }>[] = [];
+  unmarkedAsChild.forEach((u, doctorId) => {
+    unmarkedWarnings.push({
+      code: "UNMARKED_AS_CHILD",
+      doctor_id: doctorId,
+      doctor_name: doctorNames.get(doctorId) ?? "",
+      patients: u.patients.size,
+      lines: u.lines,
+    });
+  });
+  warnings.push(...unmarkedWarnings.sort(byDoctorWarning));
 
   // Doctor × lab summary (0032): the month's live costs of every doctor, and what was deducted from each doctor's
   // figures this month per lab (ciro_share: each rule's lab_cents split over its labs; ortho: the walk's recovery).

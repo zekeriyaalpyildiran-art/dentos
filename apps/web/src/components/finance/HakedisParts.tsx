@@ -3,8 +3,9 @@
 // Shared pieces of the Hakediş pages, in two modes (0031): 'finance' under Finans → Hakediş (/finance/hakedis/…) and
 // 'prep' in the 'Hakediş ve maaş' section (/hakedis/…) of the 'hakedis_prepare' holders. Reference data, the month in
 // the address (?month=YYYY-MM, kept when switching between the pages), the month payload, the sub-tabs, the month
-// picker, the void dialog of lines / pieces / lab costs / adjustments and the component breakdown (0032: the lab costs
-// taken off a ciro_share base and the minimum top-up; 0033: the 'unpaid' bucket and the procedure_piece component).
+// picker, the void dialog of lines / pieces / lab costs / adjustments (0034: with an optional extra block) and the
+// component breakdown (0032: the lab costs taken off a ciro_share base and the minimum top-up; 0033: the 'unpaid'
+// bucket and the procedure_piece component).
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -295,11 +296,13 @@ export function MonthStatusBadge({ status }: { status: HkMonthStatus }) {
 
 /**
  * 'İptal et' for a line, a piece, a lab cost or a bonus / other row: a reason of 3..500 characters; the row stays,
- * struck through.
+ * struck through. `extra` (0034) is shown under the text, e.g. the warning of an imported piece that a re-import brings
+ * back, with a shortcut to choose its doctor instead.
  */
 export function HkVoidDialog({
   title,
   body,
+  extra,
   onVoid,
   onDone,
   onClose,
@@ -307,6 +310,7 @@ export function HkVoidDialog({
 }: {
   title: string;
   body: string;
+  extra?: ReactNode;
   onVoid: (reason: string) => Promise<{ already_saved: boolean }>;
   onDone: (message: string) => void | Promise<void>;
   onClose: () => void;
@@ -337,6 +341,7 @@ export function HkVoidDialog({
     <Modal title={title} onClose={onClose} busy={busy}>
       <form onSubmit={submit} className="space-y-4">
         <p className="text-sm text-gray-700">{body}</p>
+        {extra}
         <Field label="Gerekçe" hint="En az 3, en fazla 500 karakter.">
           <textarea className={inputClass} rows={3} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} required />
         </Field>

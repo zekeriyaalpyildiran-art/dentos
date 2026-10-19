@@ -6,7 +6,9 @@
 // monthly part of a payee's total paid by bank (any active user, like the fixed monthly salary). v1.4 (0032): kind
 // minimum_monthly, the monthly floor of a payee's total (any active user), and how lab costs reach the hakediş. v2
 // (0033): the 'Ödenmemiş (ay sonu)' deduction of ciro_share rules (the part of a Macro treatment unpaid at the end of
-// its month) and kind procedure_piece, a doctor's fixed amount per piece of one procedure group (İşlem grupları).
+// its month) and kind procedure_piece, a doctor's fixed amount per piece of one procedure group (İşlem grupları). v2.2
+// (0034): "İşaretsiz hastalar bu gruba girer" on a child ciro_share rule (unmarked patients of the doctor count as
+// children; only adults are then marked).
 
 import Link from "next/link";
 import { useState } from "react";
@@ -49,6 +51,8 @@ import {
   PROCEDURE_PIECE_HINT,
   RULE_FIELDS,
   SEGMENT_LABELS,
+  UNMARKED_DEFAULT_HINT,
+  UNMARKED_DEFAULT_LABEL,
   UNPAID_DEDUCT_HINT,
   bpToInput,
   childAgeLimitOf,
@@ -60,6 +64,7 @@ import {
   parsePercent,
   pieceFieldLabel,
   ruleActiveIn,
+  ruleAllowsUnmarkedDefault,
   ruleDeductBp,
   validateChildAgeLimit,
   validateRule,
@@ -385,6 +390,7 @@ function RuleTable({
               <td className="py-2 pr-3 whitespace-nowrap">{r.doctor_name ?? (r.kind === "clinic_ciro_share" ? "Tüm klinik" : "—")}</td>
               <td className="py-2 pr-3 whitespace-nowrap">
                 {r.segment ? SEGMENT_LABELS[r.segment] : groupName(r, groups) ?? "—"}
+                {r.unmarked_default && <div className="text-xs text-gray-500">işaretsiz hastalar dahil</div>}
               </td>
               <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap font-medium">{rateText(r)}</td>
               <td className="py-2 pr-3 text-xs text-gray-700">{deductionsText(r)}</td>
@@ -420,6 +426,8 @@ interface RuleForm {
   deduct: Record<HkLineMethod, string>;
   /** 0033: procedure_piece only */
   proc_group_id: string;
+  /** 0034: ciro_share of the child segment only */
+  unmarked_default: boolean;
   from_month: string;
   to_month: string;
   note: string;
@@ -442,6 +450,7 @@ function initialForm(ref: HkReferenceJson, record: HkRuleJson | null, payeeUserI
         unpaid: bpToInput(record.deduct_unpaid_bp ?? 0),
       },
       proc_group_id: record.proc_group_id ?? "",
+      unmarked_default: !!record.unmarked_default,
       from_month: monthKey(record.from_month),
       to_month: record.to_month ? monthKey(record.to_month) : "",
       note: record.note ?? "",
@@ -458,6 +467,7 @@ function initialForm(ref: HkReferenceJson, record: HkRuleJson | null, payeeUserI
     piece: "",
     deduct: { cash: "0", card: "0", transfer: "0", financing: "0", unpaid: "0" },
     proc_group_id: "",
+    unmarked_default: false,
     from_month: monthKey(ref.current_month),
     to_month: "",
     note: "",
@@ -490,6 +500,7 @@ function RuleDialog({
 
   const f = RULE_FIELDS[form.kind];
   const procedure = form.kind === "procedure_piece";
+  const unmarkedAllowed = ruleAllowsUnmarkedDefault({ kind: form.kind, segment: f.segment ? form.segment : null });
   const salary = form.kind === "fixed_monthly";
   const bank = form.kind === "bank_portion";
   const minimum = form.kind === "minimum_monthly";
@@ -585,6 +596,8 @@ function RuleDialog({
       deduct_financing_bp: deduct.financing,
       deduct_unpaid_bp: deduct.unpaid,
       proc_group_id: f.group ? form.proc_group_id || null : null,
+      // 0034: only a child ciro_share rule keeps the flag (a changed kind / segment clears it).
+      unmarked_default: unmarkedAllowed && form.unmarked_default,
       from_month: form.from_month,
       to_month: form.to_month || null,
     };
@@ -619,6 +632,7 @@ function RuleDialog({
         p_note: form.note.trim(),
         p_deduct_unpaid_bp: input.deduct_unpaid_bp,
         p_proc_group_id: input.proc_group_id,
+        p_unmarked_default: input.unmarked_default,
       });
       await onSaved(res.already_saved);
     } catch (err) {
@@ -732,6 +746,25 @@ function RuleDialog({
                 ))}
               </select>
             </Field>
+          )}
+          {unmarkedAllowed && (
+            <div className="md:col-span-2">
+              <label className="flex items-start gap-2 text-sm text-gray-800">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={form.unmarked_default}
+                  onChange={(e) => set("unmarked_default", e.target.checked)}
+                />
+                <span>
+                  <span className="font-semibold">{UNMARKED_DEFAULT_LABEL}</span>
+                  <span className="block text-xs text-gray-500">
+                    {UNMARKED_DEFAULT_HINT} Doğum tarihi girilen hasta yaşına göre sayılır; işaretsiz sayılan hastalar ay
+                    ekranında uyarı olarak listelenir.
+                  </span>
+                </span>
+              </label>
+            </div>
           )}
           {f.share && (
             <Field

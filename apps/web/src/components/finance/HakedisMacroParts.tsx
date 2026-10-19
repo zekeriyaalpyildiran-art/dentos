@@ -4,7 +4,8 @@
 // and prep modes, HakedisParts): the procedure groups (fin_hk_proc_groups: Macro operation names counted as pieces of
 // a group; implant groups keep the amount out of the doctor's ciro) and the Macro doctor mapping (fin_hk_ext_doctors:
 // DentOS doctor / clinic / outside doctor / ignore). Both are written by 'finance' or 'hakedis_prepare' holders
-// (fin_hk_save_proc_group, fin_hk_save_ext_doctor); a change affects later imports only.
+// (fin_hk_save_proc_group, fin_hk_save_ext_doctor); a change affects later imports only. 0034: an outside doctor's
+// pieces are stored as "Hakediş yok"; the performing doctor of single pieces is chosen in the pieces tab instead.
 
 import { useState } from "react";
 import { DialogButtons, HakedisTabs, useHkReference, type HkMode } from "./HakedisParts";
@@ -41,7 +42,9 @@ export const PROC_GROUPS_TEXT =
 /** How the Macro doctor names are mapped. */
 export const EXT_DOCTORS_TEXT =
   "Macro raporlarındaki her hekim adı bir kez eşleştirilir. Eşleştirme sonraki yüklemelerde kullanılır; değişiklik " +
-  "yüklenmiş satırları değiştirmez, aralığı yeniden yükleyin.";
+  "yüklenmiş satırları değiştirmez, aralığı yeniden yükleyin. Tek tek işlemleri başka bir hekim yaptıysa eşleştirmeyi " +
+  "değil, Satırlar ve hastalar → İmplant ve işlemler sekmesinden işlemin hekimini değiştirin (seçim yeniden yüklemede " +
+  "korunur).";
 
 /** Mode of a Macro doctor mapping in a table cell: "Klinik", "DentOS hekimi · Hekim A". */
 export function extDoctorModeText(m: Pick<HkExtDoctorJson, "mode" | "doctor_name">): string {

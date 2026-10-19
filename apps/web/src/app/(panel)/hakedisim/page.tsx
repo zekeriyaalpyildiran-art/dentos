@@ -19,6 +19,7 @@ import {
   labTotalsOf,
   monthKey,
   pickDefaultMonth,
+  pieceMacroText,
   sumPayeeSummaries,
   summarizePayee,
   type HkLabPatientJson,
@@ -36,7 +37,8 @@ import { formatMoney } from "@/lib/payments";
  * the caller's figures and lines; no finance permission is needed. Doctors and the owner only (layout.tsx). v1.3
  * (0032): the part paid by bank and the rest in cash, when the caller has a bank amount in the month. v1.4 (0032): the
  * month's lab costs taken off the caller's ciro (total, per lab and the cost rows) and the minimum top-up. v2 (0033):
- * the procedure piece fees (pieces by group) and the Macro operation / tooth of imported lines.
+ * the procedure piece fees (pieces by group) and the Macro operation / tooth of imported lines. v2.1 (0034): a piece
+ * whose performing doctor was chosen in DentOS (moved to the caller from another Macro doctor) shows "Macro: X".
  */
 export default function HakedisimPage() {
   return (
@@ -446,7 +448,12 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
                   {data.pieces.map((p, i) => (
                     <tr key={p.id ?? i} className="border-b last:border-b-0 align-top">
                       <td className="py-2 pr-3 whitespace-nowrap">{formatDay(p.day)}</td>
-                      <td className="py-2 pr-3">{p.patient_name}</td>
+                      <td className="py-2 pr-3">
+                        {p.patient_name}
+                        {p.assigned && pieceMacroText(p) && (
+                          <span className="block text-xs text-gray-500">Macro: {pieceMacroText(p)}</span>
+                        )}
+                      </td>
                       {hasProcedure && (
                         <td className="py-2 pr-3">
                           {p.proc_group_name ?? "İmplant"}
