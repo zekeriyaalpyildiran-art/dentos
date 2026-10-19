@@ -20,12 +20,16 @@
 // the performing doctor of ANY imported piece can be chosen (another doctor, "Hakediş yok" or back to its Macro default,
 // kept across re-imports; an outside doctor's pieces are stored as "Hakediş yok"; only the piece moves, the revenue lines
 // stay with the Macro doctor), and a doctor's child ciro_share rule can count the unmarked patients as children
-// (unmarked_default) with an explicit adult mark (is_adult); a line's segment and its source follow segmentSourceOf.
+// (unmarked_default) with an explicit adult mark (is_adult); a line's segment and its source follow segmentSourceOf,
+// and v2.3 (0035_hakedis_burgan_net.sql): an imported transfer line carries its payment day (paid_on) and the part of
+// it paid with a Burgan patient loan (fin_patient_financing, matched at compute time: financingLinksOf) counts in the
+// 'financing' bucket NET of the bank's fee share (ciro_share rules only; by_method.financing.fee), then the rule's
+// financing deduction applies; the clinic total stays gross (FINANCING_MATCHED / FINANCING_UNMATCHED warnings).
 // Every rate and amount is data entered by the owner (basis points and integer cents); nothing here is hard-coded.
 // Month arguments are sent as 'YYYY-MM-01' dates; month values read back may be 'YYYY-MM' or 'YYYY-MM-DD', so every
 // helper compares them through monthKey().
 
-import { formatTL, toFinanceError } from "./finance";
+import { formatDay, formatTL, toFinanceError } from "./finance";
 import type { Currency, PaymentMethod } from "./payments";
 import { createClient } from "./supabase";
 
@@ -143,6 +147,50 @@ export const DEDUCT_LABELS: Record<HkLineMethod, string> = {
 export const UNPAID_DEDUCT_HINT =
   "Ay içinde yapılan tedavinin ay sonuna kadar ödenmemiş kısmı bu oranla kesilerek ciroya eklenir; " +
   "sonradan gelen ödemeler o ayı değiştirmez.";
+
+/** 0035: title of the Burgan bank's fee share taken off the financed part of a ciro_share doctor's lines. */
+export const FINANCING_FEE_LABEL = "Banka kesintisi";
+
+/** 0035: how a Burgan-financed part counts (month summary, lines, Hakedişim). */
+export const FINANCING_NOTE =
+  "Finansman (Burgan): hastanın Burgan kredisiyle ödediği havale kısmı. Hekimin cirosuna bankanın kesintisi " +
+  "(komisyon, KKDF ve BSMV; kredi tutarına oranla) düşülerek girer, kalan tutara kuralın finansman kesintisi " +
+  "uygulanır. Ortodonti kuralında banka kesintisi düşülmez. Klinik cirosu (yönetim payı) brüt tutarla hesaplanır.";
+
+/** 0035: rules editor hint of the financing deduction (ciro_share / ortho_lab_first). */
+export const FINANCING_DEDUCT_HINT =
+  "Burgan kredisiyle ödenen havale kısmı “Finansman (Burgan)” sayılır; ciro payı kuralında bankanın kesintisi " +
+  "(komisyon, KKDF ve BSMV) önce düşülür, bu oran kalan tutara uygulanır. Ortodonti kuralında banka kesintisi düşülmez.";
+
+/** 0035: the Macro import page's note on the Burgan matching (lines imported before 0035 have no payment day). */
+export const FINANCING_IMPORT_HINT =
+  "Burgan ile ödenen havaleler hasta finansmanı kayıtlarıyla eşleştirilir; eşleşmeyen Burgan kayıtları ay özetinde " +
+  "uyarı olarak çıkar. Eşleştirme havalenin ödeme gününe göre yapılır (kredi gününden en fazla 3 gün önce ya da " +
+  "sonra, aynı hasta adı): bu güncellemeden önce yüklenen aralıklarda ödeme günü yoktur, o aralıkları yeniden yükleyin.";
+
+/**
+ * 0035: the payment method of a revenue line as shown in the line lists (fin_hk_month / hk_my_month lines): a line paid
+ * whole by a Burgan loan shows "Finansman (Burgan)" with the bank's fee share as note ("banka kesintisi ₺X", none when
+ * 0); a line paid partly by it keeps its method with the note "₺P Finansman (Burgan) · banka kesintisi ₺X"; any other
+ * line its own method without a note.
+ */
+export function lineMethodText(l: {
+  method: HkLineMethod;
+  try_cents: number;
+  resolved_method?: HkLineMethod | null;
+  financing_cents?: number | null;
+  fee_cents?: number | null;
+}): { label: string; note: string | null } {
+  const part = l.financing_cents ?? 0;
+  if (l.resolved_method !== "financing" || part === 0) return { label: METHOD_LABELS[l.method] ?? l.method, note: null };
+  const fee = l.fee_cents ?? 0;
+  const feeText = fee ? `${FINANCING_FEE_LABEL.toLocaleLowerCase("tr")} ${formatTL(fee)}` : null;
+  if (part === l.try_cents) return { label: METHOD_LABELS.financing, note: feeText };
+  return {
+    label: METHOD_LABELS[l.method] ?? l.method,
+    note: [`${formatTL(part)} ${METHOD_LABELS.financing}`, feeText].filter(Boolean).join(" · "),
+  };
+}
 
 export const EXT_DOCTOR_MODE_LABELS: Record<HkExtDoctorMode, string> = {
   doctor: "DentOS hekimi",
@@ -883,6 +931,20 @@ export interface HkLineJson extends HkVoidable, HkStamped {
   proc_group_name?: string | null;
   /** 0033, Macro import: the patient file number (D. NO) */
   macro_patient_no?: string | null;
+  /**
+   * 0035, Macro import: the payment day of a part paid in money (every transfer part of a production line, every
+   * payment-basis line); null on cash / card / unpaid production parts, manual lines and lines imported before 0035
+   */
+  paid_on?: string | null;
+  /**
+   * 0035: 'financing' when a part of the line was paid with a Burgan patient loan (matched at compute time), else the
+   * line's method; null on voided lines, absent before 0035
+   */
+  resolved_method?: HkLineMethod | null;
+  /** 0035: the part of try_cents paid by the loan (= try_cents when the whole line matched, 0 without a match) */
+  financing_cents?: number | null;
+  /** 0035: the bank's fee share taken off that part in the calculation (0 unless the line's rule is ciro_share) */
+  fee_cents?: number | null;
 }
 
 /** Pieces (implant_piece rules; from 0033 also procedure_piece rules, by procedure group). */
@@ -1062,8 +1124,14 @@ export interface HkMethodBucketJson {
   /** gross − implant − lab */
   eligible: number;
   deduct_bp: number;
-  /** round_half_away(eligible × deduct_bp / 10000) */
+  /** round_half_away((eligible − fee) × deduct_bp / 10000) */
   deduction: number;
+  /**
+   * 0035, the 'financing' bucket only (always there from 0035; absent in statements closed before it, read as 0): the
+   * Burgan bank's fee share of the bucket's lines (0 under ortho_lab_first); the bucket adds eligible − fee − deduction
+   * to the base
+   */
+  fee?: number;
 }
 
 /**
@@ -1281,7 +1349,41 @@ export type HkWarningJson =
       /** distinct patient keys */
       patients: number;
       lines: number;
+    }
+  | {
+      /**
+       * 0035 (informational): the month's live lines with a part paid by a Burgan patient loan (counted net of the
+       * bank's fee share). Only when count > 0.
+       */
+      code: "FINANCING_MATCHED";
+      /** lines */
+      count: number;
+      /** Σ financing_cents of those lines */
+      gross_cents: number;
+      /** Σ fee_cents of those lines */
+      fee_cents: number;
+    }
+  | {
+      /**
+       * 0035 (informational): the month's live Burgan financings (loan day in the month) that no transfer line of any
+       * month matched, so the patient names / payment days can be checked. Only when count > 0 and a live line of the
+       * month has a payment day (paid_on): a month imported before 0035 or never imported lists no loans.
+       */
+      code: "FINANCING_UNMATCHED";
+      count: number;
+      /** by day, patient, id */
+      financings: HkFinancingUnmatchedJson[];
     };
+
+/** A Burgan financing of the FINANCING_UNMATCHED warning (0035). */
+export interface HkFinancingUnmatchedJson {
+  /** the loan day (txn_date) */
+  day: string;
+  /** the patient name on the bank statement (patient_name_raw, trimmed) */
+  patient: string;
+  /** the loan's gross amount; left out for a caller without ledger access (the preparer) */
+  gross_cents?: number;
+}
 
 /** A procedure group of the UNASSIGNED_PIECES warning (0033). */
 export interface HkUnassignedGroupJson {
@@ -1446,6 +1548,12 @@ export interface HkMyLineJson {
   /** 0033, an imported line: the Macro operation and tooth */
   procedure?: string | null;
   tooth?: string | null;
+  /** 0035: 'financing' when a part of the line was paid with a Burgan patient loan, else the line's method */
+  resolved_method?: HkLineMethod | null;
+  /** 0035: the part of try_cents paid by the loan (0 without a match) */
+  financing_cents?: number | null;
+  /** 0035: the bank's fee share taken off that part (0 unless the line's rule is ciro_share) */
+  fee_cents?: number | null;
 }
 
 export interface HkMyPieceJson {
@@ -1745,6 +1853,13 @@ export interface HkImportLineArg {
   currency: HkCurrency;
   /** > 0, except a correction (negative report row) */
   amount_cents: number;
+  /**
+   * 0035 (v2.3), 'YYYY-MM-DD': the payment day of a part paid in money (absent / null = unknown, the 0034 payload).
+   * buildMacroImport sends it on every transfer part of a production line (one line per payment day; never after the
+   * treatment's month) and on every payment-basis line (= day); cash / card / unpaid production parts go without it.
+   * The hakediş calculation matches the transfer lines with a paid_on to the Burgan patient loans.
+   */
+  paid_on?: string | null;
 }
 
 /** One element of fin_hk_import_macro p_pieces: one per treatments row in the range (whatever its price). */
@@ -2541,6 +2656,9 @@ export function componentTitle(
   return parts.join(" · ");
 }
 
+/** FINANCING_UNMATCHED: financings named in the warning text (the rest are counted). */
+export const FINANCING_UNMATCHED_SHOWN = 10;
+
 export function warningText(w: HkWarningJson): string {
   switch (w.code) {
     case "UNRULED_LINES":
@@ -2571,6 +2689,18 @@ export function warningText(w: HkWarningJson): string {
     }
     case "UNMARKED_AS_CHILD":
       return `${w.doctor_name || "Hekim"}: ${w.patients} hasta işaretsiz olduğu için çocuk sayıldı (${w.lines} satır); yetişkinse işaretleyin.`;
+    case "FINANCING_MATCHED":
+      return `Burgan finansmanı: ${w.count} satırın ${formatTL(w.gross_cents)} tutarındaki kısmı hasta kredisiyle ödendi${
+        w.fee_cents ? `; hekim cirosuna banka kesintisi (${formatTL(w.fee_cents)}) düşülerek girdi` : ""
+      }.`;
+    case "FINANCING_UNMATCHED": {
+      const list = w.financings ?? [];
+      const shown = list
+        .slice(0, FINANCING_UNMATCHED_SHOWN)
+        .map((f) => `${formatDay(f.day)} ${f.patient}${typeof f.gross_cents === "number" ? ` (${formatTL(f.gross_cents)})` : ""}`);
+      if (list.length > FINANCING_UNMATCHED_SHOWN) shown.push(`${list.length - FINANCING_UNMATCHED_SHOWN} kayıt daha`);
+      return `${w.count} Burgan finansmanı hiçbir havale satırıyla eşleşmedi${shown.length ? ` (${shown.join(", ")})` : ""}; hasta adını ve ödeme gününü Macro'daki havaleyle karşılaştırın.`;
+    }
     default:
       return "Bilinmeyen uyarı.";
   }
@@ -2579,7 +2709,8 @@ export function warningText(w: HkWarningJson): string {
 /**
  * Payee table row (§2): ciro by method, implant part, lab, deductions, base, share, implants, management, total; from
  * 0031 also the fixed salary and the month's bonus / other rows; from 0032 the minimum top-up and the ciro_share lab
- * deduction; from 0033 the unpaid ciro (gross_by_method.unpaid) and the procedure piece fees.
+ * deduction; from 0033 the unpaid ciro (gross_by_method.unpaid) and the procedure piece fees; from 0035 the Burgan
+ * bank's fee share (fee_cents).
  */
 export interface HkPayeeSummary {
   gross_by_method: Record<HkLineMethod, number>;
@@ -2594,6 +2725,11 @@ export interface HkPayeeSummary {
   ciro_lab_cents: number;
   /** 0032: Σ ciro_share lab_excess_cents (lab costs above the ciro, left with the clinic) */
   lab_excess_cents: number;
+  /**
+   * 0035: Σ the Burgan bank's fee share of the financing buckets (by_method.financing.fee; 0 without one). gross −
+   * implant − lab − fee − deduction = base.
+   */
+  fee_cents: number;
   deduction_cents: number;
   base_cents: number;
   share_cents: number;
@@ -2632,6 +2768,7 @@ export function emptyPayeeSummary(totalCents = 0): HkPayeeSummary {
     lab_cents: 0,
     ciro_lab_cents: 0,
     lab_excess_cents: 0,
+    fee_cents: 0,
     deduction_cents: 0,
     base_cents: 0,
     share_cents: 0,
@@ -2667,6 +2804,7 @@ export function sumPayeeSummaries(rows: readonly HkPayeeSummary[]): HkPayeeSumma
     out.lab_cents += s.lab_cents;
     out.ciro_lab_cents += s.ciro_lab_cents;
     out.lab_excess_cents += s.lab_excess_cents;
+    out.fee_cents += s.fee_cents;
     out.deduction_cents += s.deduction_cents;
     out.base_cents += s.base_cents;
     out.share_cents += s.share_cents;
@@ -2729,6 +2867,7 @@ export function summarizePayee(p: {
         s.gross_cents += b.gross;
         s.implant_cents += b.implant;
         s.lab_cents += b.lab;
+        s.fee_cents += b.fee ?? 0;
         s.deduction_cents += b.deduction;
       }
       s.lab_cents += c.lab_cents ?? 0;
@@ -2911,8 +3050,36 @@ export interface HkComputeLine {
   implant_cents: number;
   segment: HkSegment | null;
   voided_at?: string | null;
-  /** walk order tie-breaker of ortho lab-first: (day, created_at, id) */
+  /** walk order tie-breaker of ortho lab-first: (day, created_at, id); 0035: of a Burgan loan's lines too */
   created_at?: string;
+  /** 0033, Macro import: the treatment day (0035: the loan's line order after paid_on; day when absent) */
+  treatment_day?: string | null;
+  /** 0035, Macro import: the payment day ('YYYY-MM-DD'); a live transfer line with one can match a Burgan loan */
+  paid_on?: string | null;
+  /**
+   * 0035, used only without `financings` in the input (the preparer cannot read the loans): the line's financing part
+   * and fee share as fin_hk_month returns them per line
+   */
+  financing_cents?: number | null;
+  fee_cents?: number | null;
+}
+
+/**
+ * A Burgan patient loan as the engine needs it (0035; fin_patient_financing, finance readers only): the loan day
+ * (txn_date), the patient name on the bank statement (patient_name_raw), the full name of the DentOS patient it is
+ * linked to (patient_id), the gross amount and the bank's fee (commission + KKDF + BSMV).
+ */
+export interface HkComputeFinancing {
+  id: string;
+  /** txn_date, 'YYYY-MM-DD' */
+  day: string;
+  /** patient_name_raw */
+  patient_name: string;
+  /** the linked DentOS patient's full name, if any */
+  linked_patient_name?: string | null;
+  gross_cents: number;
+  fee_cents: number;
+  voided_at?: string | null;
 }
 
 export interface HkComputePiece {
@@ -2995,6 +3162,12 @@ export interface HkComputeInput {
   proc_groups?: readonly HkComputeProcGroup[];
   /** fin_settings hakediş fields; child_age_limit defaults to HK_DEFAULT_CHILD_AGE_LIMIT */
   settings?: { child_age_limit?: number | null } | null;
+  /**
+   * 0035: the clinic's Burgan patient loans (voided ones are ignored), matched to the transfer lines of any month
+   * (financingLinksOf). Absent: each line's own financing_cents / fee_cents (as fin_hk_month returns them) are used and
+   * FINANCING_UNMATCHED is not reported. Given: FINANCING_UNMATCHED only when a live line of the month has a paid_on.
+   */
+  financings?: readonly HkComputeFinancing[];
   doctors?: readonly { id: string; name: string }[];
   payees?: readonly { user_id: string; name: string }[];
   /** payees that have a physician counterparty; when given, NO_COUNTERPARTY is reported for the others (total ≠ 0) */
@@ -3009,6 +3182,12 @@ export interface HkLineResult {
   segment_source: HkSegmentSource;
   rule_id: string | null;
   lab_part: number;
+  /** 0035: 'financing' when a part of the line is paid by a Burgan loan, else the line's method */
+  resolved_method: HkLineMethod;
+  /** 0035: that part of try_cents (0 without a match) */
+  financing_cents: number;
+  /** 0035: the bank's fee share of that part (ciro_share rules only, else 0) */
+  fee_cents: number;
 }
 
 /** Per-cost resolution of the month's live lab costs (0032, fin_hk_month lab_costs: resolved_segment, rule_id). */
@@ -3113,6 +3292,8 @@ const emptyBucket = (rule: HkComputeRule, method: HkLineMethod): HkMethodBucketJ
   eligible: 0,
   deduct_bp: rule[DEDUCT_FIELD[method]] ?? 0,
   deduction: 0,
+  // 0035: the bank's fee share, on the financing bucket only (always there).
+  ...(method === "financing" ? { fee: 0 } : {}),
 });
 
 /** The four payment method buckets, plus 'unpaid' (0033) when the rule has a deduct_unpaid_bp. */
@@ -3229,6 +3410,91 @@ function orthoWalk(
   return { labPart, patients, labInMonth };
 }
 
+/** 0035: a Burgan matching window of ±3 days around the loan day. */
+export const HK_FINANCING_WINDOW_DAYS = 3;
+
+/** A line's Burgan financing part (financingLinksOf, 0035). */
+export interface HkFinancingLink {
+  financing_id: string;
+  /** the part of the line's try_cents the loan paid (> 0) */
+  financing_cents: number;
+  /** the loan's gross amount and bank fee (the line's fee share is fee × eligible part / gross) */
+  gross_cents: number;
+  fee_cents: number;
+}
+
+const dayIndex = (day: string) => Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / 86_400_000;
+
+/**
+ * Mirror of fin__hk_financing_links (0035): the Burgan financing part of every line (of any month), keyed by line id.
+ * Candidates: live 'transfer' lines with a paid_on and try_cents > 0. A live loan answers to its normalized statement
+ * name and, when linked, to its DentOS patient's normalized full name (normalizePatientRef = fin__normalize_name); a line
+ * belongs to the nearest loan of its patient name within ±3 days of paid_on (tie: the earliest loan day, then the lowest
+ * id), never to a second one. Per loan, its lines in (paid_on, treatment day (else day), created_at, id) order take its
+ * gross amount until it is used up: a line's part = min(its try_cents, what is left); a line after that has none.
+ */
+export function financingLinksOf(
+  lines: readonly HkComputeLine[],
+  financings: readonly HkComputeFinancing[]
+): Map<string, HkFinancingLink> {
+  const loansByName = new Map<string, HkComputeFinancing[]>();
+  for (const f of financings) {
+    if (!isLive(f)) continue;
+    const names = new Set([normalizePatientRef(f.patient_name), normalizePatientRef(f.linked_patient_name)]);
+    names.forEach((name) => {
+      if (!name) return;
+      const list = loansByName.get(name) ?? [];
+      list.push(f);
+      loansByName.set(name, list);
+    });
+  }
+  const linesOf = new Map<HkComputeFinancing, HkComputeLine[]>();
+  for (const l of lines) {
+    if (!isLive(l) || l.method !== "transfer" || !l.paid_on || !(l.try_cents > 0)) continue;
+    const paid = dayIndex(l.paid_on);
+    let best: HkComputeFinancing | null = null;
+    let bestGap = Infinity;
+    for (const f of loansByName.get(normalizePatientRef(l.patient_name)) ?? []) {
+      const gap = Math.abs(dayIndex(f.day) - paid);
+      if (gap > HK_FINANCING_WINDOW_DAYS) continue;
+      if (!best || gap < bestGap || (gap === bestGap && (byText(f.day, best.day) || byText(f.id, best.id)) < 0)) {
+        best = f;
+        bestGap = gap;
+      }
+    }
+    if (!best) continue;
+    const list = linesOf.get(best) ?? [];
+    list.push(l);
+    linesOf.set(best, list);
+  }
+  const out = new Map<string, HkFinancingLink>();
+  linesOf.forEach((list, f) => {
+    list.sort(
+      (a, b) =>
+        byText(a.paid_on ?? "", b.paid_on ?? "") ||
+        byText(a.treatment_day || a.day, b.treatment_day || b.day) ||
+        byText(a.created_at ?? "", b.created_at ?? "") ||
+        byText(a.id, b.id)
+    );
+    let taken = 0;
+    for (const l of list) {
+      if (taken >= f.gross_cents) break;
+      out.set(l.id, {
+        financing_id: f.id,
+        financing_cents: Math.min(l.try_cents, f.gross_cents - taken),
+        gross_cents: f.gross_cents,
+        fee_cents: f.fee_cents,
+      });
+      taken += l.try_cents;
+    }
+  });
+  return out;
+}
+
+/** round_half_away(a × b / c) in BigInt (fin__hk_round_div; 0 when c is 0). */
+const mulDiv = (a: number, b: number, c: number) =>
+  c === 0 ? 0 : Number(c > 0 ? roundHalfAwayDiv(BigInt(a) * BigInt(b), BigInt(c)) : -roundHalfAwayDiv(BigInt(a) * BigInt(b), BigInt(-c)));
+
 /**
  * Pure TypeScript mirror of fin_hk__compute(clinic, month). Rounding is half away from zero on exact integers
  * (BigInt), applied once per method bucket (deduction) and once per component (share), exactly like the SQL.
@@ -3270,6 +3536,16 @@ function orthoWalk(
  * name, then id) counts per doctor the month's live lines whose source is 'unmarked_default' (lines and distinct
  * patient keys; never a lab cost). Pieces still count by doctor_id (a piece moved by fin_hk_assign_piece counts for
  * its new doctor).
+ * Burgan (0035): a line's financing part F (financingLinksOf over `financings`, else the line's own financing_cents)
+ * goes to the 'financing' bucket with its implant share (all of the implant when F is the whole line, else
+ * round(implant × F / try)) and, under ortho_lab_first, its lab share (likewise, at most F − implant share); the rest of
+ * the line stays under its method (the line counts once). The bank's fee share of a ciro_share line is round((F −
+ * implant share − lab share) × loan fee / loan gross) per line (ortho_lab_first and lines without a rule: 0); the
+ * financing bucket carries fee = Σ, its deduction is round((eligible − fee) × bp / 10000) and it adds eligible − fee −
+ * deduction to the base. clinic_total_cents stays the gross of every live line. FINANCING_MATCHED (the month's lines
+ * with F > 0: count, Σ F, Σ fee) and, with `financings`, FINANCING_UNMATCHED (the live loans dated in the month that
+ * no line of any month matched; by day, patient, id; only when a live line of the month has a paid_on: a month imported
+ * before 0035 or never imported lists no loans) come after UNMARKED_AS_CHILD.
  */
 export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const month = monthKey(input.month);
@@ -3366,6 +3642,23 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     });
   }
 
+  // 0035: the Burgan financing part of a line (fin__hk_eval_lines): matched here, else as the server returned it.
+  const links = input.financings ? financingLinksOf(input.lines, input.financings) : null;
+  const financingOf = (l: HkComputeLine, kind: HkKind | null, lab: number) => {
+    const link = links ? links.get(l.id) : undefined;
+    const part = links ? link?.financing_cents ?? 0 : l.financing_cents ?? 0;
+    if (part <= 0 || l.try_cents <= 0) return { part: 0, implant: 0, lab: 0, fee: 0 };
+    const whole = part === l.try_cents;
+    const implant = whole ? l.implant_cents : mulDiv(l.implant_cents, part, l.try_cents);
+    const labShare = Math.min(whole ? lab : mulDiv(lab, part, l.try_cents), part - implant);
+    let fee = 0;
+    if (kind === "ciro_share") {
+      fee = link ? mulDiv(part - implant - labShare, link.fee_cents, link.gross_cents) : l.fee_cents ?? 0;
+    }
+    return { part, implant, lab: labShare, fee };
+  };
+  const financed = { count: 0, gross: 0, fee: 0 };
+
   // Revenue lines → rule (ortho first, then the segment's ciro rule, then the standard one).
   const lineResults: HkLineResult[] = [];
   const unruled = new Map<string, { count: number; try_cents: number }>();
@@ -3381,30 +3674,53 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       u.lines += 1;
       unmarkedAsChild.set(l.doctor_id, u);
     }
+    const rule = l.doctor_id ? ruleFor(l.doctor_id, segment) : undefined;
+    const lab = rule?.kind === "ortho_lab_first" ? walks.get(rule.id)?.labPart.get(l.id) ?? 0 : 0;
+    // 0035: a line without a doctor or a rule still uses its loan (no fee share).
+    const fin = financingOf(l, rule?.kind ?? null, lab);
+    if (fin.part > 0) {
+      financed.count += 1;
+      financed.gross += fin.part;
+      financed.fee += fin.fee;
+    }
+    const resolved = {
+      resolved_method: fin.part > 0 ? ("financing" as const) : l.method,
+      financing_cents: fin.part,
+      fee_cents: fin.fee,
+    };
     if (!l.doctor_id) {
       // 0033: clinic / outside doctor revenue: in the clinic ciro only, never unruled.
-      lineResults.push({ id: l.id, segment, segment_source: source, rule_id: null, lab_part: 0 });
+      lineResults.push({ id: l.id, segment, segment_source: source, rule_id: null, lab_part: 0, ...resolved });
       continue;
     }
-    const rule = ruleFor(l.doctor_id, segment);
     if (!rule) {
       const u = unruled.get(l.doctor_id) ?? { count: 0, try_cents: 0 };
       u.count += 1;
       u.try_cents += l.try_cents;
       unruled.set(l.doctor_id, u);
-      lineResults.push({ id: l.id, segment, segment_source: source, rule_id: null, lab_part: 0 });
+      lineResults.push({ id: l.id, segment, segment_source: source, rule_id: null, lab_part: 0, ...resolved });
       continue;
     }
-    const lab = rule.kind === "ortho_lab_first" ? walks.get(rule.id)?.labPart.get(l.id) ?? 0 : 0;
     const c = components.get(rule.id)!;
     const byMethod = c.by_method!;
-    const b = (byMethod[l.method] ??= emptyBucket(rule, l.method));
-    b.gross += l.try_cents;
-    b.implant += l.implant_cents;
-    b.lab += lab;
-    b.eligible += l.try_cents - l.implant_cents - lab;
+    if (fin.part > 0) {
+      // 0035: the financed part, net of the bank's fee share in the base.
+      const fb = (byMethod.financing ??= emptyBucket(rule, "financing"));
+      fb.gross += fin.part;
+      fb.implant += fin.implant;
+      fb.lab += fin.lab;
+      fb.eligible += fin.part - fin.implant - fin.lab;
+      fb.fee = (fb.fee ?? 0) + fin.fee;
+    }
+    if (fin.part === 0 || l.try_cents !== fin.part) {
+      const b = (byMethod[l.method] ??= emptyBucket(rule, l.method));
+      b.gross += l.try_cents - fin.part;
+      b.implant += l.implant_cents - fin.implant;
+      b.lab += lab - fin.lab;
+      b.eligible += l.try_cents - fin.part - (l.implant_cents - fin.implant) - (lab - fin.lab);
+    }
     c.lines_count += 1;
-    lineResults.push({ id: l.id, segment, segment_source: source, rule_id: rule.id, lab_part: lab });
+    lineResults.push({ id: l.id, segment, segment_source: source, rule_id: rule.id, lab_part: lab, ...resolved });
   }
 
   // The month's live lab costs → rule, like a revenue line of the patient on the cost's day (0032). Costs of an ortho
@@ -3437,8 +3753,10 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       for (const method of HK_LINE_METHODS) {
         const b = c.by_method[method];
         if (!b) continue;
-        b.deduction = applyBp(b.eligible, b.deduct_bp);
-        base += b.eligible - b.deduction;
+        // 0035: the financing bucket is deducted (and counted) net of the bank's fee share.
+        const fee = b.fee ?? 0;
+        b.deduction = applyBp(b.eligible - fee, b.deduct_bp);
+        base += b.eligible - fee - b.deduction;
       }
       const labs = labsOfRule.get(ruleId);
       if (labs) {
@@ -3682,6 +4000,26 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     });
   });
   warnings.push(...unmarkedWarnings.sort(byDoctorWarning));
+  // 0035 (informational): the month's lines with a Burgan financing part, then the month's loans no line matched.
+  if (financed.count > 0) {
+    warnings.push({ code: "FINANCING_MATCHED", count: financed.count, gross_cents: financed.gross, fee_cents: financed.fee });
+  }
+  // FINANCING_UNMATCHED only in a month with a live line that has a payment day (SQL: EXISTS on fin_hk_lines.paid_on);
+  // the loans of a month imported before 0035, or never imported, are not listed.
+  if (input.financings && links && monthLines.some((l) => !!l.paid_on)) {
+    const used = new Set(Array.from(links.values(), (k) => k.financing_id));
+    const unmatched = input.financings
+      .filter((f) => isLive(f) && monthKey(f.day) === month && !used.has(f.id))
+      .map((f) => ({ id: f.id, day: f.day.slice(0, 10), patient: f.patient_name.replace(/^ +| +$/g, ""), gross_cents: f.gross_cents }))
+      .sort((a, b) => byText(a.day, b.day) || byName(a.patient, b.patient) || byText(a.id, b.id));
+    if (unmatched.length > 0) {
+      warnings.push({
+        code: "FINANCING_UNMATCHED",
+        count: unmatched.length,
+        financings: unmatched.map(({ day, patient, gross_cents }) => ({ day, patient, gross_cents })),
+      });
+    }
+  }
 
   // Doctor × lab summary (0032): the month's live costs of every doctor, and what was deducted from each doctor's
   // figures this month per lab (ciro_share: each rule's lab_cents split over its labs; ortho: the walk's recovery).

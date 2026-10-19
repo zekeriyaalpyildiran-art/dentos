@@ -4,7 +4,9 @@
 // cash split of 0032 when a payee has a bank part; v1.4: the lab costs taken off the ciro in the Lab column and the
 // minimum top-up; 0033: the 'Ödenmemiş' column and the procedure piece fees), the warnings, the close / reopen of the
 // month (finance mode only) and the lines and pieces per doctor (by procedure group). 0034: the informational
-// UNMARKED_AS_CHILD warning (a doctor's unmarked patients counted as children) with a link to the marks.
+// UNMARKED_AS_CHILD warning (a doctor's unmarked patients counted as children) with a link to the marks. 0035: the
+// Burgan bank's fee share (column and breakdown), the financed part of each line and the informational
+// FINANCING_MATCHED / FINANCING_UNMATCHED warnings (the preparer sees no loan amounts).
 
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
@@ -14,6 +16,7 @@ import {
   HakedisTabs,
   MonthPicker,
   MonthStatusBadge,
+  hkMonthLock,
   useHkMonth,
   useHkMonthData,
   useHkReference,
@@ -22,6 +25,8 @@ import {
 import { Card, ErrorBox, Loading, Modal, SuccessBox, buttonDanger, buttonPrimary, buttonSecondary } from "./ui";
 import { formatDay, formatMonth, formatTL, formatTimestamp, toFinanceError, type FinanceError } from "@/lib/finance";
 import {
+  FINANCING_FEE_LABEL,
+  FINANCING_NOTE,
   HK_LINE_METHODS,
   HK_METHODS,
   KIND_LABELS,
@@ -39,6 +44,7 @@ import {
   hkCanPrepare,
   hkLedgerVisible,
   isLabWarning,
+  lineMethodText,
   monthKey,
   sumPayeeSummaries,
   summarizePayee,
@@ -79,6 +85,9 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
   if (!ref.data || !month) {
     return ref.loading ? <Loading /> : <ErrorBox error={ref.error} onReload={ref.reload} />;
   }
+  // 0035: the month's range can still be imported again (open, no later month closed; fin_hk_import_macro refuses
+  // the rest), so the FINANCING_UNMATCHED help points to the Macro import only then.
+  const reimportable = !!current && current.status === "open" && !hkMonthLock(ref.data, current.status, month);
 
   const toggle = (id: string) =>
     setOpen((prev) => {
@@ -193,6 +202,35 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                   </Link>{" "}
                   sayfasında satırdaki “İşaretle” ile “Yetişkin” olarak işaretleyin (hasta grubu notu “işaretsiz — hekimin
                   varsayılanı” olan satırlar).
+                </p>
+              )}
+              {current.warnings.some((w) => w.code === "FINANCING_UNMATCHED") && (
+                <p className="pt-1">
+                  Bilgi amaçlıdır, ayın kapatılmasını engellemez. Eşleşmeyen Burgan kaydının hastası bu ay Macro&apos;dan
+                  havaleyle ödemiş görünmüyor: hasta adının Macro&apos;dakiyle aynı yazıldığını ve havalenin ödeme gününün
+                  kredi gününden en fazla 3 gün önce ya da sonra olduğunu kontrol edin. Bu güncellemeden önce yüklenen
+                  aralıklarda ödeme günü yoktur
+                  {reimportable ? (
+                    <>
+                      ; o aralıkları{" "}
+                      <Link href={`${base}/import`} className="underline">
+                        Macro yükleme
+                      </Link>{" "}
+                      sayfasından yeniden yükleyin.
+                    </>
+                  ) : (
+                    "; kapatılmış aylar yeniden yüklenemez."
+                  )}
+                  {mode === "finance" && (
+                    <>
+                      {" "}
+                      Finansman kayıtları{" "}
+                      <Link href="/finance/financing" className="underline">
+                        Hasta finansmanı
+                      </Link>{" "}
+                      sayfasındadır.
+                    </>
+                  )}
                 </p>
               )}
               {current.warnings.some(isLabWarning) && (
@@ -389,9 +427,17 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
   // 0033: the 'Ödenmemiş' column when a payee has unpaid (Macro) ciro, the procedure fee column with procedure_piece.
   const methods: readonly HkLineMethod[] = rows.some((r) => r.s.gross_by_method.unpaid !== 0) ? HK_LINE_METHODS : HK_METHODS;
   const showProcedure = data.payees.some((p) => p.components.some((c) => c.kind === "procedure_piece"));
+  // 0035: the Burgan bank's fee share when a payee's financed lines carry one.
+  const showFee = rows.some((r) => r.s.fee_cents !== 0);
+  // 0035: lines matched to a Burgan loan (counted net of the fee). A manual 'Finansman (Burgan)' line has no loan and
+  // no fee (counted gross), so the net-of-fee note is shown only for matched lines.
+  const financed = data.lines.some(
+    (l) => !l.voided_at && l.resolved_method === "financing" && (l.financing_cents ?? 0) !== 0
+  );
   const colCount =
     12 +
     methods.length +
+    (showFee ? 1 : 0) +
     (showProcedure ? 1 : 0) +
     (showSalary ? 1 : 0) +
     (showAdjustments ? 1 : 0) +
@@ -411,6 +457,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
             ))}
             <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">İmplant payı</th>
             <th className="px-3 py-3 font-semibold text-right">{LAB_LABELS.column}</th>
+            {showFee && <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">{FINANCING_FEE_LABEL}</th>}
             <th className="px-3 py-3 font-semibold text-right">Kesintiler</th>
             <th className="px-3 py-3 font-semibold text-right">Matrah</th>
             <th className="px-3 py-3 font-semibold text-right">Oran</th>
@@ -461,6 +508,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                         <div className="text-xs text-amber-700">klinikte kalan {formatTL(s.lab_excess_cents)}</div>
                       )}
                     </td>
+                    {showFee && <td className={NUM}>{s.fee_cents ? formatTL(-s.fee_cents) : "—"}</td>}
                     <td className={NUM}>{s.deduction_cents ? formatTL(-s.deduction_cents) : "—"}</td>
                     <td className={NUM}>{dash(s.base_cents)}</td>
                     <td className={NUM}>{s.share_bps.length ? s.share_bps.map((bp) => formatBp(bp)).join(" / ") : "—"}</td>
@@ -549,6 +597,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
               ))}
               <td className={NUM}>{totals.implant_cents ? formatTL(-totals.implant_cents) : "—"}</td>
               <td className={NUM}>{totals.lab_cents ? formatTL(-totals.lab_cents) : "—"}</td>
+              {showFee && <td className={NUM}>{totals.fee_cents ? formatTL(-totals.fee_cents) : "—"}</td>}
               <td className={NUM}>{totals.deduction_cents ? formatTL(-totals.deduction_cents) : "—"}</td>
               <td className={NUM}>{dash(totals.base_cents)}</td>
               <td className={NUM} />
@@ -595,6 +644,8 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
         tutar kesintidir). Ay kapatılınca hekimin bütün tutarları tek hakediş kaydına, personelin maaşı ve primi
         personel gideri olarak Finans&apos;a yazılır.
         {showProcedure && " İşlem ücreti: hekimin “İşlem başı ücret” kurallarındaki gruplarda yaptığı işlemler × tutar."}
+        {(showFee || financed) && ` ${FINANCING_NOTE}`}
+        {showFee && ` ${FINANCING_FEE_LABEL}: bu kesintinin hekimin ciro payı kurallarına düşen kısmı.`}
         {showTopup &&
           ` ${MINIMUM_TOPUP_COMPONENT_LABEL}: kişinin bu ayki toplamı taban maaşının altında kaldığı için eklenen fark.`}
         {showBank &&
@@ -733,12 +784,23 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
       )}
       <p className="text-xs text-gray-500 mt-3">
         {moved
-          ? "Kapanıştan sonra hasta işaretleri ya da kurallar değiştiği için güncel hesap farklı. Kapanış dökümü ve finans kaydı değişmez; düzeltmek için ayı yeniden açıp tekrar kapatın (yalnızca klinik sahibi)."
+          ? "Kapanıştan sonra hasta işaretleri, kurallar ya da Burgan finansman kayıtları değiştiği için güncel hesap farklı. Kapanış dökümü ve finans kaydı değişmez; düzeltmek için ayı yeniden açıp tekrar kapatın (yalnızca klinik sahibi)."
           : ledger
             ? "Kapanış dökümü ve finans kaydı ay kapatıldığı andaki hesaptır. Ödemeleri finans kaydına ekleyin."
             : "Kapanış dökümü ay kapatıldığı andaki hesaptır; ödemeleri Finans yetkilisi kaydeder."}
       </p>
     </Card>
+  );
+}
+
+/** 0035: the line's payment method; a Burgan-paid line with its financed part and the bank's fee share. */
+function MethodCell({ line }: { line: HkLineJson }) {
+  const { label, note } = lineMethodText(line);
+  return (
+    <>
+      {label}
+      {note && <div className="text-xs text-gray-500">{note}</div>}
+    </>
   );
 }
 
@@ -834,7 +896,9 @@ function LinesByDoctor({ data, month, base }: { data: HkMonthPayload; month: str
                                 </div>
                               )}
                             </td>
-                            <td className="px-3 py-1.5 whitespace-nowrap">{METHOD_LABELS[l.method] ?? l.method}</td>
+                            <td className="px-3 py-1.5 whitespace-nowrap">
+                              <MethodCell line={l} />
+                            </td>
                             <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">
                               {formatTL(l.try_cents)}
                               {l.currency !== "TRY" && (
@@ -893,6 +957,7 @@ function CloseDialog({
   const labWarnings = data.warnings.filter(isLabWarning);
   const unassigned = data.warnings.filter((w) => w.code === "UNASSIGNED_PIECES");
   const unmarked = data.warnings.filter((w) => w.code === "UNMARKED_AS_CHILD");
+  const unmatchedFinancing = data.warnings.filter((w) => w.code === "FINANCING_UNMATCHED");
   const [accept, setAccept] = useState(false);
   const [error, setError] = useState<FinanceError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -986,6 +1051,19 @@ function CloseDialog({
               ))}
             </ul>
             <p>Bu hastalar çocuk sayılarak kapatılır; kapandıktan sonra işaret o ayın dökümünü değiştirmez.</p>
+          </div>
+        )}
+        {unmatchedFinancing.length > 0 && (
+          <div className="p-3 rounded bg-amber-50 text-amber-900 text-sm space-y-1">
+            <ul className="list-disc pl-5 space-y-1">
+              {unmatchedFinancing.map((w, i) => (
+                <li key={i}>{warningText(w)}</li>
+              ))}
+            </ul>
+            <p>
+              Ay yine de kapatılabilir; bu hastaların havaleleri bu ayın dökümünde “{METHOD_LABELS.transfer}” olarak
+              kalır.
+            </p>
           </div>
         )}
         {unruled.length > 0 && (

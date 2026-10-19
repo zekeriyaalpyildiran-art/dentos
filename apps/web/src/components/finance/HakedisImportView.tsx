@@ -6,7 +6,9 @@
 // import without writing (fin_hk_import_macro p_dry_run) and "Yükle" writes it, replacing the earlier import of the
 // same days. 'finance' or 'hakedis_prepare' holders write; the summary carries no ledger data. 0034 (v2.1): outside
 // doctors' pieces are stored as "Hakediş yok", every chosen performing doctor is carried to the new rows, and pieces a
-// user had voided that come back are listed so that the preparer chooses again.
+// user had voided that come back are listed so that the preparer chooses again. 0035 (v2.3): transfers are sent per
+// payment day (paid_on) for the Burgan matching of the hakediş calculation; the page says so and asks for ranges
+// imported before it to be imported again.
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
@@ -16,6 +18,7 @@ import { Card, ErrorBox, Field, Loading, Modal, SuccessBox, buttonPrimary, butto
 import { formatDay, formatTL, formatTimestamp, newId, searchKey, toFinanceError, type FinanceError } from "@/lib/finance";
 import {
   EXT_DOCTOR_MODE_LABELS,
+  FINANCING_IMPORT_HINT,
   METHOD_LABELS,
   extDoctorOf,
   finHkImportMacro,
@@ -294,6 +297,7 @@ export function HakedisImportView({ mode }: { mode: HkMode }) {
           şekilde alın. Aynı günler yeniden yüklenirse önceki yükleme iptal edilip yenisi yazılır; kapatılmış aylara
           yükleme yapılamaz.
         </p>
+        <p>{FINANCING_IMPORT_HINT}</p>
       </div>
 
       <Card title="1. Raporlar">

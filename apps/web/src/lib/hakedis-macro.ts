@@ -12,6 +12,9 @@
 // guessed). buildMacroImport is pure: the owner's rules (hakediş spec v2 macro, decisions 1–3) turn the two reports
 // into the lines and pieces of a day range. Nothing here knows a doctor, a rate or an exchange rate: the server maps
 // the Macro doctors, assigns the procedure groups (and the implant parts) and converts foreign currencies.
+// v2.3 (0035_hakedis_burgan_net.sql): a production line's transfer part is sent per payment day with its paid_on (one
+// line per treatments row and payment day), and a payment-basis line carries its own day as paid_on, so that the
+// hakediş calculation can match the transfers paid with a Burgan patient loan (fin_patient_financing) to the loan.
 
 import { FileReadError, fileTooLarge, loadXlsx, MAX_FILE_BYTES, SHEET_ROWS_PARSED } from "./finance-import/read-file";
 import {
@@ -669,6 +672,27 @@ const PAY_METHODS: readonly MacroPayMethod[] = ["cash", "card", "transfer"];
 export const MACRO_LINE_METHODS: readonly HkImportMethod[] = [...PAY_METHODS, "unpaid"];
 const emptyMethodCents = (): MacroMethodCents => ({ cash: 0, card: 0, transfer: 0, unpaid: 0 });
 
+/** The first payment day fin_hk_lines.paid_on accepts (CHECK fin_hk_lines_paid_on, 0035). */
+const MIN_PAID_ON = "2000-01-01";
+
+const sumOf = (days: ReadonlyMap<string, number>) => Array.from(days.values()).reduce((sum, c) => sum + c, 0);
+
+/**
+ * Takes `cents` back from the cents per payment day, the latest days first (a day taken to 0 is dropped); what the days
+ * cannot cover is dropped too (the method netting of buildMacroImport accounts for it).
+ */
+function takeBackLatest(days: Map<string, number>, cents: number): void {
+  let rest = cents;
+  for (const day of Array.from(days.keys()).sort(byText).reverse()) {
+    if (rest <= 0) return;
+    const have = days.get(day) as number;
+    const take = Math.min(have, rest);
+    rest -= take;
+    if (have === take) days.delete(day);
+    else days.set(day, have - take);
+  }
+}
+
 /**
  * Builds the fin_hk_import_macro payload of [from, to] (owner decisions 2026-10-19):
  *  - production basis (every doctor but the orthodontists): per treatments row in the range with a price, the parts
@@ -679,9 +703,13 @@ const emptyMethodCents = (): MacroMethodCents => ({ cash: 0, card: 0, transfer: 
  *    row) order; what exceeds the prices is dropped (overpaid). A negative payment row (refund) takes back from the
  *    latest filled rows; a refund paid back by another method reduces the other methods' parts of the month (the
  *    treatment's unpaid part grows). Later payments never change a month. A price-0 row gives no line; a negative price gives one
- *    negative 'unpaid' line.
+ *    negative 'unpaid' line. v2.3 (0035): the cash and card parts stay one line per method (no paid_on); the transfer
+ *    part is one line per payment day (key 't<row>:transfer:<day>', paid_on = that day, positive amounts adding up
+ *    to the transfer part): a transfer refund takes back from the latest earlier payment days, and what the netting
+ *    above takes off the transfer part comes off the latest payment days too.
  *  - payment basis (orthoExtDoctors): one line per payments row with ÖDEME in the range and amount ≠ 0 (day = payment
- *    day, method from İŞLEM); patient_no from the treatments report when the patient name has exactly one D. NO there.
+ *    day, method from İŞLEM, v2.3: paid_on = the payment day); patient_no from the treatments report when the patient
+ *    name has exactly one D. NO there.
  *  - pieces: one per treatments row in the range (every doctor, price 0 included); the server keeps the rows of
  *    grouped operations and decides the implant parts.
  * Rows of ignoreExtDoctors are left out. Amounts stay in their currency.
@@ -849,7 +877,16 @@ export function buildMacroImport(input: MacroImportInput): MacroImport {
     }
     const end = monthEndOf(t.day);
     const paid: Record<MacroPayMethod, number> = { cash: 0, card: 0, transfer: 0 };
-    for (const a of s.allocs) if (a.pay_day <= end) paid[a.method] += a.cents;
+    // v2.3: the transfer part by payment day (allocations come in payment day order; a refund takes back from the
+    // latest days before it).
+    const transferDays = new Map<string, number>();
+    for (const a of s.allocs) {
+      if (a.pay_day > end) continue;
+      paid[a.method] += a.cents;
+      if (a.method !== "transfer") continue;
+      if (a.cents > 0) transferDays.set(a.pay_day, (transferDays.get(a.pay_day) ?? 0) + a.cents);
+      else takeBackLatest(transferDays, -a.cents);
+    }
     // A refund paid back by another method takes from the other methods' parts (cash, card, transfer order).
     // Allocations follow the payment days and a refund only takes back what was allocated before it, so the month's
     // net is never negative and the netting always closes.
@@ -865,11 +902,26 @@ export function buildMacroImport(input: MacroImportInput): MacroImport {
       paid[m] -= take;
       back -= take;
     }
+    // v2.3: the payment days keep exactly the transfer part left after the netting (the latest days give first).
+    takeBackLatest(transferDays, sumOf(transferDays) - Math.max(paid.transfer, 0));
     let counted = 0;
     for (const m of PAY_METHODS) {
       if (paid[m] <= 0) continue;
       counted += paid[m];
-      addLine({ key: `t${t.row}:${m}`, ...base, method: m, amount_cents: paid[m] });
+      if (m !== "transfer") {
+        addLine({ key: `t${t.row}:${m}`, ...base, method: m, amount_cents: paid[m] });
+        continue;
+      }
+      for (const day of Array.from(transferDays.keys()).sort(byText)) {
+        addLine({
+          key: `t${t.row}:transfer:${day}`,
+          ...base,
+          method: "transfer",
+          amount_cents: transferDays.get(day) as number,
+          // The server keeps payment days from 2000 on (fin_hk_lines_paid_on); an older one cannot be a Burgan loan.
+          paid_on: day >= MIN_PAID_ON ? day : null,
+        });
+      }
     }
     if (t.amount_cents - counted > 0) {
       addLine({ key: `t${t.row}:unpaid`, ...base, method: "unpaid", amount_cents: t.amount_cents - counted });
@@ -906,6 +958,8 @@ export function buildMacroImport(input: MacroImportInput): MacroImport {
       method: p.method,
       currency: p.currency,
       amount_cents: p.amount_cents,
+      // v2.3: a payments report line is paid on its own day (the server stores that in any case).
+      paid_on: p.pay_day,
     });
   }
 
@@ -1118,7 +1172,7 @@ export function macroRowOfError(
   const n = Number(m[1]);
   const row = (m[2] === "satır" ? imp.lines : imp.pieces)[n - 1];
   if (!row) return null;
-  // Keys: 't<row>' / 't<row>:<method>' (treatments report), 'p<row>' (payments report).
+  // Keys: 't<row>' / 't<row>:<method>' / 't<row>:transfer:<day>' (treatments report), 'p<row>' (payments report).
   const at = /^([tp])(\d+)/.exec(row.key);
   const where = at ? ` · ${MACRO_REPORT_LABELS[at[1] === "t" ? "treatments" : "payments"]}, ${at[2]}. satır` : "";
   return `${m[1]}. ${m[2]}: ${row.patient_name}${where}`;

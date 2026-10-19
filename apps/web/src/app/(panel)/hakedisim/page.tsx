@@ -5,6 +5,8 @@ import { ComponentBreakdown, LabPatientsTable } from "@/components/finance/Haked
 import { Card, ErrorBox, Loading } from "@/components/finance/ui";
 import { formatDay, formatMonth, formatTL, formatTimestamp, toFinanceError, type FinanceError } from "@/lib/finance";
 import {
+  FINANCING_FEE_LABEL,
+  FINANCING_NOTE,
   LAB_LABELS,
   METHOD_LABELS,
   MINIMUM_TOPUP_COMPONENT_LABEL,
@@ -17,6 +19,7 @@ import {
   hkMyMonth,
   hkMyMonths,
   labTotalsOf,
+  lineMethodText,
   monthKey,
   pickDefaultMonth,
   pieceMacroText,
@@ -38,7 +41,9 @@ import { formatMoney } from "@/lib/payments";
  * (0032): the part paid by bank and the rest in cash, when the caller has a bank amount in the month. v1.4 (0032): the
  * month's lab costs taken off the caller's ciro (total, per lab and the cost rows) and the minimum top-up. v2 (0033):
  * the procedure piece fees (pieces by group) and the Macro operation / tooth of imported lines. v2.1 (0034): a piece
- * whose performing doctor was chosen in DentOS (moved to the caller from another Macro doctor) shows "Macro: X".
+ * whose performing doctor was chosen in DentOS (moved to the caller from another Macro doctor) shows "Macro: X". v2.3
+ * (0035): the part of a line paid with a Burgan patient loan shows "Finansman (Burgan)" with the bank's fee share, and
+ * the month's fee share taken off the caller's ciro has its own tile.
  */
 export default function HakedisimPage() {
   return (
@@ -285,8 +290,8 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
   const sums = sumPayeeSummaries(data.payees.map(summarizePayee));
   const split = bankSplitOf({ total_cents: total, bank_cents: sums.bank_cents, cash_cents: sums.cash_cents });
 
-  // The doctor's ciro: gross collections without the implant part and the ortho lab part, so Ciro − Kesintiler − Lab
-  // (the month's lab costs of the ciro_share rules, 0032) = Matrah on the tiles below.
+  // The doctor's ciro: gross collections without the implant part and the ortho lab part, so Ciro − Banka kesintisi
+  // (0035, Burgan) − Kesintiler − Lab (the month's lab costs of the ciro_share rules, 0032) = Matrah on the tiles below.
   const orthoLab = s.lab_cents - s.ciro_lab_cents;
   const ciroCents = s.gross_cents - s.implant_cents - orthoLab;
   const ciroCaption =
@@ -331,6 +336,9 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
           {hasShare && (
             <>
               <SummaryTile label="Ciro" cents={ciroCents} caption={ciroCaption || undefined} />
+              {s.fee_cents !== 0 && (
+                <SummaryTile label={FINANCING_FEE_LABEL} cents={-s.fee_cents} caption="Burgan kredisiyle ödenen kısımdan" />
+              )}
               <SummaryTile label="Kesintiler" cents={s.deduction_cents ? -s.deduction_cents : 0} caption="Ödeme şekline göre" />
               {hasCiroLab && (
                 <SummaryTile
@@ -594,6 +602,8 @@ function LabCard({
  * as not counted). hk_my_month never returns a line counted under another payee's rule.
  */
 function LinesCard({ lines }: { lines: HkMyLineJson[] }) {
+  // 0035: the payment method shown, with the Burgan-financed part and the bank's fee share.
+  const paidBy = lines.map(lineMethodText);
   const amount = (l: HkMyLineJson) => (
     <>
       {formatTL(l.try_cents)}
@@ -615,8 +625,9 @@ function LinesCard({ lines }: { lines: HkMyLineJson[] }) {
                   <span className={`tabular-nums text-right ${l.try_cents < 0 ? "text-red-600" : ""}`}>{amount(l)}</span>
                 </div>
                 <div className="text-xs text-gray-600 mt-1">
-                  {formatDay(l.day)} · {METHOD_LABELS[l.method]} · {SEGMENT_LABELS[l.segment] ?? l.segment}
+                  {formatDay(l.day)} · {paidBy[i].label} · {SEGMENT_LABELS[l.segment] ?? l.segment}
                 </div>
+                {paidBy[i].note && <div className="text-xs text-gray-600">{paidBy[i].note}</div>}
                 {l.procedure && (
                   <div className="text-xs text-gray-600">
                     {l.procedure}
@@ -661,7 +672,10 @@ function LinesCard({ lines }: { lines: HkMyLineJson[] }) {
                       )}
                       {!l.counted && <span className="block text-xs">Hakedişinize dahil değil</span>}
                     </td>
-                    <td className="py-2 pr-3 whitespace-nowrap">{METHOD_LABELS[l.method]}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">
+                      {paidBy[i].label}
+                      {paidBy[i].note && <span className="block text-xs text-gray-500">{paidBy[i].note}</span>}
+                    </td>
                     <td className={`py-2 pr-3 text-right tabular-nums whitespace-nowrap ${l.try_cents < 0 ? "text-red-600" : ""}`}>{amount(l)}</td>
                     <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap">{l.implant_cents ? formatTL(l.implant_cents) : "—"}</td>
                     <td className="py-2 pr-3 whitespace-nowrap">{SEGMENT_LABELS[l.segment] ?? l.segment}</td>
@@ -675,6 +689,7 @@ function LinesCard({ lines }: { lines: HkMyLineJson[] }) {
             Tutarlar TL karşılığıdır; eksi tutar düzeltmedir. İmplant payı cironuza girmez (implant adet başı ödenir).
             {lines.some((l) => l.method === "unpaid") &&
               ` “${METHOD_LABELS.unpaid}”: ay içinde yaptığınız işlemin ay sonuna kadar ödenmemiş kısmı; sonradan gelen ödemeler o ayı değiştirmez.`}
+            {lines.some((l) => l.resolved_method === "financing" && (l.financing_cents ?? 0) !== 0) && ` ${FINANCING_NOTE}`}
           </p>
         </>
       )}

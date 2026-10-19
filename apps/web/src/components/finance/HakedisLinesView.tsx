@@ -10,6 +10,8 @@
 // its Macro default back (kept across re-imports; only the piece fee moves, the revenue lines stay with the Macro
 // doctor); outside doctors' pieces arrive as "Hakediş yok". (v2.2): lines and lab costs show where their patient group
 // comes from (the doctor's unmarked default included) and the patient marks carry an explicit child / adult choice.
+// 0035 (v2.3): an imported transfer line shows its payment day and, when a Burgan patient loan paid it (matched at
+// compute time), "Finansman (Burgan) · banka kesintisi X" (the part paid by the loan when only a part was).
 // ?tab=pieces | lab | marks opens that sub-tab (e.g. the Lab özeti's link to the lab costs); default: the lines.
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -52,6 +54,7 @@ import {
 } from "@/lib/finance";
 import {
   EXT_DOCTOR_MODE_LABELS,
+  FINANCING_NOTE,
   HK_METHODS,
   HK_MIN_BIRTH_DATE,
   HK_SEGMENTS,
@@ -79,6 +82,7 @@ import {
   finHkVoidLine,
   finHkVoidPiece,
   hkCanPrepare,
+  lineMethodText,
   markFor,
   markGroupOf,
   markGroupText,
@@ -319,6 +323,7 @@ export function HakedisLinesView({ mode }: { mode: HkMode }) {
           data={current}
           refData={refData}
           editable={editable}
+          reimportable={current.status === "open" && !lock}
           canMark={canWrite && marks !== null}
           marksByRef={marksByRef}
           onAdd={() => setDialog({ kind: "line", record: null })}
@@ -510,6 +515,7 @@ function LinesTab({
   data,
   refData,
   editable,
+  reimportable,
   canMark,
   marksByRef,
   onAdd,
@@ -520,6 +526,8 @@ function LinesTab({
   data: HkMonthPayload;
   refData: HkReferenceJson;
   editable: boolean;
+  /** 0035: the month can still be imported again (open, no later month closed): the re-import hint of undated lines */
+  reimportable: boolean;
   canMark: boolean;
   marksByRef: Map<string, HkMarkJson>;
   onAdd: () => void;
@@ -559,6 +567,12 @@ function LinesTab({
   const sum = (pick: (l: HkLineJson) => number) => liveRows.reduce((s, l) => s + pick(l), 0);
   // 0034: lines counted as a child's only through the doctor's unmarked default (adult patients need a mark).
   const unmarkedChild = data.lines.filter((l) => !l.voided_at && l.segment_source === "unmarked_default").length;
+  // 0035: lines paid (partly) by a Burgan loan, and imported transfers without a payment day (imported before 0035:
+  // paid_on null from the server, never matched until their range is imported again).
+  const financed = data.lines.filter((l) => !l.voided_at && l.resolved_method === "financing" && (l.financing_cents ?? 0) !== 0).length;
+  const undated = data.lines.filter(
+    (l) => !l.voided_at && l.source === "import" && l.method === "transfer" && l.paid_on === null
+  ).length;
 
   return (
     <div className="space-y-3">
@@ -630,6 +644,7 @@ function LinesTab({
                 const voided = !!l.voided_at;
                 const imported = l.source === "import";
                 const mark = markFor(marksByRef, l);
+                const paidBy = lineMethodText(l);
                 return (
                   <tr key={l.id} className={`border-b align-top ${voided ? "text-gray-400" : ""}`}>
                     <td className={`px-3 py-2 whitespace-nowrap ${voided ? "line-through" : ""}`}>
@@ -659,8 +674,12 @@ function LinesTab({
                       <VoidedNote row={l} />
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
-                      {METHOD_LABELS[l.method] ?? l.method}
+                      {paidBy.label}
                       {l.method === "unpaid" && <div className="text-xs text-gray-500">ay sonunda</div>}
+                      {paidBy.note && <div className="text-xs text-gray-500">{paidBy.note}</div>}
+                      {l.paid_on && l.basis === "production" && (
+                        <div className="text-xs text-gray-500">ödeme {formatDay(l.paid_on)}</div>
+                      )}
                     </td>
                     <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${voided ? "line-through" : ""} ${l.try_cents < 0 ? "text-red-600" : ""}`}>
                       {formatTL(l.try_cents)}
@@ -741,6 +760,13 @@ function LinesTab({
           ` Çocuk kuralında “${UNMARKED_DEFAULT_LABEL}” seçili hekimin işaretsiz hastası çocuk sayılır (“${SEGMENT_SOURCE_LABELS.unmarked_default}”; bu ay ${unmarkedChild} satır); hasta yetişkinse “İşaretle” ile “${MARK_GROUP_LABELS.adult}” seçin.`}
         {hasImport &&
           ` Macro'dan aktarılan satırlar işlem gününe göredir (ortodontide ödeme gününe göre); “${METHOD_LABELS.unpaid}” işlemin ay sonuna kadar ödenmemiş kısmıdır. Bu satırlar düzenlenmez: yanlışsa Macro'da düzeltip aralığı yeniden yükleyin ya da satırı iptal edin. Hekimsiz satırlar (klinik / dışarıdan hekim) yalnız klinik cirosuna girer. Macro satırlarının hasta anahtarı dosya numarasıdır (macro:…); hastanın Macro'dan önce adla ya da dosya numarasıyla girilmiş işareti ve lab giderleri bu satırlara da uygulanır, yüklemeden sonra adla girilen işaret dosya numarasına kaydedilir.`}
+        {hasImport &&
+          ` Havaleler ödeme gününe göre ayrı satırdır; hastanın Burgan kredisiyle ödediği havaleler (aynı hasta adı, kredi gününden en fazla 3 gün önce ya da sonra) hesapta “${METHOD_LABELS.financing}” sayılır.`}
+        {financed > 0 && ` ${FINANCING_NOTE}`}
+        {undated > 0 &&
+          (reimportable
+            ? ` Bu ay ödeme günü olmayan ${undated} havale satırı var (bu güncellemeden önce yüklendi); Burgan finansmanıyla eşleşmeleri için aralığı Macro yükleme sayfasından yeniden yükleyin.`
+            : ` Bu ayın ${undated} havale satırında ödeme günü yok (bu güncellemeden önce yüklendi); bu satırlar Burgan finansmanıyla eşleştirilmez ve havale sayılır.`)}
       </p>
     </div>
   );
@@ -1597,7 +1623,14 @@ function LineDialog({
               required
             />
           </Field>
-          <Field label="Ödeme şekli">
+          <Field
+            label="Ödeme şekli"
+            hint={
+              form.method === "financing"
+                ? "Elle girilen finansman satırına banka kesintisi uygulanmaz; Burgan ile ödenen havaleler Macro yüklemesinden hasta finansmanı kayıtlarıyla eşleşir."
+                : undefined
+            }
+          >
             <select className={inputClass} value={form.method} onChange={(e) => set("method", e.target.value as HkMethod)}>
               {HK_METHODS.map((m) => (
                 <option key={m} value={m}>

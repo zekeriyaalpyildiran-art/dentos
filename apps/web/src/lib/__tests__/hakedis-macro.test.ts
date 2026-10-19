@@ -80,9 +80,17 @@ function pay(
 }
 const build = (p: Partial<MacroImportInput> & Pick<MacroImportInput, "treatments">) =>
   buildMacroImport({ payments: [], from: "2026-11-01", to: "2026-11-30", orthoExtDoctors: new Set(), ...p });
-/** The lines of one treatments row: method → amount. */
-const partsOf = (lines: readonly HkImportLineArg[], t: MacroTreatmentRow) =>
-  Object.fromEntries(lines.filter((l) => l.key.startsWith(`t${t.row}:`)).map((l) => [l.method, l.amount_cents]));
+/** The lines of one treatments row: method → amount (v2.3: the transfer parts of all payment days summed). */
+const partsOf = (lines: readonly HkImportLineArg[], t: MacroTreatmentRow) => {
+  const out: Record<string, number> = {};
+  for (const l of lines) if (l.key.startsWith(`t${t.row}:`)) out[l.method] = (out[l.method] ?? 0) + l.amount_cents;
+  return out;
+};
+/** v2.3: the transfer parts of one treatments row: payment day → amount. */
+const transferDaysOf = (lines: readonly HkImportLineArg[], t: MacroTreatmentRow) =>
+  lines
+    .filter((l) => l.key.startsWith(`t${t.row}:`) && l.method === "transfer")
+    .map((l) => [l.paid_on, l.amount_cents, l.key]);
 
 describe("cell values", () => {
   it("matches headers without case, spaces, dots or Turkish letters", () => {
@@ -508,6 +516,137 @@ describe("buildMacroImport: production basis", () => {
   });
 });
 
+describe("buildMacroImport: transfer parts by payment day (v2.3)", () => {
+  it("sends one transfer part per payment day with its paid_on; cash, card and unpaid parts as before", () => {
+    const t = tr({ amount_cents: TL(30_000), day: "2026-11-10" });
+    const payments = [
+      pay(t, { amount_cents: TL(2_000), method: "cash", pay_day: "2026-11-12" }),
+      pay(t, { amount_cents: TL(10_000), method: "transfer", pay_day: "2026-11-05" }),
+      pay(t, { amount_cents: TL(15_000), method: "transfer", pay_day: "2026-11-12" }),
+      pay(t, { amount_cents: TL(1_000), method: "card", pay_day: "2026-11-20" }),
+    ];
+    const out = build({ treatments: [t], payments });
+    // Same method totals as one transfer line would give.
+    expect(partsOf(out.lines, t)).toEqual({ cash: TL(2_000), card: TL(1_000), transfer: TL(25_000), unpaid: TL(2_000) });
+    expect(out.lines.map((l) => [l.key, l.method, l.amount_cents, l.paid_on])).toEqual([
+      [`t${t.row}:cash`, "cash", TL(2_000), undefined],
+      [`t${t.row}:card`, "card", TL(1_000), undefined],
+      [`t${t.row}:transfer:2026-11-05`, "transfer", TL(10_000), "2026-11-05"],
+      [`t${t.row}:transfer:2026-11-12`, "transfer", TL(15_000), "2026-11-12"],
+      [`t${t.row}:unpaid`, "unpaid", TL(2_000), undefined],
+    ]);
+    // Every part keeps the treatment's day; cash / card / unpaid parts carry no paid_on key at all (0034 payload).
+    expect(out.lines.every((l) => l.day === "2026-11-10" && l.treatment_day === "2026-11-10")).toBe(true);
+    expect(out.lines.filter((l) => "paid_on" in l).map((l) => l.method)).toEqual(["transfer", "transfer"]);
+    expect(out.lines[2]).toEqual({
+      key: `t${t.row}:transfer:2026-11-05`,
+      basis: "production",
+      day: "2026-11-10",
+      treatment_day: "2026-11-10",
+      ext_doctor: "Hekim A",
+      patient_name: "Hasta Bir",
+      patient_no: "101",
+      procedure: "Kompozit Dolgu",
+      tooth: "36",
+      method: "transfer",
+      currency: "TRY",
+      amount_cents: TL(10_000),
+      paid_on: "2026-11-05",
+    });
+    expect(macroMethodTotals(out.stats.doctors[0], "TRY")).toEqual({
+      cash: TL(2_000),
+      card: TL(1_000),
+      transfer: TL(25_000),
+      unpaid: TL(2_000),
+    });
+    expect(out.stats.doctors[0]).toMatchObject({ lines: 5, pieces: 1 });
+  });
+
+  it("sums the transfers of one payment day, keeps an advance's own day and leaves later payments unpaid", () => {
+    const t = tr({ amount_cents: TL(9_000), day: "2026-11-03" });
+    const out = build({
+      treatments: [t],
+      payments: [
+        pay(t, { amount_cents: TL(2_000), method: "transfer", pay_day: "2026-10-28" }),
+        pay(t, { amount_cents: TL(1_500), method: "transfer", pay_day: "2026-11-07" }),
+        pay(t, { amount_cents: TL(500), method: "transfer", pay_day: "2026-11-07" }),
+        pay(t, { amount_cents: TL(5_000), method: "transfer", pay_day: "2026-12-01" }),
+      ],
+    });
+    expect(transferDaysOf(out.lines, t)).toEqual([
+      ["2026-10-28", TL(2_000), `t${t.row}:transfer:2026-10-28`],
+      ["2026-11-07", TL(2_000), `t${t.row}:transfer:2026-11-07`],
+    ]);
+    expect(partsOf(out.lines, t)).toEqual({ transfer: TL(4_000), unpaid: TL(5_000) });
+    // Never a payment day after the treatment's month (fin__hk_macro_row refuses one).
+    expect(out.lines.every((l) => !l.paid_on || l.paid_on <= monthEndOf(l.treatment_day))).toBe(true);
+  });
+
+  it("takes a transfer refund back from the latest earlier days, and the method netting from the latest days", () => {
+    const t = tr({ amount_cents: TL(10_000), day: "2026-11-10" });
+    const out = build({
+      treatments: [t],
+      payments: [
+        pay(t, { amount_cents: TL(5_000), method: "transfer", pay_day: "2026-11-03" }),
+        pay(t, { amount_cents: TL(4_000), method: "transfer", pay_day: "2026-11-08" }),
+        pay(t, { amount_cents: TL(500), method: "cash", pay_day: "2026-11-09" }),
+        // 3.000 back by transfer: from the 08.11 part.
+        pay(t, { amount_cents: TL(-3_000), method: "transfer", pay_day: "2026-11-15" }),
+        // 2.000 back in cash, only 500 paid in cash: 1.500 comes off the transfer part, the latest day first.
+        pay(t, { amount_cents: TL(-2_000), method: "cash", pay_day: "2026-11-20" }),
+      ],
+    });
+    expect(partsOf(out.lines, t)).toEqual({ transfer: TL(4_500), unpaid: TL(5_500) });
+    expect(transferDaysOf(out.lines, t)).toEqual([["2026-11-03", TL(4_500), `t${t.row}:transfer:2026-11-03`]]);
+    expect(out.lines.reduce((sum, l) => sum + l.amount_cents, 0)).toBe(TL(10_000));
+  });
+
+  it("never sends a negative or zero transfer part: a refund before any transfer comes off the later days", () => {
+    const t = tr({ amount_cents: TL(5_000), day: "2026-11-10" });
+    const out = build({
+      treatments: [t],
+      payments: [
+        pay(t, { amount_cents: TL(1_000), method: "cash", pay_day: "2026-11-02" }),
+        pay(t, { amount_cents: TL(-1_000), method: "transfer", pay_day: "2026-11-04" }),
+        pay(t, { amount_cents: TL(3_000), method: "transfer", pay_day: "2026-11-06" }),
+      ],
+    });
+    expect(partsOf(out.lines, t)).toEqual({ cash: TL(1_000), transfer: TL(2_000), unpaid: TL(2_000) });
+    expect(transferDaysOf(out.lines, t)).toEqual([["2026-11-06", TL(2_000), `t${t.row}:transfer:2026-11-06`]]);
+    // A transfer refunded whole leaves no transfer line.
+    const back = build({
+      treatments: [t],
+      payments: [
+        pay(t, { amount_cents: TL(2_000), method: "transfer", pay_day: "2026-11-02" }),
+        pay(t, { amount_cents: TL(-2_000), method: "transfer", pay_day: "2026-11-05" }),
+      ],
+    });
+    expect(partsOf(back.lines, t)).toEqual({ unpaid: TL(5_000) });
+    for (const o of [out, back]) expect(o.lines.every((l) => l.method === "unpaid" || l.amount_cents > 0)).toBe(true);
+  });
+
+  it("names the treatments row of a split transfer part in a server row error", () => {
+    const t = tr({ amount_cents: TL(3_000), patient_name: "Hasta On Bir" });
+    const out = build({
+      treatments: [t],
+      payments: [
+        pay(t, { amount_cents: TL(1_000), method: "transfer", pay_day: "2026-11-02" }),
+        pay(t, { amount_cents: TL(2_000), method: "transfer", pay_day: "2026-11-09" }),
+      ],
+    });
+    expect(out.lines.map((l) => l.key)).toEqual([`t${t.row}:transfer:2026-11-02`, `t${t.row}:transfer:2026-11-09`]);
+    expect(macroRowOfError("Macro yüklemesi, 2. satır (10.11.2026): ödeme tarihi geçersiz (YYYY-AA-GG).", out)).toBe(
+      `2. satır: Hasta On Bir · ${MACRO_REPORT_LABELS.treatments}, ${t.row}. satır`
+    );
+  });
+
+  it("sends no paid_on for a payment day the server cannot store (before 2000)", () => {
+    const t = tr({ amount_cents: TL(1_000), day: "2026-11-10" });
+    const out = build({ treatments: [t], payments: [pay(t, { amount_cents: TL(1_000), method: "transfer", pay_day: "1999-12-31" })] });
+    expect(out.lines).toMatchObject([{ method: "transfer", amount_cents: TL(1_000), paid_on: null }]);
+  });
+});
+
 describe("buildMacroImport: payment basis (orthodontist)", () => {
   it("emits the orthodontist's payments of the range, no production lines", () => {
     const tOld = tr({ amount_cents: TL(20_000), ext_doctor: "Ortodontist Ö", day: "2026-06-10", patient_name: "Hasta Üç", patient_no: "303", procedure: "Tel Tedavisi", tooth: null });
@@ -534,8 +673,17 @@ describe("buildMacroImport: payment basis (orthodontist)", () => {
         method: "card",
         currency: "TRY",
         amount_cents: TL(2_500),
+        // v2.3: a payments report line is paid on its own day.
+        paid_on: "2026-11-03",
       },
-      expect.objectContaining({ key: `p${payments[2].row}`, basis: "payment", method: "transfer", patient_no: null, amount_cents: TL(400) }),
+      expect.objectContaining({
+        key: `p${payments[2].row}`,
+        basis: "payment",
+        method: "transfer",
+        patient_no: null,
+        amount_cents: TL(400),
+        paid_on: "2026-11-20",
+      }),
     ]);
     // Pieces are still one per treatments row in the range.
     expect(out.pieces.map((p) => p.key)).toEqual([`t${tNew.row}`, `t${other.row}`]);
@@ -722,6 +870,13 @@ describe.skipIf(!samplesEnabled)("real Macro samples (DENTOS_MACRO_SAMPLES)", ()
           (r.tooth ?? "").length <= 200;
         expect(out.lines.every(fits) && out.pieces.every(fits), "sunucu alan sınırı aşılıyor").toBe(true);
         expect(out.lines.every((l) => l.treatment_day >= "2000-01-01"), "2000 öncesi işlem tarihi").toBe(true);
+        // v2.3: unique keys; a payment day on every transfer part (positive, never after the treatment's month) only.
+        expect(new Set(out.lines.map((l) => l.key)).size === out.lines.length, "yinelenen satır anahtarı").toBe(true);
+        const paidOk = (l: HkImportLineArg) =>
+          l.method === "transfer"
+            ? l.amount_cents > 0 && (l.paid_on === null || (!!l.paid_on && l.paid_on <= monthEndOf(l.day)))
+            : l.paid_on === undefined;
+        expect(out.lines.every(paidOk), "ödeme günü kuralına uymayan satır").toBe(true);
         for (const d of out.stats.doctors) {
           for (const total of d.totals) {
             const expected = t

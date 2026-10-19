@@ -29,6 +29,9 @@ import {
   EXT_DOCTOR_MODE_HINTS,
   EXT_DOCTOR_MODE_LABELS,
   extDoctorOf,
+  FINANCING_FEE_LABEL,
+  FINANCING_IMPORT_HINT,
+  financingLinksOf,
   findImplantPieceConflict,
   findOverlappingRule,
   finHkAssignPiece,
@@ -48,6 +51,7 @@ import {
   hkLedgerVisible,
   HK_ADJUSTMENT_DESCRIPTION_MAX,
   HK_DEFAULT_CHILD_AGE_LIMIT,
+  HK_FINANCING_WINDOW_DAYS,
   HK_KINDS,
   HK_LINE_METHODS,
   hkMarksAccess,
@@ -61,6 +65,7 @@ import {
   LAB_LABELS,
   LAB_SUMMARY_HINT,
   labSummaryByDoctor,
+  lineMethodText,
   labTotalsOf,
   MARK_GROUP_LABELS,
   markGroupOf,
@@ -113,6 +118,7 @@ import {
   warningText,
   type HkComponentJson,
   type HkComputeAdjustment,
+  type HkComputeFinancing,
   type HkComputeInput,
   type HkComputeLabCost,
   type HkComputeLine,
@@ -121,6 +127,7 @@ import {
   type HkComputePiece,
   type HkComputeProcGroup,
   type HkComputeRule,
+  type HkLineMethod,
   type HkRuleInput,
 } from "../hakedis";
 
@@ -205,6 +212,9 @@ function component(out: HkComputeOutput, ruleId: string): HkComponentJson {
 function payeeTotal(out: HkComputeOutput, userId: string): number | undefined {
   return out.payees.find((p) => p.payee_user_id === userId)?.total_cents;
 }
+
+/** 0035: the Burgan fields of a line result without a financing part. */
+const noFin = (method: HkLineMethod) => ({ resolved_method: method, financing_cents: 0, fee_cents: 0 });
 
 function labPartOf(out: HkComputeOutput, lineId: string): number | undefined {
   return out.line_results.find((r) => r.id === lineId)?.lab_part;
@@ -306,7 +316,9 @@ describe("ciro_share", () => {
     expect(b).toMatchObject({ gross: TL(30_000), implant: TL(10_000), eligible: TL(20_000), deduction: TL(2_200) });
     expect(component(out, r.id).base_cents).toBe(TL(17_800));
     expect(component(out, r.id).amount_cents).toBe(TL(4_450));
-    expect(out.line_results).toEqual([{ id: l.id, segment: "standard", segment_source: "none", rule_id: r.id, lab_part: 0 }]);
+    expect(out.line_results).toEqual([
+      { id: l.id, segment: "standard", segment_source: "none", rule_id: r.id, lab_part: 0, ...noFin("card") },
+    ]);
   });
 
   it("takes negative correction lines into the buckets", () => {
@@ -575,10 +587,10 @@ describe("child patients by age (v1.1)", () => {
 
     // Limit 15: 14 on 28 February 2027 (child), 15 on 1 March 2027 (standard).
     expect(at("2027-02", 15).line_results).toEqual([
-      { id: feb.id, segment: "child", segment_source: "birth_date", rule_id: bChild.id, lab_part: 0 },
+      { id: feb.id, segment: "child", segment_source: "birth_date", rule_id: bChild.id, lab_part: 0, ...noFin("cash") },
     ]);
     expect(at("2027-03", 15).line_results).toEqual([
-      { id: mar.id, segment: "standard", segment_source: "birth_date", rule_id: bStd.id, lab_part: 0 },
+      { id: mar.id, segment: "standard", segment_source: "birth_date", rule_id: bStd.id, lab_part: 0, ...noFin("cash") },
     ]);
     expect(payeeTotal(at("2027-02", 15), "u-b")).toBe(TL(320));
     expect(payeeTotal(at("2027-03", 15), "u-b")).toBe(TL(250));
@@ -2661,8 +2673,8 @@ describe("lines without a doctor (v2)", () => {
     expect(component(out, mgmt.id)).toMatchObject({ base_cents: TL(10_100), amount_cents: TL(303), lines_count: 3 });
     expect(component(out, a.id)).toMatchObject({ base_cents: TL(3_000), lines_count: 1 });
     expect(out.line_results.filter((x) => x.rule_id === null)).toEqual([
-      { id: clinicLine.id, segment: "standard", segment_source: "none", rule_id: null, lab_part: 0 },
-      { id: outsideLine.id, segment: "child", segment_source: "child_mark", rule_id: null, lab_part: 0 },
+      { id: clinicLine.id, segment: "standard", segment_source: "none", rule_id: null, lab_part: 0, ...noFin("card") },
+      { id: outsideLine.id, segment: "child", segment_source: "child_mark", rule_id: null, lab_part: 0, ...noFin("unpaid") },
     ]);
   });
 });
@@ -3300,11 +3312,11 @@ describe("unmarked patients count as children (v2.2)", () => {
     const dec = line({ doctor_id: "doc-b", patient_ref: "isaretsiz 1", try_cents: t, day: "2026-12-03" });
     const rs = [bStd, bChildNov, bChildDec];
     expect(run({ month: "2026-11", rules: rs, lines: [nov, dec] }).line_results).toEqual([
-      { id: nov.id, segment: "standard", segment_source: "none", rule_id: bStd.id, lab_part: 0 },
+      { id: nov.id, segment: "standard", segment_source: "none", rule_id: bStd.id, lab_part: 0, ...noFin("cash") },
     ]);
     const outDec = run({ month: "2026-12", rules: rs, lines: [nov, dec] });
     expect(outDec.line_results).toEqual([
-      { id: dec.id, segment: "child", segment_source: "unmarked_default", rule_id: bChildDec.id, lab_part: 0 },
+      { id: dec.id, segment: "child", segment_source: "unmarked_default", rule_id: bChildDec.id, lab_part: 0, ...noFin("cash") },
     ]);
     expect(outDec.warnings).toEqual([
       { code: "UNMARKED_AS_CHILD", doctor_id: "doc-b", doctor_name: "Hekim B", patients: 1, lines: 1 },
@@ -3564,5 +3576,496 @@ describe("page helpers (v2.1 / v2.2)", () => {
     expect(pieceMacroText({ ext_doctor: "HEKİM A", macro_doctor_name: "Hekim A" })).toBe("HEKİM A");
     expect(pieceMacroText({ ext_doctor: "KLİNİK ÖRNEK", macro_doctor_name: null })).toBe("KLİNİK ÖRNEK");
     expect(pieceMacroText({})).toBe("");
+  });
+});
+
+describe("Burgan financing (v2.3)", () => {
+  const CREATED = "2024-05-02T09:00:00.000Z";
+  const loan = (p: Partial<HkComputeFinancing> & Pick<HkComputeFinancing, "id" | "day" | "patient_name" | "gross_cents" | "fee_cents">) =>
+    ({ ...p }) as HkComputeFinancing;
+  const tline = (
+    p: Partial<HkComputeLine> & Pick<HkComputeLine, "doctor_id" | "try_cents" | "patient_name" | "day">
+  ): HkComputeLine =>
+    line({ method: "transfer", patient_ref: `ref:${normalizePatientRef(p.patient_name)}`, created_at: CREATED, ...p });
+
+  // The lines and loans of the 0035 self-check replay (made-up names and amounts; other made-up rates here).
+  const fixture = () => {
+    const a = rule({
+      kind: "ciro_share",
+      payee_user_id: "u-a",
+      doctor_id: "doc-a",
+      segment: "standard",
+      share_bp: 5000,
+      deduct_card_bp: 1100,
+      deduct_transfer_bp: 900,
+      deduct_financing_bp: 1300,
+      deduct_unpaid_bp: 1100,
+      from_month: "2024-04-01",
+    });
+    const o = rule({ kind: "ortho_lab_first", payee_user_id: "u-s", doctor_id: "doc-s", share_bp: 5000, from_month: "2024-04-01" });
+    const m = rule({ kind: "clinic_ciro_share", payee_user_id: "u-c", share_bp: 300, from_month: "2024-04-01" });
+    const financings = [
+      loan({ id: "f01", day: "2024-04-05", patient_name: "HASTA BİR", gross_cents: 6_400_000, fee_cents: 1_280_001 }),
+      loan({ id: "f02", day: "2024-04-24", patient_name: "HASTA İKİ", gross_cents: 1_280_000, fee_cents: 256_000 }),
+      loan({ id: "f03a", day: "2024-04-12", patient_name: "HASTA ÜÇ", gross_cents: 1_920_000, fee_cents: 384_000 }),
+      loan({ id: "f03b", day: "2024-04-14", patient_name: "HASTA ÜÇ", gross_cents: 1_920_000, fee_cents: 480_000 }),
+      loan({ id: "f04", day: "2024-04-08", patient_name: "HASTA DÖRT", gross_cents: 3_200_000, fee_cents: 640_000 }),
+      loan({ id: "f05", day: "2024-04-09", patient_name: "HASTA BEŞ", gross_cents: 1_280_000, fee_cents: 256_000 }),
+      loan({
+        id: "f06",
+        day: "2024-04-11",
+        patient_name: "HASTA ALTI",
+        gross_cents: 640_000,
+        fee_cents: 128_000,
+        voided_at: "2024-04-30T10:00:00.000Z",
+      }),
+      // The statement name differs; the loan is linked to the DentOS patient.
+      loan({ id: "f07", day: "2024-04-16", patient_name: "H. YEDİ", linked_patient_name: "Hasta Yedi", gross_cents: 640_000, fee_cents: 64_000 }),
+      loan({ id: "f08", day: "2024-04-17", patient_name: "HASTA SEKİZ", gross_cents: 640_000, fee_cents: 128_000 }),
+      loan({ id: "f09", day: "2024-04-25", patient_name: "HASTA DOKUZ", gross_cents: 960_000, fee_cents: 192_000 }),
+      loan({ id: "f10", day: "2024-04-18", patient_name: "HASTA ON", gross_cents: 640_000, fee_cents: 128_000 }),
+    ];
+    const L = (
+      id: string,
+      doctor: string | null,
+      patient: string,
+      day: string,
+      cents: number,
+      paid: string | null,
+      extra: Partial<HkComputeLine> = {}
+    ) => tline({ id, doctor_id: doctor, patient_name: patient, day, treatment_day: day, try_cents: cents, paid_on: paid, ...extra });
+    const lines = [
+      L("l01", "doc-a", "Hasta Bir", "2024-04-05", 3_840_000, "2024-04-05"),
+      L("l01b", "doc-a", "Hasta Bir", "2024-04-10", 3_840_000, "2024-04-05"),
+      L("l11", "doc-a", "Hasta Bir", "2024-04-05", 640_000, null, { method: "cash" }),
+      L("l02", "doc-a", "Hasta İki", "2024-04-20", 640_000, "2024-04-20"),
+      L("l02b", "doc-a", "Hasta İki", "2024-04-27", 1_280_000, "2024-04-27"),
+      L("l03", "doc-a", "Hasta Üç", "2024-04-14", 1_280_000, "2024-04-14"),
+      L("l03c", "doc-a", "Hasta Üç", "2024-04-13", 640_000, "2024-04-13"),
+      L("l04", "doc-a", "Hasta Dört", "2024-04-08", 3_200_000, "2024-04-08", { implant_cents: 3_200_000 }),
+      L("l06", "doc-a", "Hasta Altı", "2024-04-11", 640_000, "2024-04-11"),
+      L("l07", "doc-a", "Hasta Yedi", "2024-04-16", 640_000, "2024-04-16"),
+      L("l10", "doc-a", "Hasta On", "2024-04-18", 640_000, null),
+      // May treatment paid in advance on the same loan day: the loan is used up by April's lines.
+      L("l12", "doc-a", "Hasta Bir", "2024-05-03", 640_000, "2024-04-05"),
+      // A clinic line (no doctor) uses its loan too.
+      L("l08", null, "Hasta Sekiz", "2024-04-17", 640_000, "2024-04-17"),
+      // The orthodontist's payment line (paid_on = its day), with a lab cost recovered first.
+      L("l05", "doc-s", "Hasta Beş", "2024-04-09", 1_280_000, "2024-04-09", { treatment_day: "2024-04-02" }),
+    ];
+    const labs = [lab({ doctor_id: "doc-s", patient_ref: lines[13].patient_ref, day: "2024-04-02", amount_cents: 320_000, lab_name: "Lab X" })];
+    return { a, o, m, financings, lines, labs };
+  };
+
+  it("counts the Burgan-paid part net of the bank's fee in the treatment's month (self-check figures)", () => {
+    const { a, o, m, financings, lines, labs } = fixture();
+    const out = run({ month: "2024-04", rules: [a, o, m], lines, lab_costs: labs, financings });
+    const res = (id: string) => {
+      const r = out.line_results.find((x) => x.id === id)!;
+      return [r.resolved_method, r.financing_cents, r.fee_cents];
+    };
+    expect(res("l01")).toEqual(["financing", 3_840_000, 768_001]);
+    // Split: the rest of the loan, the remaining 1.280.000 stays a transfer.
+    expect(res("l01b")).toEqual(["financing", 2_560_000, 512_000]);
+    expect(res("l11")).toEqual(["cash", 0, 0]);
+    // 4 days before the loan: outside the ±3 days window.
+    expect(res("l02")).toEqual(["transfer", 0, 0]);
+    expect(res("l02b")).toEqual(["financing", 1_280_000, 256_000]);
+    // Nearest loan wins (14.04 for the 14.04 payment); a tie (13.04 between 12.04 and 14.04) goes to the earlier one.
+    expect(res("l03")).toEqual(["financing", 1_280_000, 320_000]);
+    expect(res("l03c")).toEqual(["financing", 640_000, 128_000]);
+    // Implant part: matched but no fee (implants are out of the ciro anyway).
+    expect(res("l04")).toEqual(["financing", 3_200_000, 0]);
+    // Voided loan ignored; no paid_on (imported before 0035) never matches.
+    expect(res("l06")).toEqual(["transfer", 0, 0]);
+    expect(res("l10")).toEqual(["transfer", 0, 0]);
+    // Matched through the loan's linked DentOS patient.
+    expect(res("l07")).toEqual(["financing", 640_000, 64_000]);
+    // No doctor / ortho: matched, no fee.
+    expect(res("l08")).toEqual(["financing", 640_000, 0]);
+    expect(res("l05")).toEqual(["financing", 1_280_000, 0]);
+
+    const ca = component(out, a.id);
+    expect(ca.by_method!.financing).toEqual({
+      gross: 13_440_000,
+      implant: 3_200_000,
+      lab: 0,
+      eligible: 10_240_000,
+      deduct_bp: 1300,
+      // round((10.240.000 − 2.048.001) × 13 %)
+      deduction: 1_064_960,
+      fee: 2_048_001,
+    });
+    expect(ca.by_method!.transfer).toEqual({ gross: 3_200_000, implant: 0, lab: 0, eligible: 3_200_000, deduct_bp: 900, deduction: 288_000 });
+    expect(ca.by_method!.cash).toMatchObject({ gross: 640_000, deduction: 0 });
+    expect(ca).toMatchObject({ base_cents: 10_679_039, amount_cents: 5_339_520, lines_count: 11 });
+    // ortho_lab_first: no fee, the lab part of the financed payment stays in the financing bucket.
+    const co = component(out, o.id);
+    expect(co.by_method!.financing).toEqual({
+      gross: 1_280_000,
+      implant: 0,
+      lab: 320_000,
+      eligible: 960_000,
+      deduct_bp: 0,
+      deduction: 0,
+      fee: 0,
+    });
+    expect(co).toMatchObject({ base_cents: 960_000, amount_cents: 480_000, lines_count: 1 });
+    // The management share's base stays the gross of every line.
+    expect(out.clinic_total_cents).toBe(19_200_000);
+    expect(component(out, m.id)).toMatchObject({ base_cents: 19_200_000, amount_cents: 576_000 });
+
+    expect(out.warnings).toEqual([
+      { code: "FINANCING_MATCHED", count: 9, gross_cents: 15_360_000, fee_cents: 2_048_001 },
+      {
+        code: "FINANCING_UNMATCHED",
+        count: 2,
+        financings: [
+          { day: "2024-04-18", patient: "HASTA ON", gross_cents: 640_000 },
+          { day: "2024-04-25", patient: "HASTA DOKUZ", gross_cents: 960_000 },
+        ],
+      },
+    ]);
+
+    const s = summarizePayee(out.payees.find((p) => p.payee_user_id === "u-a")!);
+    expect(s).toMatchObject({ gross_cents: 17_280_000, implant_cents: 3_200_000, fee_cents: 2_048_001, deduction_cents: 1_352_960 });
+    expect(s.gross_by_method).toEqual({ cash: 640_000, card: 0, transfer: 3_200_000, financing: 13_440_000, unpaid: 0 });
+    expect(s.gross_cents - s.implant_cents - s.lab_cents - s.fee_cents - s.deduction_cents).toBe(s.base_cents);
+
+    // May: the advance-paid line finds the loan used up by April's lines; nothing to report.
+    const may = run({ month: "2024-05", rules: [a, o, m], lines, lab_costs: labs, financings });
+    expect(may.line_results).toEqual([
+      expect.objectContaining({ id: "l12", resolved_method: "transfer", financing_cents: 0, fee_cents: 0 }),
+    ]);
+    expect(component(may, a.id)).toMatchObject({ base_cents: 582_400, amount_cents: 291_200 });
+    expect(component(may, a.id).by_method!.financing).toMatchObject({ gross: 0, fee: 0, deduction: 0 });
+    expect(may.warnings).toEqual([]);
+  });
+
+  it("gives the 0034 figures without payment days (lines imported before 0035)", () => {
+    const { a, o, m, financings, lines, labs } = fixture();
+    // Only the orthodontist's payment line has a payment day (the server stores its own day).
+    const old = lines.map((l) => (l.doctor_id === "doc-s" ? l : { ...l, paid_on: null }));
+    const out = run({ month: "2024-04", rules: [a, o, m], lines: old, lab_costs: labs, financings });
+    const bare = run({ month: "2024-04", rules: [a, o, m], lines: lines.map((l) => ({ ...l, paid_on: null })), lab_costs: labs });
+    expect(component(out, a.id)).toEqual(component(bare, a.id));
+    expect(component(out, a.id)).toMatchObject({ base_cents: 12_870_400, amount_cents: 6_435_200 });
+    expect(component(out, a.id).by_method!.transfer).toMatchObject({ gross: 16_640_000, implant: 3_200_000, deduction: 1_209_600 });
+    expect(out.payees.map((p) => p.total_cents)).toEqual(bare.payees.map((p) => p.total_cents));
+    expect(out.clinic_total_cents).toBe(bare.clinic_total_cents);
+    expect(out.warnings[0]).toEqual({ code: "FINANCING_MATCHED", count: 1, gross_cents: 1_280_000, fee_cents: 0 });
+    expect(out.warnings[1]).toMatchObject({ code: "FINANCING_UNMATCHED", count: 9 });
+    // Without any loan, no financing warning at all and the financing bucket stays empty with its fee key.
+    expect(bare.warnings).toEqual([]);
+    expect(component(bare, a.id).by_method!.financing).toEqual({
+      gross: 0,
+      implant: 0,
+      lab: 0,
+      eligible: 0,
+      deduct_bp: 1300,
+      deduction: 0,
+      fee: 0,
+    });
+  });
+
+  it("lists unmatched loans only in a month with a live line that has a payment day", () => {
+    const { a, o, m, financings, lines, labs } = fixture();
+    // A June loan: June has no line at all (never imported), so it is not listed, not even to finance.
+    const loans = [...financings, loan({ id: "f20", day: "2024-06-12", patient_name: "HASTA YİRMİ", gross_cents: 640_000, fee_cents: 128_000 })];
+    const june = run({ month: "2024-06", rules: [a, o, m], lines, lab_costs: labs, financings: loans });
+    expect(june.warnings).toEqual([]);
+    // April imported before 0035 (no line has a payment day): its loans are not listed either.
+    const undated = lines.map((l) => ({ ...l, paid_on: null }));
+    const april = run({ month: "2024-04", rules: [a, o, m], lines: undated, lab_costs: labs, financings: loans });
+    expect(april.warnings).toEqual([]);
+    // A voided dated line, or a dated line of another month (May's advance on an April loan), does not count.
+    const voided = undated.map((l) => (l.id === "l02" ? { ...l, paid_on: "2024-04-20", voided_at: "2024-04-21T08:00:00.000Z" } : l));
+    expect(run({ month: "2024-04", rules: [a, o, m], lines: voided, lab_costs: labs, financings: loans }).warnings).toEqual([]);
+    const mayDated = undated.map((l) => (l.id === "l12" ? { ...l, paid_on: "2024-04-05" } : l));
+    expect(run({ month: "2024-04", rules: [a, o, m], lines: mayDated, lab_costs: labs, financings: loans }).warnings).toEqual([]);
+    // One live dated line of April (matched or not) lists April's unmatched loans (June's stays out).
+    const one = undated.map((l) => (l.id === "l02" ? { ...l, paid_on: "2024-04-20" } : l));
+    const listed = run({ month: "2024-04", rules: [a, o, m], lines: one, lab_costs: labs, financings: loans });
+    expect(listed.warnings).toEqual([
+      {
+        code: "FINANCING_UNMATCHED",
+        count: 10,
+        financings: [
+          { day: "2024-04-05", patient: "HASTA BİR", gross_cents: 6_400_000 },
+          { day: "2024-04-08", patient: "HASTA DÖRT", gross_cents: 3_200_000 },
+          { day: "2024-04-09", patient: "HASTA BEŞ", gross_cents: 1_280_000 },
+          { day: "2024-04-12", patient: "HASTA ÜÇ", gross_cents: 1_920_000 },
+          { day: "2024-04-14", patient: "HASTA ÜÇ", gross_cents: 1_920_000 },
+          { day: "2024-04-16", patient: "H. YEDİ", gross_cents: 640_000 },
+          { day: "2024-04-17", patient: "HASTA SEKİZ", gross_cents: 640_000 },
+          { day: "2024-04-18", patient: "HASTA ON", gross_cents: 640_000 },
+          { day: "2024-04-24", patient: "HASTA İKİ", gross_cents: 1_280_000 },
+          { day: "2024-04-25", patient: "HASTA DOKUZ", gross_cents: 960_000 },
+        ],
+      },
+    ]);
+    // The figures never depend on it.
+    expect(listed.payees).toEqual(april.payees);
+  });
+
+  it("uses the server's per-line financing part and fee share when the loans are not given (preparer)", () => {
+    const { a, o, m, financings, lines, labs } = fixture();
+    const full = run({ month: "2024-04", rules: [a, o, m], lines, lab_costs: labs, financings });
+    const fromServer = lines.map((l) => {
+      const r = full.line_results.find((x) => x.id === l.id);
+      return { ...l, financing_cents: r?.financing_cents ?? 0, fee_cents: r?.fee_cents ?? 0 };
+    });
+    const prep = run({ month: "2024-04", rules: [a, o, m], lines: fromServer, lab_costs: labs });
+    expect(prep.payees).toEqual(full.payees);
+    expect(prep.line_results).toEqual(full.line_results);
+    // The loans themselves are unknown here: only the matched lines are reported.
+    expect(prep.warnings).toEqual([full.warnings[0]]);
+  });
+
+  it("matches the nearest loan of the patient's name within ±3 days, never a second one", () => {
+    expect(HK_FINANCING_WINDOW_DAYS).toBe(3);
+    const loans = [
+      loan({ id: "fa", day: "2026-11-10", patient_name: "  HASTA   YİRMİ ", gross_cents: TL(100_000), fee_cents: TL(20_000) }),
+      loan({ id: "fb", day: "2026-11-14", patient_name: "Hasta Yirmi", gross_cents: TL(100_000), fee_cents: TL(20_000) }),
+      // Same day: the lowest id wins.
+      loan({ id: "fd", day: "2026-11-20", patient_name: "Hasta Otuz", gross_cents: TL(1_000), fee_cents: 0 }),
+      loan({ id: "fc", day: "2026-11-20", patient_name: "Hasta Otuz", gross_cents: TL(1_000), fee_cents: 0 }),
+      // Small loan next to a big one: the nearest takes the line, its overflow stays a transfer.
+      loan({ id: "fe", day: "2026-11-05", patient_name: "Hasta Kırk", gross_cents: TL(1_000), fee_cents: 0 }),
+      loan({ id: "ff", day: "2026-11-07", patient_name: "Hasta Kırk", gross_cents: TL(10_000), fee_cents: 0 }),
+      loan({ id: "fg", day: "2026-11-10", patient_name: "Hasta Elli", gross_cents: TL(1_000), fee_cents: 0, voided_at: "2026-11-11T08:00:00Z" }),
+    ];
+    const at = (id: string, patient: string, paid: string | null, extra: Partial<HkComputeLine> = {}) =>
+      tline({ id, doctor_id: "doc-a", patient_name: patient, day: "2026-11-15", try_cents: TL(1_000), paid_on: paid, ...extra });
+    const lines = [
+      at("x-tie", "hasta yirmi", "2026-11-12"),
+      at("x-near", "Hasta Yirmi", "2026-11-13"),
+      at("x-edge", "Hasta Yirmi", "2026-11-17"),
+      at("x-out", "Hasta Yirmi", "2026-11-18"),
+      at("x-before", "Hasta Yirmi", "2026-11-07"),
+      at("x-far", "Hasta Yirmi", "2026-11-06"),
+      // ı / i spelled differently: no match (FINANCING_UNMATCHED shows the loan).
+      at("x-spell", "Hasta Yırmi", "2026-11-10"),
+      at("y-id", "Hasta Otuz", "2026-11-21"),
+      at("z-over", "Hasta Kırk", "2026-11-05", { try_cents: TL(3_000) }),
+      // Never matched: cash, a negative transfer, a voided line, no payment day, a voided loan.
+      at("n-cash", "Hasta Yirmi", "2026-11-10", { method: "cash" }),
+      at("n-neg", "Hasta Yirmi", "2026-11-10", { try_cents: -TL(500) }),
+      at("n-void", "Hasta Yirmi", "2026-11-10", { voided_at: "2026-11-16T08:00:00Z" }),
+      at("n-nopaid", "Hasta Yirmi", null),
+      at("n-loan-void", "Hasta Elli", "2026-11-10"),
+    ];
+    const links = financingLinksOf(lines, loans);
+    const of = (id: string) => (links.has(id) ? [links.get(id)!.financing_id, links.get(id)!.financing_cents] : null);
+    expect(of("x-tie")).toEqual(["fa", TL(1_000)]);
+    expect(of("x-near")).toEqual(["fb", TL(1_000)]);
+    expect(of("x-edge")).toEqual(["fb", TL(1_000)]);
+    expect(of("x-out")).toBeNull();
+    expect(of("x-before")).toEqual(["fa", TL(1_000)]);
+    expect(of("x-far")).toBeNull();
+    expect(of("x-spell")).toBeNull();
+    expect(of("y-id")).toEqual(["fc", TL(1_000)]);
+    expect(of("z-over")).toEqual(["fe", TL(1_000)]);
+    for (const id of ["n-cash", "n-neg", "n-void", "n-nopaid", "n-loan-void"]) expect(of(id)).toBeNull();
+    expect(links.get("x-tie")).toEqual({ financing_id: "fa", financing_cents: TL(1_000), gross_cents: TL(100_000), fee_cents: TL(20_000) });
+
+    // In the month: the overflow of z-over stays a transfer; the unused loans (ff, fd) are reported by day, patient, id.
+    const r = aStd();
+    const out = run({ month: "2026-11", rules: [r], lines, financings: loans });
+    expect(out.line_results.find((x) => x.id === "z-over")).toMatchObject({ resolved_method: "financing", financing_cents: TL(1_000) });
+    expect(out.warnings.find((w) => w.code === "FINANCING_UNMATCHED")).toEqual({
+      code: "FINANCING_UNMATCHED",
+      count: 2,
+      financings: [
+        { day: "2026-11-07", patient: "Hasta Kırk", gross_cents: TL(10_000) },
+        { day: "2026-11-20", patient: "Hasta Otuz", gross_cents: TL(1_000) },
+      ],
+    });
+  });
+
+  it("caps a loan at its gross in (paid_on, treatment day, created_at, id) order, lines of every month included", () => {
+    const f = loan({ id: "f1", day: "2026-11-03", patient_name: "Hasta Altmış", gross_cents: TL(10_000), fee_cents: TL(2_000) });
+    const at = (id: string, cents: number, paid: string, tday: string, created = CREATED, day = tday) =>
+      tline({ id, doctor_id: "doc-a", patient_name: "Hasta Altmış", day, treatment_day: tday, try_cents: TL(cents), paid_on: paid, created_at: created });
+    const lines = [
+      at("p", 6_000, "2026-11-03", "2026-11-05"),
+      at("q", 6_000, "2026-11-03", "2026-11-04"),
+      // Paid first, for a December treatment (an advance on the same loan).
+      at("r", 2_000, "2026-11-02", "2026-12-01"),
+      at("s2", 500, "2026-11-04", "2026-11-20", "2026-11-21T10:00:00.000Z"),
+      at("s1", 500, "2026-11-04", "2026-11-20", "2026-11-21T09:00:00.000Z"),
+    ];
+    const links = financingLinksOf(lines, [f]);
+    // r first (paid earlier), then q (earlier treatment day than p), p takes what is left; s1 / s2 nothing.
+    expect(Array.from(links, ([id, k]) => [id, k.financing_cents])).toEqual([
+      ["r", TL(2_000)],
+      ["q", TL(6_000)],
+      ["p", TL(2_000)],
+    ]);
+    const swapped = financingLinksOf(
+      [at("t1", 9_500, "2026-11-03", "2026-11-04"), at("u2", 300, "2026-11-04", "2026-11-20", CREATED), at("u1", 300, "2026-11-04", "2026-11-20", CREATED)],
+      [f]
+    );
+    // Same payment day, treatment day and created_at: the id decides (u1 before u2).
+    expect(Array.from(swapped, ([id, k]) => [id, k.financing_cents])).toEqual([
+      ["t1", TL(9_500)],
+      ["u1", TL(300)],
+      ["u2", TL(200)],
+    ]);
+
+    const r = rule({
+      kind: "ciro_share",
+      payee_user_id: "u-a",
+      doctor_id: "doc-a",
+      segment: "standard",
+      share_bp: 5000,
+      deduct_transfer_bp: 900,
+      deduct_financing_bp: 1300,
+    });
+    const nov = run({ month: "2026-11", rules: [r], lines, financings: [f] });
+    const c = component(nov, r.id);
+    // November: q 6.000 + p's last 2.000 financed (fee 20 %: 1.600), p's other 4.000 and s1 / s2 stay transfers.
+    expect(c.by_method!.financing).toEqual({ gross: TL(8_000), implant: 0, lab: 0, eligible: TL(8_000), deduct_bp: 1300, deduction: TL(832), fee: TL(1_600) });
+    expect(c.by_method!.transfer).toMatchObject({ gross: TL(5_000), deduction: TL(450) });
+    expect(c.lines_count).toBe(4);
+    // 8.000 − 1.600 − 832 + 5.000 − 450 = 10.118 → 50 %
+    expect(c).toMatchObject({ base_cents: TL(10_118), amount_cents: TL(5_059) });
+    expect(nov.clinic_total_cents).toBe(TL(13_000));
+    expect(nov.warnings).toEqual([{ code: "FINANCING_MATCHED", count: 2, gross_cents: TL(8_000), fee_cents: TL(1_600) }]);
+  });
+
+  it("takes the implant and lab shares of a split line pro rata and the fee per line, half away from zero, exactly", () => {
+    const r = rule({
+      kind: "ciro_share",
+      payee_user_id: "u-a",
+      doctor_id: "doc-a",
+      segment: "standard",
+      share_bp: 5000,
+      deduct_transfer_bp: 900,
+      deduct_financing_bp: 1300,
+    });
+    // 10.000 with 4.000 implant; the loan pays 2.500 of it (fee 20 %): implant share 1.000, fee (2.500 − 1.000) × 20 %.
+    const split = tline({ doctor_id: "doc-a", patient_name: "Hasta Yetmiş", day: "2026-11-10", try_cents: TL(10_000), implant_cents: TL(4_000), paid_on: "2026-11-10" });
+    const f = loan({ id: "f1", day: "2026-11-10", patient_name: "Hasta Yetmiş", gross_cents: TL(2_500), fee_cents: TL(500) });
+    const out = run({ month: "2026-11", rules: [r], lines: [split], financings: [f] });
+    const c = component(out, r.id);
+    expect(c.by_method!.financing).toEqual({ gross: TL(2_500), implant: TL(1_000), lab: 0, eligible: TL(1_500), deduct_bp: 1300, deduction: TL(156), fee: TL(300) });
+    expect(c.by_method!.transfer).toEqual({ gross: TL(7_500), implant: TL(3_000), lab: 0, eligible: TL(4_500), deduct_bp: 900, deduction: TL(405) });
+    expect(c.lines_count).toBe(1);
+
+    // Per line, half away from zero: two 2-cent lines on a 25 % fee loan → 1 + 1 (a bucket rounding would give 1).
+    const tiny = loan({ id: "f2", day: "2026-11-10", patient_name: "Hasta Seksen", gross_cents: 800, fee_cents: 200 });
+    const halves = [1, 2].map((i) =>
+      tline({ id: `half${i}`, doctor_id: "doc-a", patient_name: "Hasta Seksen", day: "2026-11-10", try_cents: 2, paid_on: "2026-11-10" })
+    );
+    expect(component(run({ month: "2026-11", rules: [r], lines: halves, financings: [tiny] }), r.id).by_method!.financing.fee).toBe(2);
+
+    // Large amounts stay exact (BigInt): 500.000.000.000 cents × 300.000.000.001 / 1.000.000.000.000 = 150.000.000.000,5.
+    const big = loan({ id: "f3", day: "2026-11-10", patient_name: "Hasta Doksan", gross_cents: 1_000_000_000_000, fee_cents: 300_000_000_001 });
+    const bigLine = tline({ doctor_id: "doc-a", patient_name: "Hasta Doksan", day: "2026-11-10", try_cents: 500_000_000_000, paid_on: "2026-11-10" });
+    const bigOut = run({ month: "2026-11", rules: [r], lines: [bigLine], financings: [big] });
+    expect(bigOut.line_results[0].fee_cents).toBe(150_000_000_001);
+  });
+
+  it("leaves the orthodontist without a fee; a split line's lab share never exceeds its part minus the implant share", () => {
+    const o = rule({ kind: "ortho_lab_first", payee_user_id: "u-s", doctor_id: "doc-s", share_bp: 4000, deduct_transfer_bp: 0, deduct_financing_bp: 0 });
+    // 1.000 paid, 800 lab to recover; the loan pays 300: lab share round(800 × 0,3) = 240.
+    const l1 = tline({ doctor_id: "doc-s", patient_name: "Hasta Yüz", day: "2026-11-10", try_cents: TL(1_000), paid_on: "2026-11-10" });
+    const f1 = loan({ id: "f1", day: "2026-11-10", patient_name: "Hasta Yüz", gross_cents: TL(300), fee_cents: TL(60) });
+    const c1 = run({
+      month: "2026-11",
+      rules: [o],
+      lines: [l1],
+      lab_costs: [lab({ patient_ref: l1.patient_ref, day: "2026-11-01", amount_cents: TL(800), lab_name: "Lab X" })],
+      financings: [f1],
+    });
+    expect(component(c1, o.id).by_method!.financing).toEqual({ gross: TL(300), implant: 0, lab: TL(240), eligible: TL(60), deduct_bp: 0, deduction: 0, fee: 0 });
+    expect(component(c1, o.id).by_method!.transfer).toMatchObject({ gross: TL(700), lab: TL(560), eligible: TL(140) });
+    expect(c1.line_results[0]).toMatchObject({ resolved_method: "financing", financing_cents: TL(300), fee_cents: 0, lab_part: TL(800) });
+    // Base unchanged by the financing: 1.000 − 800 lab = 200 → 40 %.
+    expect(component(c1, o.id)).toMatchObject({ base_cents: TL(200), amount_cents: TL(80) });
+
+    // 2 cents with 1 implant and 1 lab; the loan pays 1: implant share round(0,5) = 1, lab share capped at 1 − 1 = 0.
+    const l2 = tline({ doctor_id: "doc-s", patient_name: "Hasta İki Yüz", day: "2026-11-10", try_cents: 2, implant_cents: 1, paid_on: "2026-11-10" });
+    const c2 = run({
+      month: "2026-11",
+      rules: [o],
+      lines: [l2],
+      lab_costs: [lab({ patient_ref: l2.patient_ref, day: "2026-11-01", amount_cents: 1, lab_name: "Lab X" })],
+      financings: [loan({ id: "f2", day: "2026-11-10", patient_name: "HASTA İKİ YÜZ", gross_cents: 1, fee_cents: 0 })],
+    });
+    expect(component(c2, o.id).by_method!.financing).toMatchObject({ gross: 1, implant: 1, lab: 0, eligible: 0 });
+    expect(component(c2, o.id).by_method!.transfer).toMatchObject({ gross: 1, implant: 0, lab: 1, eligible: 0 });
+  });
+
+  it("names the financing figures for the line lists and the warnings (no loan amounts for the preparer)", () => {
+    expect(lineMethodText({ method: "transfer", try_cents: TL(1_000) })).toEqual({ label: "Havale / EFT", note: null });
+    expect(lineMethodText({ method: "transfer", try_cents: TL(1_000), resolved_method: "transfer", financing_cents: 0, fee_cents: 0 })).toEqual({
+      label: "Havale / EFT",
+      note: null,
+    });
+    expect(lineMethodText({ method: "transfer", try_cents: TL(1_000), resolved_method: "financing", financing_cents: TL(1_000), fee_cents: TL(200) })).toEqual({
+      label: "Finansman (Burgan)",
+      note: "banka kesintisi ₺200,00",
+    });
+    expect(lineMethodText({ method: "transfer", try_cents: TL(1_000), resolved_method: "financing", financing_cents: TL(350), fee_cents: TL(70) })).toEqual({
+      label: "Havale / EFT",
+      note: "₺350,00 Finansman (Burgan) · banka kesintisi ₺70,00",
+    });
+    // The orthodontist / a line without a rule: no fee.
+    expect(lineMethodText({ method: "transfer", try_cents: TL(1_000), resolved_method: "financing", financing_cents: TL(1_000), fee_cents: 0 })).toEqual({
+      label: "Finansman (Burgan)",
+      note: null,
+    });
+    // A manual financing line keeps its own label.
+    expect(lineMethodText({ method: "financing", try_cents: TL(1_000), resolved_method: "financing", financing_cents: 0 })).toEqual({
+      label: "Finansman (Burgan)",
+      note: null,
+    });
+    expect(FINANCING_FEE_LABEL).toBe("Banka kesintisi");
+    expect(FINANCING_IMPORT_HINT).toContain("yeniden yükleyin");
+
+    expect(warningText({ code: "FINANCING_MATCHED", count: 3, gross_cents: TL(12_000), fee_cents: TL(2_400) })).toBe(
+      "Burgan finansmanı: 3 satırın ₺12.000,00 tutarındaki kısmı hasta kredisiyle ödendi; hekim cirosuna banka kesintisi (₺2.400,00) düşülerek girdi."
+    );
+    expect(warningText({ code: "FINANCING_MATCHED", count: 1, gross_cents: TL(500), fee_cents: 0 })).toBe(
+      "Burgan finansmanı: 1 satırın ₺500,00 tutarındaki kısmı hasta kredisiyle ödendi."
+    );
+    const unmatched = {
+      code: "FINANCING_UNMATCHED" as const,
+      count: 2,
+      financings: [
+        { day: "2026-11-07", patient: "Hasta Kırk", gross_cents: TL(10_000) },
+        { day: "2026-11-20", patient: "Hasta Otuz", gross_cents: TL(1_000) },
+      ],
+    };
+    expect(warningText(unmatched)).toBe(
+      "2 Burgan finansmanı hiçbir havale satırıyla eşleşmedi (07.11.2026 Hasta Kırk (₺10.000,00), 20.11.2026 Hasta Otuz (₺1.000,00)); hasta adını ve ödeme gününü Macro'daki havaleyle karşılaştırın."
+    );
+    // The preparer's payload has no loan amounts (fin__hk_strip_ledger).
+    expect(warningText({ ...unmatched, financings: unmatched.financings.map(({ day, patient }) => ({ day, patient })) })).toBe(
+      "2 Burgan finansmanı hiçbir havale satırıyla eşleşmedi (07.11.2026 Hasta Kırk, 20.11.2026 Hasta Otuz); hasta adını ve ödeme gününü Macro'daki havaleyle karşılaştırın."
+    );
+    const many = Array.from({ length: 12 }, (_, i) => ({ day: `2026-11-${String(i + 1).padStart(2, "0")}`, patient: `Hasta ${i + 1}` }));
+    expect(warningText({ code: "FINANCING_UNMATCHED", count: 12, financings: many })).toContain("Hasta 10, 2 kayıt daha)");
+  });
+
+  it("reads statements closed before 0035 (no fee key) as a fee of 0", () => {
+    const bucket = { gross: TL(1_000), implant: 0, lab: 0, eligible: TL(1_000), deduct_bp: 900, deduction: TL(90) };
+    const s = summarizePayee({
+      total_cents: TL(1_365),
+      components: [
+        {
+          rule_id: "r-old",
+          kind: "ciro_share",
+          amount_cents: TL(1_365),
+          share_bp: 5000,
+          base_cents: TL(2_730),
+          by_method: { cash: { ...bucket, gross: 0, eligible: 0, deduction: 0 }, card: bucket, transfer: bucket, financing: bucket },
+        },
+      ],
+    });
+    expect(s.fee_cents).toBe(0);
+    expect(sumPayeeSummaries([s, s]).fee_cents).toBe(0);
   });
 });

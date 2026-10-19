@@ -5,7 +5,7 @@
 // the address (?month=YYYY-MM, kept when switching between the pages), the month payload, the sub-tabs, the month
 // picker, the void dialog of lines / pieces / lab costs / adjustments (0034: with an optional extra block) and the
 // component breakdown (0032: the lab costs taken off a ciro_share base and the minimum top-up; 0033: the 'unpaid'
-// bucket and the procedure_piece component).
+// bucket and the procedure_piece component; 0035: the Burgan bank's fee share of the financing bucket).
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   ADJUSTMENT_KIND_LABELS,
   DEDUCT_LABELS,
+  FINANCING_FEE_LABEL,
   HK_LINE_METHODS,
   LAB_LABELS,
   addMonths,
@@ -361,8 +362,8 @@ export function HkVoidDialog({
 }
 
 /**
- * How one component of a payee was computed: per payment method gross → implant part → lab part → deduction → net,
- * then matrah × rate; implants qty × amount; management share on the clinic's gross ciro; ortho lab totals per patient;
+ * How one component of a payee was computed: per payment method gross → implant part → lab part → (0035, financing:
+ * the Burgan bank's fee share) → deduction → net, then matrah × rate; implants qty × amount; management share on the clinic's gross ciro; ortho lab totals per patient;
  * the fixed monthly salary and the month's bonus / other rows (0031). Used by the month pages and by Hakedişim (where
  * the management component carries base and amount only).
  */
@@ -374,6 +375,9 @@ export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
         return !!b && (b.gross !== 0 || b.lab !== 0);
       })
     : [];
+  // 0035: the bank's fee column only when a Burgan-paid part carries one (statements before 0035 have no fee key).
+  const feeOf = (m: (typeof methods)[number]) => c.by_method?.[m]?.fee ?? 0;
+  const showFee = methods.some((m) => feeOf(m) !== 0);
   return (
     <div className="rounded border bg-gray-50 p-3 text-sm text-gray-900 space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -394,6 +398,7 @@ export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
                     <th className="py-1 pr-3 font-medium text-right">İmplant payı</th>
                     <th className="py-1 pr-3 font-medium text-right">Lab</th>
                     <th className="py-1 pr-3 font-medium text-right">Hesaba giren</th>
+                    {showFee && <th className="py-1 pr-3 font-medium text-right">{FINANCING_FEE_LABEL}</th>}
                     <th className="py-1 pr-3 font-medium text-right">Kesinti</th>
                     <th className="py-1 font-medium text-right">Net</th>
                   </tr>
@@ -409,16 +414,29 @@ export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
                         <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{b.implant ? formatTL(-b.implant) : "—"}</td>
                         <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{b.lab ? formatTL(-b.lab) : "—"}</td>
                         <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{formatTL(b.eligible)}</td>
+                        {showFee && (
+                          <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">
+                            {feeOf(m) ? formatTL(-feeOf(m)) : "—"}
+                          </td>
+                        )}
                         <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">
                           {b.deduction ? `${formatTL(-b.deduction)} (${formatBp(b.deduct_bp)})` : formatBp(b.deduct_bp)}
                         </td>
-                        <td className="py-1 text-right tabular-nums whitespace-nowrap">{formatTL(b.eligible - b.deduction)}</td>
+                        <td className="py-1 text-right tabular-nums whitespace-nowrap">
+                          {formatTL(b.eligible - feeOf(m) - b.deduction)}
+                        </td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
             </div>
+          )}
+          {showFee && (
+            <p className="text-xs text-gray-600">
+              {FINANCING_FEE_LABEL}: hastanın Burgan kredisiyle ödediği kısımdan bankanın kestiği komisyon, KKDF ve BSMV
+              payı (kredi tutarına oranla); finansman kesintisi kalan tutara uygulanır.
+            </p>
           )}
           {typeof c.lab_cents === "number" && <CiroLabLine c={c} />}
           <p className="text-gray-700">

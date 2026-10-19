@@ -8,7 +8,8 @@
 // (0033): the 'Ödenmemiş (ay sonu)' deduction of ciro_share rules (the part of a Macro treatment unpaid at the end of
 // its month) and kind procedure_piece, a doctor's fixed amount per piece of one procedure group (İşlem grupları). v2.2
 // (0034): "İşaretsiz hastalar bu gruba girer" on a child ciro_share rule (unmarked patients of the doctor count as
-// children; only adults are then marked).
+// children; only adults are then marked). v2.3 (0035): the financing deduction applies after the Burgan bank's fee
+// share (ciro_share; none under ortho_lab_first).
 
 import Link from "next/link";
 import { useState } from "react";
@@ -38,6 +39,7 @@ import {
 import {
   BANK_PORTION_HINT,
   DEDUCT_LABELS,
+  FINANCING_DEDUCT_HINT,
   HK_CHILD_AGE_LIMIT_MAX,
   HK_CHILD_AGE_LIMIT_MIN,
   HK_KINDS,
@@ -825,6 +827,7 @@ function RuleDialog({
             </div>
             <p className="text-xs text-gray-500 mt-2">
               Hekimin payı hesaplanmadan önce o ödeme şeklindeki tutardan düşülür (ör. kart komisyonu). Kesinti yoksa 0.
+              {` ${FINANCING_DEDUCT_HINT}`}
               {f.unpaid && ` ${DEDUCT_LABELS.unpaid}: ${UNPAID_DEDUCT_HINT}`}
             </p>
           </fieldset>
