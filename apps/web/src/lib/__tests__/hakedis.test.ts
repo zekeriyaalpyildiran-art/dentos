@@ -1,6 +1,7 @@
 // Hakediş engine mirror (spec §1 "Calculation", §2; v1.1 child patients by age; v1.2 staff payroll: fixed_monthly
 // salaries and bonus / other adjustments; v1.3 bank / cash split: bank_portion rules; v1.4 lab costs deducted from
-// the ciro, minimum_monthly floors and the doctor × lab summary). Made-up doctors, staff, patients, labs, rates and
+// the ciro, minimum_monthly floors and the doctor × lab summary; v2 Macro import: unpaid lines, lines without a
+// doctor, procedure groups and procedure_piece rules). Made-up doctors, staff, patients, labs, groups, rates and
 // amounts only.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,10 +23,20 @@ import {
   componentKey,
   componentTitle,
   computeMonth,
+  DEDUCT_LABELS,
   emptyPayeeSummary,
+  EXT_DOCTOR_MODE_LABELS,
+  extDoctorOf,
+  findImplantPieceConflict,
   findOverlappingRule,
+  finHkAssignPiece,
+  HK_MACRO_REF_PREFIX,
+  markFor,
+  finHkImportMacro,
   finHkSaveAdjustment,
+  finHkSaveExtDoctor,
   finHkSaveMark,
+  finHkSaveProcGroup,
   finHkSaveRule,
   finHkSaveSettings,
   finHkVoidAdjustment,
@@ -36,9 +47,11 @@ import {
   HK_ADJUSTMENT_DESCRIPTION_MAX,
   HK_DEFAULT_CHILD_AGE_LIMIT,
   HK_KINDS,
+  HK_LINE_METHODS,
   hkMarksAccess,
   hkMarksList,
   hkSaveMark,
+  importRefusalOf,
   isLabWarning,
   KIND_LABELS,
   kindAllowsAnyUser,
@@ -49,20 +62,25 @@ import {
   labTotalsOf,
   markIsChildOn,
   MINIMUM_MONTHLY_HINT,
+  METHOD_LABELS,
   MINIMUM_TOPUP_COMPONENT_LABEL,
   minimumRuleOf,
   monthKey,
   monthRangesOverlap,
   monthStart,
   monthStatus,
+  normalizeOpNames,
   normalizePatientRef,
+  opNameMoves,
   parsePercent,
   pickDefaultMonth,
   pieceFieldLabel,
+  procGroupOfOperation,
   resolveSegment,
   roundHalfAwayDiv,
   RULE_FIELDS,
   ruleActiveIn,
+  ruleDeductBp,
   ruleOverlapKey,
   salaryRuleOf,
   SPLIT_LABELS,
@@ -71,6 +89,8 @@ import {
   validateAdjustment,
   validateBirthDate,
   validateChildAgeLimit,
+  validateExtDoctor,
+  validateProcGroup,
   validateRule,
   warningText,
   type HkComponentJson,
@@ -81,6 +101,7 @@ import {
   type HkComputeMark,
   type HkComputeOutput,
   type HkComputePiece,
+  type HkComputeProcGroup,
   type HkComputeRule,
   type HkRuleInput,
 } from "../hakedis";
@@ -833,7 +854,7 @@ describe("clinic_ciro_share", () => {
       management_cents: TL(3_625),
       total_cents: TL(7_852.5),
     });
-    expect(s.gross_by_method).toEqual({ cash: 0, card: TL(29_000), transfer: 0, financing: 0 });
+    expect(s.gross_by_method).toEqual({ cash: 0, card: TL(29_000), transfer: 0, financing: 0, unpaid: 0 });
   });
 });
 
@@ -1065,7 +1086,15 @@ describe("payroll (v1.2)", () => {
     expect(HK_KINDS.slice(-3)).toEqual(["fixed_monthly", "bank_portion", "minimum_monthly"]);
     expect(KIND_LABELS.fixed_monthly).toBe("Sabit aylık maaş");
     expect(ADJUSTMENT_KIND_LABELS).toEqual({ bonus: "Prim", other: "Diğer" });
-    expect(RULE_FIELDS.fixed_monthly).toEqual({ doctor: false, segment: false, share: false, piece: true, deductions: false });
+    expect(RULE_FIELDS.fixed_monthly).toEqual({
+      doctor: false,
+      segment: false,
+      share: false,
+      piece: true,
+      deductions: false,
+      unpaid: false,
+      group: false,
+    });
     expect(pieceFieldLabel("fixed_monthly")).toBe("Aylık net maaş (TL)");
     expect(pieceFieldLabel("implant_piece")).toBe("İmplant başı tutar (TL)");
 
@@ -1308,7 +1337,15 @@ describe("bank / cash split (v1.3)", () => {
 
   it("checks bank_portion rules: fields, labels, overlaps per payee", () => {
     expect(KIND_LABELS.bank_portion).toBe("Bankadan ödenen sabit tutar");
-    expect(RULE_FIELDS.bank_portion).toEqual({ doctor: false, segment: false, share: false, piece: true, deductions: false });
+    expect(RULE_FIELDS.bank_portion).toEqual({
+      doctor: false,
+      segment: false,
+      share: false,
+      piece: true,
+      deductions: false,
+      unpaid: false,
+      group: false,
+    });
     expect(pieceFieldLabel("bank_portion")).toBe("Aylık bankadan ödenen tutar (TL)");
     expect(BANK_PORTION_HINT).toBe(
       "Hakedişin/maaşın bankadan ödenen kısmı; toplamı değiştirmez, ödemeyi bankadan ve elden diye böler."
@@ -1981,7 +2018,15 @@ describe("minimum monthly floor (v1.4)", () => {
 
   it("checks minimum_monthly rules: fields, labels, overlaps per payee", () => {
     expect(KIND_LABELS.minimum_monthly).toBe("Taban maaş (hangisi yüksekse)");
-    expect(RULE_FIELDS.minimum_monthly).toEqual({ doctor: false, segment: false, share: false, piece: true, deductions: false });
+    expect(RULE_FIELDS.minimum_monthly).toEqual({
+      doctor: false,
+      segment: false,
+      share: false,
+      piece: true,
+      deductions: false,
+      unpaid: false,
+      group: false,
+    });
     expect(pieceFieldLabel("minimum_monthly")).toBe("Aylık taban tutar (TL)");
     expect(MINIMUM_MONTHLY_HINT).toBe("Ayın hakedişi bu tutarın altında kalırsa bu tutar ödenir.");
     expect(kindAllowsAnyUser("minimum_monthly")).toBe(true);
@@ -2415,10 +2460,13 @@ describe("RPC wrappers (v1.3)", () => {
       p_note: "",
     };
     await finHkSaveRule(args);
+    // 0033: the unpaid deduction and the procedure group are always sent (0 / null when left out).
     expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", {
       ...args,
       p_from_month: "2026-11-01",
       p_to_month: "2027-03-01",
+      p_deduct_unpaid_bp: 0,
+      p_proc_group_id: null,
     });
   });
 
@@ -2441,7 +2489,7 @@ describe("RPC wrappers (v1.3)", () => {
       p_note: "",
     };
     await finHkSaveRule(args);
-    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", args);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", { ...args, p_deduct_unpaid_bp: 0, p_proc_group_id: null });
   });
 });
 
@@ -2458,5 +2506,617 @@ describe("access flags of the hakediş payloads (0031)", () => {
     expect(hkLedgerVisible({})).toBe(true);
     expect(hkLedgerVisible({ ledger_visible: false })).toBe(false);
     expect(hkLedgerVisible({ ledger_visible: true })).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 (0033): Macro import — unpaid lines, lines without a doctor, procedure groups and procedure_piece rules
+// ---------------------------------------------------------------------------
+
+const GROUPS: HkComputeProcGroup[] = [
+  { id: "g-imp", name: "İmplant grubu", is_implant: true },
+  { id: "g-cek", name: "Çekim grubu", is_implant: false },
+  { id: "g-kist", name: "Kist grubu", is_implant: false },
+];
+
+describe("unpaid lines (v2)", () => {
+  // Hekim A: 25 % of ciro after card 11 % and unpaid 11 %.
+  const aUnpaid = () =>
+    rule({
+      kind: "ciro_share",
+      payee_user_id: "u-a",
+      doctor_id: "doc-a",
+      segment: "standard",
+      share_bp: 2500,
+      deduct_card_bp: 1100,
+      deduct_unpaid_bp: 1100,
+    });
+
+  it("deducts the part unpaid at month end at the rule's unpaid rate (owner example shape)", () => {
+    const r = aUnpaid();
+    // A 60.000 treatment, 30.000 paid in cash by the end of the month.
+    const out = run({
+      month: "2026-11",
+      rules: [r],
+      lines: [
+        line({ doctor_id: "doc-a", method: "cash", try_cents: TL(30_000) }),
+        line({ doctor_id: "doc-a", method: "unpaid", try_cents: TL(30_000) }),
+      ],
+    });
+    const c = component(out, r.id);
+    expect(c.by_method!.unpaid).toEqual({
+      gross: TL(30_000),
+      implant: 0,
+      lab: 0,
+      eligible: TL(30_000),
+      deduct_bp: 1100,
+      deduction: TL(3_300),
+    });
+    // 30.000 + 30.000 × 0,89 = 56.700 → 25 % = 14.175
+    expect(c.base_cents).toBe(TL(56_700));
+    expect(c.amount_cents).toBe(TL(14_175));
+    expect(c.lines_count).toBe(2);
+    expect(out.clinic_total_cents).toBe(TL(60_000));
+    const s = summarizePayee(out.payees[0]);
+    expect(s.gross_by_method).toEqual({ cash: TL(30_000), card: 0, transfer: 0, financing: 0, unpaid: TL(30_000) });
+    expect(s).toMatchObject({ gross_cents: TL(60_000), deduction_cents: TL(3_300), base_cents: TL(56_700) });
+  });
+
+  it("keeps the implant part of an unpaid line out of the ciro", () => {
+    const r = aUnpaid();
+    const out = run({
+      month: "2026-11",
+      rules: [r],
+      lines: [line({ doctor_id: "doc-a", method: "unpaid", try_cents: TL(20_000), implant_cents: TL(20_000) })],
+    });
+    expect(component(out, r.id).by_method!.unpaid).toMatchObject({ gross: TL(20_000), implant: TL(20_000), eligible: 0, deduction: 0 });
+    expect(component(out, r.id).amount_cents).toBe(0);
+  });
+
+  it("adds the unpaid bucket only with an unpaid rate or unpaid lines (0032 keys otherwise)", () => {
+    const plain = aStd();
+    const before = run({ month: "2026-11", rules: [plain], lines: [line({ doctor_id: "doc-a", try_cents: TL(100) })] });
+    expect(Object.keys(component(before, plain.id).by_method!).sort()).toEqual(["card", "cash", "financing", "transfer"]);
+
+    const withRate = aUnpaid();
+    const empty = run({ month: "2026-11", rules: [withRate], lines: [] });
+    expect(component(empty, withRate.id).by_method!.unpaid).toEqual({
+      gross: 0,
+      implant: 0,
+      lab: 0,
+      eligible: 0,
+      deduct_bp: 1100,
+      deduction: 0,
+    });
+
+    // An unpaid line under a rule without an unpaid rate: bucket with 0 % (an ortho rule never has one).
+    const noRate = run({
+      month: "2026-11",
+      rules: [plain],
+      lines: [line({ doctor_id: "doc-a", method: "unpaid", try_cents: TL(1_000) })],
+    });
+    expect(component(noRate, plain.id).by_method!.unpaid).toMatchObject({ gross: TL(1_000), deduct_bp: 0, deduction: 0 });
+    expect(component(noRate, plain.id).amount_cents).toBe(TL(250));
+  });
+
+  it("applies the lab costs after the unpaid deduction too", () => {
+    const r = aUnpaid();
+    const out = run({
+      month: "2026-11",
+      rules: [r],
+      lines: [line({ doctor_id: "doc-a", method: "unpaid", try_cents: TL(10_000) })],
+      lab_costs: [lab({ doctor_id: "doc-a", patient_ref: "hasta 1", day: "2026-11-03", amount_cents: TL(1_900), lab_name: "Lab X" })],
+    });
+    // 10.000 − 11 % = 8.900 − lab 1.900 = 7.000 → 25 % = 1.750
+    expect(component(out, r.id)).toMatchObject({ base_cents: TL(7_000), amount_cents: TL(1_750), lab_cents: TL(1_900) });
+  });
+});
+
+describe("lines without a doctor (v2)", () => {
+  it("count only in the clinic ciro, never unruled", () => {
+    const a = aStd();
+    const mgmt = rule({ kind: "clinic_ciro_share", payee_user_id: "u-c", share_bp: 300 });
+    const clinicLine = line({ doctor_id: null, method: "card", try_cents: TL(5_000), implant_cents: TL(5_000) });
+    const outsideLine = line({ doctor_id: null, method: "unpaid", try_cents: TL(2_100), patient_ref: "macro:7" });
+    const out = run({
+      month: "2026-11",
+      rules: [a, mgmt],
+      lines: [line({ doctor_id: "doc-a", try_cents: TL(3_000) }), clinicLine, outsideLine],
+      marks: [{ patient_ref: "macro:7", own_doctor_id: null, is_child: true }],
+    });
+    expect(out.warnings).toEqual([]);
+    expect(out.clinic_total_cents).toBe(TL(10_100));
+    expect(component(out, mgmt.id)).toMatchObject({ base_cents: TL(10_100), amount_cents: TL(303), lines_count: 3 });
+    expect(component(out, a.id)).toMatchObject({ base_cents: TL(3_000), lines_count: 1 });
+    expect(out.line_results.filter((x) => x.rule_id === null)).toEqual([
+      { id: clinicLine.id, segment: "standard", rule_id: null, lab_part: 0 },
+      { id: outsideLine.id, segment: "child", rule_id: null, lab_part: 0 },
+    ]);
+  });
+});
+
+describe("marks of Macro patient keys (v2)", () => {
+  const aChild = () =>
+    rule({ kind: "ciro_share", payee_user_id: "u-a", doctor_id: "doc-a", segment: "child", share_bp: 3200 });
+  const marks: HkComputeMark[] = [
+    // Exact Macro-key mark (no child) next to a name mark (child): the exact one wins.
+    { patient_ref: "macro:11", own_doctor_id: null, is_child: false },
+    { patient_ref: "hasta on bir", own_doctor_id: null, is_child: true },
+    // A bare file number (reception "Hasta no") comes before the name.
+    { patient_ref: "12", own_doctor_id: null, is_child: true },
+    { patient_ref: "hasta on iki", own_doctor_id: null, is_child: false },
+    // Only a name mark.
+    { patient_ref: "hasta on üç", own_doctor_id: null, is_child: true },
+    // A typed key of a manual line takes no name mark.
+    { patient_ref: "hasta on beş", own_doctor_id: null, is_child: true },
+  ];
+
+  it("gives a Macro key the mark of its key, else of its bare file number, else of its patient's name", () => {
+    const std = aStd();
+    const child = aChild();
+    const t = TL(1_000);
+    const rows = {
+      exact: line({ doctor_id: "doc-a", patient_ref: "macro:11", patient_name: "Hasta On Bir", try_cents: t }),
+      byNo: line({ doctor_id: "doc-a", patient_ref: "macro:12", patient_name: "Hasta On İki", try_cents: t }),
+      byName: line({ doctor_id: "doc-a", patient_ref: "macro:13", patient_name: "HASTA  On Üç", try_cents: t }),
+      none: line({ doctor_id: "doc-a", patient_ref: "macro:14", patient_name: "Hasta On Dört", try_cents: t }),
+      typed: line({ doctor_id: "doc-a", patient_ref: "X-15", patient_name: "Hasta On Beş", try_cents: t }),
+      named: line({ doctor_id: "doc-a", patient_ref: "hasta on beş", patient_name: "Hasta On Beş", try_cents: t }),
+    };
+    const out = run({ month: "2026-11", rules: [std, child], lines: Object.values(rows), marks });
+    const seg = (l: HkComputeLine) => out.line_results.find((r) => r.id === l.id)!.segment;
+    expect(seg(rows.exact)).toBe("standard");
+    expect(seg(rows.byNo)).toBe("child");
+    expect(seg(rows.byName)).toBe("child");
+    expect(seg(rows.none)).toBe("standard");
+    // Manual keys as before: their own mark only.
+    expect(seg(rows.typed)).toBe("standard");
+    expect(seg(rows.named)).toBe("child");
+    expect(component(out, child.id)).toMatchObject({ lines_count: 3, base_cents: TL(3_000) });
+    expect(component(out, std.id)).toMatchObject({ lines_count: 3 });
+  });
+
+  it("resolves a lab cost with a Macro key the same way (fin__hk_eval_lab_costs)", () => {
+    const std = aStd();
+    const child = aChild();
+    const out = run({
+      month: "2026-11",
+      rules: [std, child],
+      lines: [line({ doctor_id: "doc-a", patient_ref: "macro:13", patient_name: "Hasta On Üç", try_cents: TL(1_000) })],
+      marks,
+      lab_costs: [
+        lab({ doctor_id: "doc-a", patient_ref: "macro:13", patient_name: "hasta on üç", day: "2026-11-04", amount_cents: TL(300), lab_name: "Lab X" }),
+      ],
+    });
+    expect(component(out, child.id)).toMatchObject({ lab_cents: TL(300), base_cents: TL(700) });
+    expect(out.lab_results.map((r) => r.segment)).toEqual(["child"]);
+  });
+
+  it("markFor mirrors the lookup order", () => {
+    const byRef = new Map(marks.map((m) => [m.patient_ref, m]));
+    expect(HK_MACRO_REF_PREFIX).toBe("macro:");
+    expect(markFor(byRef, { patient_ref: "macro:11", patient_name: "Hasta On Bir" })).toBe(marks[0]);
+    expect(markFor(byRef, { patient_ref: "macro:12", patient_name: "Hasta On İki" })).toBe(marks[2]);
+    expect(markFor(byRef, { patient_ref: "macro:13", patient_name: " hasta  ON ÜÇ " })).toBe(marks[4]);
+    expect(markFor(byRef, { patient_ref: "macro:14" })).toBeUndefined();
+    expect(markFor(byRef, { patient_ref: "X-15", patient_name: "Hasta On Beş" })).toBeUndefined();
+  });
+});
+
+describe("procedure pieces (v2)", () => {
+  const sCek = () =>
+    rule({ kind: "procedure_piece", payee_user_id: "u-s", doctor_id: "doc-s", proc_group_id: "g-cek", piece_cents: TL(430) });
+  const sKist = () =>
+    rule({ kind: "procedure_piece", payee_user_id: "u-s", doctor_id: "doc-s", proc_group_id: "g-kist", piece_cents: TL(1_250) });
+
+  it("pays piece_cents × Σ qty of the doctor's live pieces of the group in the month", () => {
+    const cek = sCek();
+    const kist = sKist();
+    const out = run({
+      month: "2026-11",
+      rules: [cek, kist],
+      lines: [],
+      proc_groups: GROUPS,
+      pieces: [
+        piece({ doctor_id: "doc-s", qty: 1, proc_group_id: "g-cek", source: "import" }),
+        piece({ doctor_id: "doc-s", qty: 1, proc_group_id: "g-cek", source: "import" }),
+        piece({ doctor_id: "doc-s", qty: 1, proc_group_id: "g-cek", source: "import", voided_at: "2026-11-20T08:00:00Z" }),
+        piece({ doctor_id: "doc-s", qty: 1, proc_group_id: "g-cek", source: "import", day: "2026-12-01" }),
+        piece({ doctor_id: "doc-a", qty: 1, proc_group_id: "g-cek", source: "import" }),
+        piece({ doctor_id: "doc-s", qty: 1, proc_group_id: "g-kist", source: "import" }),
+      ],
+    });
+    expect(component(out, cek.id)).toEqual({
+      rule_id: cek.id,
+      kind: "procedure_piece",
+      doctor_id: "doc-s",
+      doctor_name: "Hekim S",
+      segment: null,
+      share_bp: null,
+      piece_cents: TL(430),
+      by_method: null,
+      base_cents: null,
+      amount_cents: TL(860),
+      qty: 2,
+      lines_count: 2,
+      proc_group_id: "g-cek",
+      proc_group_name: "Çekim grubu",
+    });
+    expect(component(out, kist.id)).toMatchObject({ qty: 1, amount_cents: TL(1_250) });
+    expect(payeeTotal(out, "u-s")).toBe(TL(2_110));
+    // Hekim A's extraction is an ordinary treatment: no warning.
+    expect(out.warnings).toEqual([]);
+    const s = summarizePayee(out.payees[0]);
+    expect(s).toMatchObject({ procedure_qty: 3, procedure_amount_cents: TL(2_110), implant_qty: 0, share_cents: 0, base_cents: 0 });
+    expect(componentTitle(component(out, cek.id))).toBe("İşlem başı ücret · Çekim grubu · Hekim S");
+  });
+
+  it("lets implant_piece count implant-group and ungrouped pieces, never pieces of other groups", () => {
+    const imp = rule({ kind: "implant_piece", payee_user_id: "u-a", doctor_id: "doc-a", piece_cents: TL(900) });
+    const out = run({
+      month: "2026-11",
+      rules: [imp],
+      lines: [],
+      proc_groups: GROUPS,
+      pieces: [
+        piece({ doctor_id: "doc-a", qty: 2, proc_group_id: "g-imp", source: "import" }),
+        piece({ doctor_id: "doc-a", qty: 1 }),
+        piece({ doctor_id: "doc-a", qty: 1, source: "clinical" }),
+        piece({ doctor_id: "doc-a", qty: 1, proc_group_id: "g-cek", source: "import" }),
+      ],
+    });
+    expect(component(out, imp.id)).toMatchObject({ qty: 4, lines_count: 3, amount_cents: TL(3_600), base_cents: 0 });
+    expect(out.warnings).toEqual([]);
+    // SQL coalesce(g.is_implant, true): a piece without a group is implant type whatever its source (the import never
+    // stores one).
+    const ungrouped = run({
+      month: "2026-11",
+      rules: [imp],
+      lines: [],
+      proc_groups: GROUPS,
+      pieces: [piece({ doctor_id: "doc-a", qty: 1, source: "import" })],
+    });
+    expect(component(ungrouped, imp.id)).toMatchObject({ qty: 1, amount_cents: TL(900) });
+  });
+
+  it("warns about implant pieces no rule takes, only those", () => {
+    const sImp = rule({ kind: "procedure_piece", payee_user_id: "u-s", doctor_id: "doc-s", proc_group_id: "g-imp", piece_cents: TL(1_100) });
+    const out = run({
+      month: "2026-11",
+      rules: [sImp],
+      lines: [],
+      proc_groups: GROUPS,
+      pieces: [
+        // Taken by the procedure_piece rule of the implant group.
+        piece({ doctor_id: "doc-s", qty: 2, proc_group_id: "g-imp", source: "import" }),
+        // A legacy implant piece of the same doctor: no implant_piece rule → unruled.
+        piece({ doctor_id: "doc-s", qty: 1 }),
+        // Implant pieces of a doctor without rules → unruled; the extraction is not.
+        piece({ doctor_id: "doc-e", qty: 3, proc_group_id: "g-imp", source: "import" }),
+        piece({ doctor_id: "doc-e", qty: 1, proc_group_id: "g-cek", source: "import" }),
+      ],
+    });
+    expect(component(out, sImp.id)).toMatchObject({ qty: 2, amount_cents: TL(2_200) });
+    expect(out.warnings).toEqual([
+      { code: "UNRULED_PIECES", doctor_id: "doc-e", doctor_name: "Hekim E", qty: 3 },
+      { code: "UNRULED_PIECES", doctor_id: "doc-s", doctor_name: "Hekim S", qty: 1 },
+    ]);
+  });
+
+  it("reports the clinic's pieces still waiting for the performing doctor, last", () => {
+    const out = run({
+      month: "2026-11",
+      rules: [sCek()],
+      lines: [line({ doctor_id: "doc-d", try_cents: TL(100) })],
+      proc_groups: GROUPS,
+      pieces: [
+        piece({ doctor_id: null, qty: 1, proc_group_id: "g-kist", source: "import" }),
+        piece({ doctor_id: null, qty: 1, proc_group_id: "g-cek", source: "import" }),
+        piece({ doctor_id: null, qty: 1, proc_group_id: "g-cek", source: "import" }),
+        // Marked "Hakediş yok", without a group, voided, or in another month: not waiting.
+        piece({ doctor_id: null, qty: 1, proc_group_id: "g-cek", source: "import", assigned_none: true }),
+        piece({ doctor_id: null, qty: 1, source: "import" }),
+        piece({ doctor_id: null, qty: 1, proc_group_id: "g-imp", source: "import", voided_at: "2026-11-21T08:00:00Z" }),
+        piece({ doctor_id: null, qty: 1, proc_group_id: "g-imp", source: "import", day: "2026-10-31" }),
+      ],
+    });
+    expect(out.warnings).toEqual([
+      { code: "UNRULED_LINES", doctor_id: "doc-d", doctor_name: "Hekim D", count: 1, try_cents: TL(100) },
+      {
+        code: "UNASSIGNED_PIECES",
+        count: 3,
+        groups: [
+          { proc_group_id: "g-cek", name: "Çekim grubu", count: 2 },
+          { proc_group_id: "g-kist", name: "Kist grubu", count: 1 },
+        ],
+      },
+    ]);
+    // Counted for nobody: Hekim S's extraction rule has no pieces.
+    expect(out.payees[0].components[0]).toMatchObject({ kind: "procedure_piece", qty: 0, amount_cents: 0 });
+    expect(warningText(out.warnings[1])).toBe(
+      "Klinik adına aktarılan 3 işlem için işlemi yapan hekim seçilmedi (Çekim grubu 2, Kist grubu 1); seçilene kadar hakedişe dahil edilmez."
+    );
+  });
+
+  it("orders procedure_piece components after implant_piece and before the management share", () => {
+    const imp = rule({ kind: "implant_piece", payee_user_id: "u-s", doctor_id: "doc-s", piece_cents: TL(900) });
+    const mgmt = rule({ kind: "clinic_ciro_share", payee_user_id: "u-s", share_bp: 100 });
+    const cek = sCek();
+    const out = run({ month: "2026-11", rules: [mgmt, cek, imp], lines: [], proc_groups: GROUPS });
+    expect(out.payees[0].components.map((c) => c.kind)).toEqual(["implant_piece", "procedure_piece", "clinic_ciro_share"]);
+  });
+
+  it("ranks procedure_piece with implant_piece: by doctor, then the implant rule, then by group name (SQL)", () => {
+    // One payee with rules for two doctors (made-up data the SQL orders the same way): Hekim A's procedure rules come
+    // before Hekim S's implant rule; each doctor's groups in Turkish name order, whatever the ids.
+    const sImp = rule({ kind: "implant_piece", payee_user_id: "u-s", doctor_id: "doc-s", piece_cents: TL(900) });
+    const aKist = rule({ kind: "procedure_piece", payee_user_id: "u-s", doctor_id: "doc-a", proc_group_id: "g-kist", piece_cents: TL(10) });
+    const aCek = rule({ kind: "procedure_piece", payee_user_id: "u-s", doctor_id: "doc-a", proc_group_id: "g-cek", piece_cents: TL(10) });
+    const sCekRule = rule({ kind: "procedure_piece", payee_user_id: "u-s", doctor_id: "doc-s", proc_group_id: "g-cek", piece_cents: TL(10) });
+    const out = run({ month: "2026-11", rules: [sCekRule, aKist, sImp, aCek], lines: [], proc_groups: GROUPS });
+    expect(out.payees[0].components.map((c) => c.rule_id)).toEqual([aCek.id, aKist.id, sImp.id, sCekRule.id]);
+  });
+
+  it("keeps a waiting group whose pieces net to zero in UNASSIGNED_PIECES (SQL)", () => {
+    const out = run({
+      month: "2026-11",
+      rules: [],
+      lines: [],
+      proc_groups: GROUPS,
+      pieces: [
+        piece({ doctor_id: null, qty: 1, proc_group_id: "g-cek", source: "import" }),
+        piece({ doctor_id: null, qty: -1, proc_group_id: "g-cek", source: "import" }),
+      ],
+    });
+    expect(out.warnings).toEqual([
+      { code: "UNASSIGNED_PIECES", count: 0, groups: [{ proc_group_id: "g-cek", name: "Çekim grubu", count: 0 }] },
+    ]);
+  });
+});
+
+describe("rules (v2)", () => {
+  const base: HkRuleInput = {
+    payee_user_id: "u-s",
+    doctor_id: "doc-s",
+    kind: "procedure_piece",
+    segment: null,
+    share_bp: null,
+    piece_cents: TL(430),
+    deduct_cash_bp: 0,
+    deduct_card_bp: 0,
+    deduct_transfer_bp: 0,
+    deduct_financing_bp: 0,
+    proc_group_id: "g-cek",
+    from_month: "2026-11",
+    to_month: null,
+  };
+
+  it("labels and fields", () => {
+    expect(HK_KINDS.indexOf("procedure_piece")).toBe(HK_KINDS.indexOf("implant_piece") + 1);
+    expect(KIND_LABELS.procedure_piece).toBe("İşlem başı ücret");
+    expect(pieceFieldLabel("procedure_piece")).toBe("İşlem başı tutar (TL)");
+    expect(RULE_FIELDS.procedure_piece).toEqual({
+      doctor: true,
+      segment: false,
+      share: false,
+      piece: true,
+      deductions: false,
+      unpaid: false,
+      group: true,
+    });
+    expect(RULE_FIELDS.ciro_share).toMatchObject({ deductions: true, unpaid: true, group: false });
+    expect(RULE_FIELDS.ortho_lab_first).toMatchObject({ deductions: true, unpaid: false });
+    expect(HK_LINE_METHODS).toEqual(["cash", "card", "transfer", "financing", "unpaid"]);
+    expect(METHOD_LABELS.unpaid).toBe("Ödenmemiş");
+    expect(DEDUCT_LABELS.unpaid).toBe("Ödenmemiş (ay sonu)");
+    expect(DEDUCT_LABELS.card).toBe(METHOD_LABELS.card);
+    expect(ruleDeductBp({ deduct_cash_bp: 0, deduct_card_bp: 1100, deduct_transfer_bp: 0, deduct_financing_bp: 0 }, "unpaid")).toBe(0);
+    expect(
+      ruleDeductBp({ deduct_cash_bp: 0, deduct_card_bp: 0, deduct_transfer_bp: 0, deduct_financing_bp: 0, deduct_unpaid_bp: 900 }, "unpaid")
+    ).toBe(900);
+  });
+
+  it("validates procedure_piece rules and the unpaid deduction", () => {
+    expect(validateRule(base)).toBeNull();
+    expect(validateRule({ ...base, proc_group_id: null })).toBe("İşlem grubunu seçin.");
+    expect(validateRule({ ...base, doctor_id: null })).toBe("Hekimi seçin.");
+    expect(validateRule({ ...base, piece_cents: 0 })).toBe("İşlem başı tutar 0'dan büyük olmalı.");
+    expect(validateRule({ ...base, deduct_unpaid_bp: 1100 })).toBe("Bu kural türünde kesinti girilemez.");
+    const ciro: HkRuleInput = {
+      ...base,
+      kind: "ciro_share",
+      segment: "standard",
+      share_bp: 2500,
+      piece_cents: null,
+      proc_group_id: null,
+      deduct_card_bp: 1100,
+    };
+    expect(validateRule({ ...ciro, deduct_unpaid_bp: 1100 })).toBeNull();
+    expect(validateRule({ ...ciro, deduct_unpaid_bp: undefined })).toBeNull();
+    expect(validateRule({ ...ciro, deduct_unpaid_bp: 10001 })).toBe("Kesinti oranı %0 ile %100 arasında olmalı.");
+    expect(validateRule({ ...ciro, proc_group_id: "g-cek" })).toBe("İşlem grubu yalnızca işlem başı ücret kuralında seçilir.");
+    expect(validateRule({ ...ciro, kind: "ortho_lab_first", segment: null, deduct_unpaid_bp: 500 })).toBe(
+      "Bu kural türünde kesinti girilemez."
+    );
+  });
+
+  it("checks overlaps per doctor and group, and implant pieces counted twice", () => {
+    const saved = [
+      { ...base, id: "r-cek" },
+      { ...base, id: "r-imp-proc", proc_group_id: "g-imp" },
+      { ...base, id: "r-implant", kind: "implant_piece" as const, proc_group_id: null, doctor_id: "doc-a", payee_user_id: "u-a" },
+    ];
+    expect(ruleOverlapKey(base)).toBe("procedure_piece|doc-s|g-cek");
+    expect(findOverlappingRule(saved, { ...base, id: "new" })?.id).toBe("r-cek");
+    expect(findOverlappingRule(saved, { ...base, id: "new", proc_group_id: "g-kist" })).toBeUndefined();
+
+    // An implant_piece rule of Hekim S clashes with S's procedure_piece rule of the implant group, not the extraction one.
+    const implantS: HkRuleInput = { ...base, kind: "implant_piece", proc_group_id: null };
+    expect(findImplantPieceConflict(saved, implantS, GROUPS)?.id).toBe("r-imp-proc");
+    expect(findImplantPieceConflict(saved, { ...implantS, from_month: "2026-01", to_month: "2026-10" }, GROUPS)).toBeUndefined();
+    // A procedure_piece rule of the implant group for Hekim A clashes with A's implant_piece rule.
+    expect(findImplantPieceConflict(saved, { ...base, doctor_id: "doc-a", proc_group_id: "g-imp" }, GROUPS)?.id).toBe("r-implant");
+    expect(findImplantPieceConflict(saved, { ...base, doctor_id: "doc-a", proc_group_id: "g-cek" }, GROUPS)).toBeUndefined();
+  });
+});
+
+describe("procedure groups and Macro doctors (v2)", () => {
+  const groups = [
+    { id: "g-1", name: "Çekim grubu", is_active: true, op_names: ["diş çekimi", "gömülü diş çekimi"] },
+    { id: "g-2", name: "Eski grup", is_active: false, op_names: ["kist operasyonu"] },
+  ];
+
+  it("normalizes and validates groups", () => {
+    expect(normalizeOpNames(["  DİŞ  ÇEKİMİ ", "diş çekimi", "", "Kist"])).toEqual(["diş çekimi", "kist"]);
+    expect(validateProcGroup({ name: "Kist grubu", op_names: ["Kist Operasyonu (Büyük)"] }, groups)).toBeNull();
+    expect(validateProcGroup({ name: " ", op_names: [] }, groups)).toBe("Grup adını girin.");
+    expect(validateProcGroup({ name: "x".repeat(81), op_names: [] }, groups)).toBe("Grup adı en fazla 80 karakter olabilir.");
+    expect(validateProcGroup({ name: "ÇEKİM GRUBU", op_names: [] }, groups)).toBe("Bu adla başka bir işlem grubu var.");
+    expect(validateProcGroup({ id: "g-1", name: "Çekim grubu", op_names: ["Diş Çekimi"] }, groups)).toBeNull();
+    expect(validateProcGroup({ name: "Yeni", op_names: ["KİST OPERASYONU"] }, groups)).toBe(
+      "“kist operasyonu” işlemi zaten “Eski grup” grubunda."
+    );
+    expect(validateProcGroup({ name: "Yeni", op_names: ["a".repeat(201)] }, groups)).toBe("İşlem adı en fazla 200 karakter olabilir.");
+  });
+
+  it("finds the group of an operation and the mapping of a Macro doctor", () => {
+    expect(procGroupOfOperation(groups, "Gömülü  DİŞ Çekimi")?.id).toBe("g-1");
+    expect(procGroupOfOperation(groups, "Kist operasyonu")).toBeUndefined(); // inactive group
+    expect(procGroupOfOperation(groups, "")).toBeUndefined();
+    const mapping = [{ ext_name: "klinik örnek", mode: "clinic" as const }];
+    expect(extDoctorOf(mapping, "KLİNİK  ÖRNEK")?.mode).toBe("clinic");
+    expect(extDoctorOf(mapping, "Hekim A")).toBeUndefined();
+    expect(EXT_DOCTOR_MODE_LABELS).toEqual({
+      doctor: "DentOS hekimi",
+      clinic: "Klinik",
+      outside: "Dışarıdan hekim (hakediş yok)",
+      ignore: "Yok say",
+    });
+    expect(validateExtDoctor({ ext_name: "Hekim A", mode: "doctor", doctor_id: "doc-a" })).toBeNull();
+    expect(validateExtDoctor({ ext_name: "Hekim A", mode: "doctor", doctor_id: null })).toBe("DentOS hekimini seçin.");
+    expect(validateExtDoctor({ ext_name: "Hekim A", mode: "clinic", doctor_id: "doc-a" })).toBe(
+      "Hekim yalnızca “DentOS hekimi” seçeneğinde seçilir."
+    );
+    expect(validateExtDoctor({ ext_name: " ", mode: "ignore", doctor_id: null })).toBe("Macro hekim adı boş olamaz.");
+    expect(validateExtDoctor({ ext_name: "Hekim A", mode: null, doctor_id: null })).toBe("Eşleştirme türünü seçin.");
+  });
+});
+
+describe("RPC wrappers (v2)", () => {
+  beforeEach(() => {
+    rpcMock.mockReset();
+    rpcMock.mockResolvedValue({ data: { already_saved: false, record: {} }, error: null });
+  });
+
+  it("sends the import, group, mapping and assignment arguments by name", async () => {
+    const args = {
+      p_batch_id: "b-1",
+      p_from: "2026-11-01",
+      p_to: "2026-11-30",
+      p_lines: [],
+      p_pieces: [],
+      p_files: ["islem.xls", "odeme.xls"],
+    };
+    await finHkImportMacro(args);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_import_macro", { ...args, p_dry_run: false });
+    await finHkImportMacro({ ...args, p_dry_run: true });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_import_macro", { ...args, p_dry_run: true });
+
+    const group = {
+      p_id: "g-1",
+      p_version: 0,
+      p_name: "Çekim grubu",
+      p_is_implant: false,
+      p_op_names: ["Diş Çekimi"],
+      p_is_active: true,
+      p_note: "",
+    };
+    await finHkSaveProcGroup(group);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_proc_group", group);
+
+    const ext = { p_id: "x-1", p_version: 0, p_ext_name: "KLİNİK ÖRNEK", p_mode: "clinic" as const, p_doctor_id: null };
+    await finHkSaveExtDoctor(ext);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_ext_doctor", ext);
+
+    await finHkAssignPiece({ p_id: "p-1", p_version: 2, p_doctor_id: "doc-s", p_none: false });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_assign_piece", { p_id: "p-1", p_version: 2, p_doctor_id: "doc-s", p_none: false });
+  });
+
+  it("saves a procedure_piece rule with its group and a ciro rule with its unpaid rate", async () => {
+    const args = {
+      p_id: "r-3",
+      p_version: 0,
+      p_payee_user_id: "u-s",
+      p_doctor_id: "doc-s",
+      p_kind: "procedure_piece" as const,
+      p_segment: null,
+      p_share_bp: null,
+      p_piece_cents: TL(430),
+      p_deduct_cash_bp: 0,
+      p_deduct_card_bp: 0,
+      p_deduct_transfer_bp: 0,
+      p_deduct_financing_bp: 0,
+      p_from_month: "2026-11-01",
+      p_to_month: null,
+      p_note: "",
+      p_proc_group_id: "g-cek",
+    };
+    await finHkSaveRule(args);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", { ...args, p_deduct_unpaid_bp: 0 });
+    await finHkSaveRule({ ...args, p_kind: "ciro_share", p_proc_group_id: null, p_deduct_unpaid_bp: 1100 });
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_save_rule", {
+      ...args,
+      p_kind: "ciro_share",
+      p_proc_group_id: null,
+      p_deduct_unpaid_bp: 1100,
+    });
+  });
+});
+
+describe("Macro import helpers (v2)", () => {
+  it("reads the refusal details of fin_hk_import_macro", () => {
+    expect(importRefusalOf({ details: JSON.stringify({ unmapped_ext_doctors: ["DR ÖRNEK", "KLİNİK X"] }) })).toEqual({
+      unmapped_ext_doctors: ["DR ÖRNEK", "KLİNİK X"],
+    });
+    expect(importRefusalOf({ details: JSON.stringify({ missing_fx: [{ currency: "EUR", day: "2026-11-03" }] }) })).toEqual({
+      missing_fx: [{ currency: "EUR", day: "2026-11-03" }],
+    });
+    // Other errors: a rule id in DETAIL, no details, broken JSON, an unrelated object.
+    expect(importRefusalOf({ details: "0b6c3c8e-1d2f-4a8b-9c1d-2e3f4a5b6c7d" })).toBeNull();
+    expect(importRefusalOf({ details: null })).toBeNull();
+    expect(importRefusalOf(null)).toBeNull();
+    expect(importRefusalOf({ details: "{oops" })).toBeNull();
+    expect(importRefusalOf({ details: "{}" })).toBeNull();
+  });
+
+  it("moves an operation name between groups (out of its holder, then into the target)", () => {
+    const groups = [
+      { id: "g-1", op_names: ["diş çekimi", "kanal"] },
+      { id: "g-2", op_names: ["kist"] },
+      { id: "g-3", op_names: [] as string[] },
+    ];
+    expect(opNameMoves(groups, "Diş  ÇEKİMİ", "g-2")).toEqual([
+      { group: groups[0], op_names: ["kanal"] },
+      { group: groups[1], op_names: ["kist", "diş çekimi"] },
+    ]);
+    expect(opNameMoves(groups, "Kist", null)).toEqual([{ group: groups[1], op_names: [] }]);
+    expect(opNameMoves(groups, "Gömülü", "g-3")).toEqual([{ group: groups[2], op_names: ["gömülü"] }]);
+    // Already there, or nothing to do.
+    expect(opNameMoves(groups, "KİST", "g-2")).toEqual([]);
+    expect(opNameMoves(groups, "Yeni", null)).toEqual([]);
+    expect(opNameMoves(groups, "  ", "g-1")).toEqual([]);
+  });
+
+  it("checks the group and mapping limits of the server", () => {
+    const many = Array.from({ length: 501 }, (_, i) => `işlem ${i}`);
+    expect(validateProcGroup({ name: "Grup", op_names: many })).toBe("Bir grupta en fazla 500 işlem adı olabilir.");
+    expect(validateProcGroup({ name: "Grup", op_names: ["x".repeat(201)] })).toBe("İşlem adı en fazla 200 karakter olabilir.");
+    expect(validateProcGroup({ name: "  Çekim   grubu ", op_names: [] }, [{ id: "g-9", name: "çekim grubu", op_names: [] }])).toBe(
+      "Bu adla başka bir işlem grubu var."
+    );
+    expect(validateExtDoctor({ ext_name: "x".repeat(121), mode: "clinic", doctor_id: null })).toBe(
+      "Macro hekim adı en fazla 120 karakter olabilir."
+    );
+    expect(validateExtDoctor({ ext_name: "Dr Örnek", mode: "doctor", doctor_id: "doc-a" })).toBeNull();
   });
 });

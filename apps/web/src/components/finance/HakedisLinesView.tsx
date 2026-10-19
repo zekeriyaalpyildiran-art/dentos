@@ -1,8 +1,12 @@
 "use client";
 
 // Satırlar ve hastalar of the Hakediş pages (finance and prep modes, HakedisParts): the month's revenue lines, implants
-// placed, lab costs (0032: with the rule and patient group each live cost resolves to) and the patient marks. Data
-// entry needs can_prepare ('finance' or 'hakedis_prepare', 0031) and an open month; the server enforces the same.
+// and procedure pieces, lab costs (0032: with the rule and patient group each live cost resolves to) and the patient
+// marks. Data entry needs can_prepare ('finance' or 'hakedis_prepare', 0031) and an open month; the server enforces
+// the same. 0033: lines imported from Macro carry the Macro doctor, operation, tooth and file number, method
+// 'Ödenmemiş', and no doctor for the clinic / an outside doctor (clinic ciro only); they are voided, never edited (the
+// next import of their range replaces them). Imported pieces of the clinic get their performing doctor or "Hakediş
+// yok" here (fin_hk_assign_piece).
 // ?tab=pieces | lab | marks opens that sub-tab (e.g. the Lab özeti's link to the lab costs); default: the lines.
 
 import { useMemo, useState, type ReactNode } from "react";
@@ -44,6 +48,7 @@ import {
   type FinanceError,
 } from "@/lib/finance";
 import {
+  EXT_DOCTOR_MODE_LABELS,
   HK_METHODS,
   HK_MIN_BIRTH_DATE,
   HK_SEGMENTS,
@@ -54,6 +59,8 @@ import {
   SOURCE_LABELS,
   ageOn,
   childAgeLimitOf,
+  extDoctorOf,
+  finHkAssignPiece,
   finHkSaveLabCost,
   finHkSaveLine,
   finHkSaveMark,
@@ -62,6 +69,7 @@ import {
   finHkVoidLine,
   finHkVoidPiece,
   hkCanPrepare,
+  markFor,
   markIsChildOn,
   normalizePatientRef,
   ruleActiveIn,
@@ -83,6 +91,7 @@ type Tab = "lines" | "pieces" | "lab" | "marks";
 type Dialog =
   | { kind: "line"; record: HkLineJson | null }
   | { kind: "piece" }
+  | { kind: "assign"; records: HkPieceJson[] }
   | { kind: "lab" }
   | { kind: "mark"; record: HkMarkJson | null; patient?: KnownPatient }
   | { kind: "void-line"; record: HkLineJson }
@@ -219,7 +228,7 @@ export function HakedisLinesView({ mode }: { mode: HkMode }) {
   const live = <T extends { voided_at: string | null }>(rows: T[]) => rows.filter((r) => !r.voided_at).length;
   const tabs: { key: Tab; label: string }[] = [
     { key: "lines", label: `Tahsilatlar${current ? ` (${live(current.lines)})` : ""}` },
-    { key: "pieces", label: `İmplant adetleri${current ? ` (${live(current.pieces)})` : ""}` },
+    { key: "pieces", label: `İmplant ve işlemler${current ? ` (${live(current.pieces)})` : ""}` },
     { key: "lab", label: `Lab giderleri${current ? ` (${live(current.lab_costs)})` : ""}` },
     { key: "marks", label: `Hasta işaretleri${marks ? ` (${marks.length})` : ""}` },
   ];
@@ -296,7 +305,9 @@ export function HakedisLinesView({ mode }: { mode: HkMode }) {
           onEdit={(l) => setDialog({ kind: "line", record: l })}
           onVoid={(l) => setDialog({ kind: "void-line", record: l })}
           onMark={(l) => {
-            const existing = marksByRef.get(l.patient_ref);
+            // 0033: a Macro line shows / edits the mark it resolves to (its own key, the bare file number or the
+            // patient's name); only without one is a new mark keyed by the line's key.
+            const existing = markFor(marksByRef, l);
             setDialog({ kind: "mark", record: existing ?? null, patient: { ref: l.patient_ref, name: l.patient_name } });
           }}
         />
@@ -308,6 +319,7 @@ export function HakedisLinesView({ mode }: { mode: HkMode }) {
           editable={editable}
           onAdd={() => setDialog({ kind: "piece" })}
           onVoid={(p) => setDialog({ kind: "void-piece", record: p })}
+          onAssign={(records) => setDialog({ kind: "assign", records })}
         />
       ) : (
         <LabTab
@@ -348,6 +360,15 @@ export function HakedisLinesView({ mode }: { mode: HkMode }) {
           onSaved={(already) => done(already ? "Kayıt zaten vardı." : "İmplant kaydı eklendi.")}
         />
       )}
+      {dialog?.kind === "assign" && (
+        <AssignPieceDialog
+          refData={refData}
+          records={dialog.records}
+          onClose={() => setDialog(null)}
+          onReload={reloadAll}
+          onDone={(text) => done(text)}
+        />
+      )}
       {dialog?.kind === "lab" && (
         <LabCostDialog
           refData={refData}
@@ -376,7 +397,7 @@ export function HakedisLinesView({ mode }: { mode: HkMode }) {
       {dialog?.kind === "void-line" && (
         <HkVoidDialog
           title="Tahsilat satırını iptal et"
-          body={`${formatDay(dialog.record.day)} · ${dialog.record.patient_name} · ${formatTL(dialog.record.try_cents)}. Satır silinmez, iptal edilmiş olarak kalır ve hesaba girmez.`}
+          body={`${formatDay(dialog.record.day)} · ${dialog.record.patient_name} · ${formatTL(dialog.record.try_cents)}. Satır silinmez, iptal edilmiş olarak kalır ve hesaba girmez.${dialog.record.source === "import" ? " Aralık Macro'dan yeniden yüklenirse yeni satırlar yazılır." : ""}`}
           onVoid={(reason) => finHkVoidLine({ p_id: dialog.record.id, p_version: dialog.record.version, p_reason: reason })}
           onDone={(text) => done(text)}
           onClose={() => setDialog(null)}
@@ -385,8 +406,8 @@ export function HakedisLinesView({ mode }: { mode: HkMode }) {
       )}
       {dialog?.kind === "void-piece" && (
         <HkVoidDialog
-          title="İmplant kaydını iptal et"
-          body={`${formatDay(dialog.record.day)} · ${dialog.record.patient_name} · ${dialog.record.qty} adet. Kayıt silinmez, iptal edilmiş olarak kalır.`}
+          title={dialog.record.proc_group_id ? "İşlem kaydını iptal et" : "İmplant kaydını iptal et"}
+          body={`${formatDay(dialog.record.day)} · ${dialog.record.patient_name} · ${dialog.record.proc_group_name ? `${dialog.record.proc_group_name} · ` : ""}${dialog.record.qty} adet. Kayıt silinmez, iptal edilmiş olarak kalır.${dialog.record.source === "import" ? " Aralık Macro'dan yeniden yüklenirse yeni satırlar yazılır." : ""}`}
           onVoid={(reason) => finHkVoidPiece({ p_id: dialog.record.id, p_version: dialog.record.version, p_reason: reason })}
           onDone={(text) => done(text)}
           onClose={() => setDialog(null)}
@@ -416,6 +437,30 @@ function VoidedNote({ row }: { row: { voided_at: string | null; voided_by_name: 
   );
 }
 
+/** Filter value of the lines without a doctor (0033: Macro doctors mapped to the clinic or an outside doctor). */
+const NO_DOCTOR = "__none__";
+
+/** "Klinik" / "Dışarıdan hekim (hakediş yok)" of a doctor-less imported row's Macro doctor, from the mapping. */
+function extModeText(refData: HkReferenceJson, extDoctor: string | null | undefined): string {
+  const m = extDoctor ? extDoctorOf(refData.ext_doctors ?? [], extDoctor) : undefined;
+  return m ? EXT_DOCTOR_MODE_LABELS[m.mode] : "Hekimsiz";
+}
+
+/** The Macro details of an imported line / piece: operation, tooth, file number. */
+function MacroDetails({
+  row,
+}: {
+  row: { procedure?: string | null; tooth?: string | null; macro_patient_no?: string | null };
+}) {
+  const parts = [
+    row.procedure || null,
+    row.tooth ? `diş ${row.tooth}` : null,
+    row.macro_patient_no ? `dosya no ${row.macro_patient_no}` : null,
+  ].filter(Boolean);
+  if (parts.length === 0) return null;
+  return <div className="text-xs text-gray-500">{parts.join(" · ")}</div>;
+}
+
 function LinesTab({
   data,
   refData,
@@ -438,21 +483,32 @@ function LinesTab({
   onMark: (l: HkLineJson) => void;
 }) {
   const [doctorId, setDoctorId] = useState("");
+  const [source, setSource] = useState("");
   const [query, setQuery] = useState("");
   const [showVoided, setShowVoided] = useState(false);
   const payeeOfRule = useMemo(() => new Map(refData.rules.map((r) => [r.id, r.payee_name])), [refData.rules]);
   const doctors = useMemo(() => {
     const map = new Map<string, string>();
-    for (const l of data.lines) map.set(l.doctor_id, l.doctor_name);
+    for (const l of data.lines) {
+      if (l.doctor_id) map.set(l.doctor_id, l.doctor_name ?? "");
+      else map.set(NO_DOCTOR, "Hekimsiz (klinik / dışarıdan hekim)");
+    }
     return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1], "tr"));
   }, [data.lines]);
+  const hasImport = data.lines.some((l) => l.source === "import");
 
   const q = searchKey(query);
   const rows = data.lines.filter(
     (l) =>
       (showVoided || !l.voided_at) &&
-      (!doctorId || l.doctor_id === doctorId) &&
-      (!q || searchKey(l.patient_name).includes(q) || searchKey(l.description).includes(q))
+      (!doctorId || (doctorId === NO_DOCTOR ? !l.doctor_id : l.doctor_id === doctorId)) &&
+      (!source || (source === "import" ? l.source === "import" : l.source !== "import")) &&
+      (!q ||
+        searchKey(l.patient_name).includes(q) ||
+        searchKey(l.description).includes(q) ||
+        searchKey(l.procedure).includes(q) ||
+        searchKey(l.ext_doctor).includes(q) ||
+        searchKey(l.macro_patient_no).includes(q))
   );
   const liveRows = rows.filter((l) => !l.voided_at);
   const sum = (pick: (l: HkLineJson) => number) => liveRows.reduce((s, l) => s + pick(l), 0);
@@ -470,8 +526,23 @@ function LinesTab({
             ))}
           </select>
         </Field>
+        {hasImport && (
+          <Field label="Kaynak" className="min-w-[10rem]">
+            <select className={inputClass} value={source} onChange={(e) => setSource(e.target.value)}>
+              <option value="">Tümü</option>
+              <option value="import">Macro&apos;dan</option>
+              <option value="other">Elle / diğer</option>
+            </select>
+          </Field>
+        )}
         <Field label="Ara" className="flex-1 min-w-[12rem]">
-          <input className={inputClass} placeholder="Hasta adı veya açıklama" maxLength={100} value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input
+            className={inputClass}
+            placeholder="Hasta, işlem, açıklama veya dosya no"
+            maxLength={100}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
         </Field>
         <label className="flex items-center gap-2 text-sm text-gray-800 pb-2">
           <input type="checkbox" checked={showVoided} onChange={(e) => setShowVoided(e.target.checked)} />
@@ -510,18 +581,40 @@ function LinesTab({
             ) : (
               rows.map((l) => {
                 const voided = !!l.voided_at;
-                const mark = marksByRef.get(l.patient_ref);
+                const imported = l.source === "import";
+                const mark = markFor(marksByRef, l);
                 return (
                   <tr key={l.id} className={`border-b align-top ${voided ? "text-gray-400" : ""}`}>
-                    <td className={`px-3 py-2 whitespace-nowrap ${voided ? "line-through" : ""}`}>{formatDay(l.day)}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">{l.doctor_name}</td>
+                    <td className={`px-3 py-2 whitespace-nowrap ${voided ? "line-through" : ""}`}>
+                      {formatDay(l.day)}
+                      {l.basis === "payment" && l.treatment_day && (
+                        <div className="text-xs text-gray-500">işlem {formatDay(l.treatment_day)}</div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {l.doctor_id ? (
+                        l.doctor_name
+                      ) : (
+                        <span className="text-gray-600">{extModeText(refData, l.ext_doctor)}</span>
+                      )}
+                      {l.ext_doctor && <div className="text-xs text-gray-500">Macro: {l.ext_doctor}</div>}
+                    </td>
                     <td className="px-3 py-2">
                       <div className={voided ? "line-through" : "font-medium"}>{l.patient_name}</div>
+                      <MacroDetails row={l} />
                       {l.description && <div className="text-xs text-gray-500">{l.description}</div>}
-                      {l.source !== "manual" && <div className="text-xs text-gray-500">{SOURCE_LABELS[l.source] ?? l.source}</div>}
+                      {l.source !== "manual" && (
+                        <div className="text-xs text-gray-500">
+                          {SOURCE_LABELS[l.source] ?? l.source}
+                          {l.basis === "payment" ? " · ödeme raporu" : l.basis === "production" ? " · işlem raporu" : ""}
+                        </div>
+                      )}
                       <VoidedNote row={l} />
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap">{METHOD_LABELS[l.method]}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {METHOD_LABELS[l.method] ?? l.method}
+                      {l.method === "unpaid" && <div className="text-xs text-gray-500">ay sonunda</div>}
+                    </td>
                     <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${voided ? "line-through" : ""} ${l.try_cents < 0 ? "text-red-600" : ""}`}>
                       {formatTL(l.try_cents)}
                       {l.currency !== "TRY" && <div className="text-xs text-gray-500">{formatMoney(l.amount_cents, l.currency)}</div>}
@@ -529,7 +622,7 @@ function LinesTab({
                     <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{l.implant_cents ? formatTL(l.implant_cents) : "—"}</td>
                     <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{l.lab_part ? formatTL(l.lab_part) : "—"}</td>
                     <td className="px-3 py-2 whitespace-nowrap">
-                      {voided ? (
+                      {voided || !l.doctor_id ? (
                         "—"
                       ) : (
                         <>
@@ -541,6 +634,8 @@ function LinesTab({
                     <td className="px-3 py-2">
                       {voided ? (
                         "—"
+                      ) : !l.doctor_id ? (
+                        <span className="text-gray-600 whitespace-nowrap">Yalnız klinik cirosu</span>
                       ) : l.rule_kind && l.rule_id ? (
                         <>
                           <div className="whitespace-nowrap">{KIND_LABELS[l.rule_kind]}</div>
@@ -553,15 +648,17 @@ function LinesTab({
                     <td className="px-3 py-2 text-right whitespace-nowrap space-x-3">
                       {editable && !voided && (
                         <>
-                          <button type="button" className="text-blue-600 hover:underline" onClick={() => onEdit(l)}>
-                            Düzenle
-                          </button>
+                          {!imported && (
+                            <button type="button" className="text-blue-600 hover:underline" onClick={() => onEdit(l)}>
+                              Düzenle
+                            </button>
+                          )}
                           <button type="button" className="text-red-600 hover:underline" onClick={() => onVoid(l)}>
                             İptal et
                           </button>
                         </>
                       )}
-                      {canMark && !voided && (
+                      {canMark && !voided && l.doctor_id && (
                         <button type="button" className="text-blue-600 hover:underline" onClick={() => onMark(l)}>
                           {mark ? "İşareti düzenle" : "İşaretle"}
                         </button>
@@ -590,9 +687,26 @@ function LinesTab({
       <p className="text-xs text-gray-500">
         Tutar, tahsilatın TL karşılığıdır; eksi tutar düzeltme satırıdır. İmplant payı hekimin cirosuna girmez (implant
         adet başı ödenir). Hasta grubu, satırda elle seçilmediyse hasta işaretinden gelir.
+        {hasImport &&
+          ` Macro'dan aktarılan satırlar işlem gününe göredir (ortodontide ödeme gününe göre); “${METHOD_LABELS.unpaid}” işlemin ay sonuna kadar ödenmemiş kısmıdır. Bu satırlar düzenlenmez: yanlışsa Macro'da düzeltip aralığı yeniden yükleyin ya da satırı iptal edin. Hekimsiz satırlar (klinik / dışarıdan hekim) yalnız klinik cirosuna girer. Macro satırlarının hasta anahtarı dosya numarasıdır (macro:…); hastanın Macro'dan önce adla ya da dosya numarasıyla girilmiş işareti ve lab giderleri bu satırlara da uygulanır, yüklemeden sonra adla girilen işaret dosya numarasına kaydedilir.`}
       </p>
     </div>
   );
+}
+
+/** Rule hint of a live piece with a doctor: implant-type pieces need a rule; others are paid only with a fee rule. */
+function pieceRuleHint(
+  p: HkPieceJson,
+  implantDoctors: Set<string | null>,
+  procedureKeys: Set<string>
+): { text: string; warn: boolean } | null {
+  if (!p.doctor_id) return null;
+  const implantType = !p.proc_group_id || p.proc_group_is_implant !== false;
+  const byGroup = !!p.proc_group_id && procedureKeys.has(`${p.doctor_id}|${p.proc_group_id}`);
+  if (implantType) {
+    return implantDoctors.has(p.doctor_id) || byGroup ? null : { text: "İmplant kuralı yok", warn: true };
+  }
+  return byGroup ? null : { text: "İşlem başı ücret kuralı yok", warn: false };
 }
 
 function PiecesTab({
@@ -602,6 +716,7 @@ function PiecesTab({
   editable,
   onAdd,
   onVoid,
+  onAssign,
 }: {
   data: HkMonthPayload;
   month: string;
@@ -609,23 +724,70 @@ function PiecesTab({
   editable: boolean;
   onAdd: () => void;
   onVoid: (p: HkPieceJson) => void;
+  onAssign: (records: HkPieceJson[]) => void;
 }) {
   const [showVoided, setShowVoided] = useState(false);
-  const rows = data.pieces.filter((p) => showVoided || !p.voided_at);
-  const ruled = new Set(
-    refData.rules.filter((r) => r.kind === "implant_piece" && ruleActiveIn(r, month)).map((r) => r.doctor_id)
+  const [onlyUnassigned, setOnlyUnassigned] = useState(false);
+  const [group, setGroup] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const unassignedOf = (p: HkPieceJson) => !p.voided_at && !p.doctor_id && !p.assigned_none;
+  // Only clinic pieces get their doctor here (fin_hk_assign_piece): unassigned / "Hakediş yok" ones, or pieces whose
+  // Macro doctor is mapped to the clinic. Another Macro doctor's piece is corrected in Macro (a re-import puts it back
+  // under the mapped doctor).
+  const assignable = (p: HkPieceJson) =>
+    !p.voided_at &&
+    p.source === "import" &&
+    (!p.doctor_id || !!p.assigned_none || extDoctorOf(refData.ext_doctors ?? [], p.ext_doctor ?? "")?.mode === "clinic");
+  const groupOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of data.pieces) map.set(p.proc_group_id ?? "", p.proc_group_name ?? "İmplant (elle girilen)");
+    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1], "tr"));
+  }, [data.pieces]);
+  const rows = data.pieces.filter(
+    (p) =>
+      (showVoided || !p.voided_at) &&
+      (!onlyUnassigned || unassignedOf(p)) &&
+      (!group || (p.proc_group_id ?? "") === (group === NO_DOCTOR ? "" : group))
   );
-  const total = rows.filter((p) => !p.voided_at).reduce((s, p) => s + p.qty, 0);
+  const activeRules = refData.rules.filter((r) => ruleActiveIn(r, month));
+  const implantDoctors = new Set(activeRules.filter((r) => r.kind === "implant_piece").map((r) => r.doctor_id));
+  const procedureKeys = new Set(
+    activeRules.filter((r) => r.kind === "procedure_piece").map((r) => `${r.doctor_id}|${r.proc_group_id ?? ""}`)
+  );
+  const live = rows.filter((p) => !p.voided_at);
+  const unassigned = data.pieces.filter(unassignedOf);
+  const byGroup = new Map<string, number>();
+  for (const p of live) {
+    const name = p.proc_group_name ?? "İmplant";
+    byGroup.set(name, (byGroup.get(name) ?? 0) + p.qty);
+  }
+  const chosen = data.pieces.filter((p) => selected.has(p.id) && assignable(p));
+  const toggle = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const selectable = (p: HkPieceJson) => editable && assignable(p);
 
   return (
     <Card
-      title="Takılan implantlar"
+      title="İmplant ve işlemler"
       actions={
         <>
-          <label className="flex items-center gap-2 text-sm text-gray-800">
-            <input type="checkbox" checked={showVoided} onChange={(e) => setShowVoided(e.target.checked)} />
-            İptal edilenleri göster
-          </label>
+          {editable && chosen.length > 0 && (
+            <button
+              type="button"
+              className={buttonSecondary}
+              onClick={() => {
+                setSelected(new Set());
+                onAssign(chosen);
+              }}
+            >
+              Seçilenlere hekim ata ({chosen.length})
+            </button>
+          )}
           {editable && (
             <button type="button" className={buttonPrimary} onClick={onAdd}>
               İmplant ekle
@@ -634,13 +796,61 @@ function PiecesTab({
         </>
       }
     >
+      {unassigned.length > 0 && (
+        <div className="mb-3 p-3 rounded bg-amber-50 text-amber-900 text-sm flex flex-wrap items-center gap-3">
+          <span className="flex-1 min-w-[12rem]">
+            Klinik adına Macro&apos;dan gelen {unassigned.reduce((s, p) => s + p.qty, 0)} işlem için işlemi yapan hekim
+            seçilmedi; seçilene kadar kimsenin hakedişine girmez.
+          </span>
+          {editable && (
+            <button type="button" className={buttonSecondary} onClick={() => setOnlyUnassigned(true)}>
+              Atanmamışları göster
+            </button>
+          )}
+        </div>
+      )}
+      <div className="flex flex-wrap items-end gap-4 mb-3">
+        {groupOptions.length > 1 && (
+          <Field label="İşlem grubu" className="min-w-[12rem]">
+            <select className={inputClass} value={group} onChange={(e) => setGroup(e.target.value)}>
+              <option value="">Tümü</option>
+              {groupOptions.map(([id, name]) => (
+                <option key={id || NO_DOCTOR} value={id || NO_DOCTOR}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+        <label className="flex items-center gap-2 text-sm text-gray-800 pb-2">
+          <input type="checkbox" checked={onlyUnassigned} onChange={(e) => setOnlyUnassigned(e.target.checked)} />
+          Yalnız hekimi seçilmemişler
+        </label>
+        <label className="flex items-center gap-2 text-sm text-gray-800 pb-2">
+          <input type="checkbox" checked={showVoided} onChange={(e) => setShowVoided(e.target.checked)} />
+          İptal edilenleri göster
+        </label>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-gray-700 border-b">
+              {editable && (
+                <th className="py-2 pr-2">
+                  <input
+                    type="checkbox"
+                    aria-label="Görünen Macro işlemlerini seç"
+                    checked={rows.some(selectable) && rows.filter(selectable).every((p) => selected.has(p.id))}
+                    onChange={(e) =>
+                      setSelected(e.target.checked ? new Set(rows.filter(selectable).map((p) => p.id)) : new Set())
+                    }
+                  />
+                </th>
+              )}
               <th className="py-2 pr-3 font-semibold">Tarih</th>
               <th className="py-2 pr-3 font-semibold">Hekim</th>
               <th className="py-2 pr-3 font-semibold">Hasta</th>
+              <th className="py-2 pr-3 font-semibold">İşlem</th>
               <th className="py-2 pr-3 font-semibold text-right">Adet</th>
               <th className="py-2" />
             </tr>
@@ -648,27 +858,64 @@ function PiecesTab({
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={5} className="py-6 text-center text-gray-500">
-                  Bu ay için implant kaydı yok.
+                <td colSpan={editable ? 7 : 6} className="py-6 text-center text-gray-500">
+                  Bu ay için implant ya da işlem kaydı yok.
                 </td>
               </tr>
             ) : (
               rows.map((p) => {
                 const voided = !!p.voided_at;
+                const hint = voided ? null : pieceRuleHint(p, implantDoctors, procedureKeys);
                 return (
                   <tr key={p.id} className={`border-b last:border-b-0 align-top ${voided ? "text-gray-400" : ""}`}>
+                    {editable && (
+                      <td className="py-2 pr-2">
+                        {selectable(p) && (
+                          <input
+                            type="checkbox"
+                            aria-label={`${p.patient_name} seç`}
+                            checked={selected.has(p.id)}
+                            onChange={() => toggle(p.id)}
+                          />
+                        )}
+                      </td>
+                    )}
                     <td className={`py-2 pr-3 whitespace-nowrap ${voided ? "line-through" : ""}`}>{formatDay(p.day)}</td>
                     <td className="py-2 pr-3 whitespace-nowrap">
-                      {p.doctor_name}
-                      {!voided && !ruled.has(p.doctor_id) && <div className="text-xs text-amber-700">İmplant kuralı yok</div>}
+                      {p.doctor_id ? (
+                        p.doctor_name
+                      ) : p.assigned_none ? (
+                        <span className="text-gray-600">Hakediş yok</span>
+                      ) : (
+                        <span className="text-amber-700 font-medium">Hekim seçilmedi</span>
+                      )}
+                      {p.ext_doctor && <div className="text-xs text-gray-500">Macro: {p.ext_doctor}</div>}
+                      {hint && <div className={`text-xs ${hint.warn ? "text-amber-700" : "text-gray-500"}`}>{hint.text}</div>}
                     </td>
                     <td className="py-2 pr-3">
                       <div className={voided ? "line-through" : ""}>{p.patient_name}</div>
+                      {p.macro_patient_no && <div className="text-xs text-gray-500">dosya no {p.macro_patient_no}</div>}
                       {p.description && <div className="text-xs text-gray-500">{p.description}</div>}
                       <VoidedNote row={p} />
                     </td>
+                    <td className="py-2 pr-3">
+                      <div>
+                        {p.proc_group_name ?? "İmplant"}
+                        {p.proc_group_is_implant ? <span className="text-xs text-gray-500"> (implant)</span> : null}
+                      </div>
+                      {(p.procedure || p.tooth) && (
+                        <div className="text-xs text-gray-500">
+                          {[p.procedure, p.tooth ? `diş ${p.tooth}` : null].filter(Boolean).join(" · ")}
+                        </div>
+                      )}
+                    </td>
                     <td className={`py-2 pr-3 text-right tabular-nums ${p.qty < 0 ? "text-red-600" : ""} ${voided ? "line-through" : ""}`}>{p.qty}</td>
-                    <td className="py-2 text-right">
+                    <td className="py-2 text-right whitespace-nowrap space-x-3">
+                      {editable && assignable(p) && (
+                        <button type="button" className="text-blue-600 hover:underline" onClick={() => onAssign([p])}>
+                          {p.doctor_id || p.assigned_none ? "Değiştir" : "Ata"}
+                        </button>
+                      )}
                       {editable && !voided && (
                         <button type="button" className="text-red-600 hover:underline" onClick={() => onVoid(p)}>
                           İptal et
@@ -683,10 +930,127 @@ function PiecesTab({
         </table>
       </div>
       <p className="text-xs text-gray-500 mt-3">
-        Bu ay toplam {total} implant. Tutar, takan hekimin “İmplant (adet başı)” kuralından hesaplanır; eksi adet
-        düzeltmedir.
+        Bu ay: {byGroup.size === 0 ? "kayıt yok" : Array.from(byGroup, ([name, qty]) => `${name} ${qty}`).join(", ")}.
+        İmplantların tutarı takan hekimin “İmplant (adet başı)” kuralından, gruplu işlemlerin tutarı hekimin “İşlem başı
+        ücret” kuralından hesaplanır; eksi adet düzeltmedir. Yalnız Macro&apos;da klinik adına gelen işlemlere burada hekim
+        atanır: işlemi yapan hekimi “Ata” ile seçin, hakediş verilmeyecekse “Hakediş yok” seçin; aralık yeniden yüklenince
+        bu seçimler aynı satırlara taşınır. Başka bir hekim adına gelen işlemde hekim yanlışsa Macro&apos;da düzeltip aralığı
+        yeniden yükleyin.
       </p>
     </Card>
+  );
+}
+
+/**
+ * The doctor of imported clinic pieces (fin_hk_assign_piece, one call per piece): the performing doctor, "Hakediş yok", or
+ * back to unassigned. Pieces whose save fails are listed; the others are saved.
+ */
+function AssignPieceDialog({
+  refData,
+  records,
+  onClose,
+  onDone,
+  onReload,
+}: {
+  refData: HkReferenceJson;
+  records: HkPieceJson[];
+  onClose: () => void;
+  onDone: (message: string) => void | Promise<void>;
+  onReload: () => void;
+}) {
+  const first = records[0];
+  const same = records.every((p) => p.doctor_id === first?.doctor_id && !!p.assigned_none === !!first?.assigned_none);
+  const [choice, setChoice] = useState<"doctor" | "none" | "unassigned">(() =>
+    same && first?.assigned_none ? "none" : "doctor"
+  );
+  const [doctorId, setDoctorId] = useState(() => (same ? first?.doctor_id ?? "" : ""));
+  const [formError, setFormError] = useState<string | null>(null);
+  const [error, setError] = useState<FinanceError | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
+
+  const submit = async (ev: React.FormEvent) => {
+    ev.preventDefault();
+    setFormError(null);
+    setError(null);
+    if (choice === "doctor" && !doctorId) return setFormError("Hekimi seçin.");
+    setBusy(true);
+    setProgress(0);
+    let saved = 0;
+    const failed: string[] = [];
+    let lastError: FinanceError | null = null;
+    for (const p of records) {
+      try {
+        const res = await finHkAssignPiece({
+          p_id: p.id,
+          p_version: p.version,
+          p_doctor_id: choice === "doctor" ? doctorId : null,
+          p_none: choice === "none",
+        });
+        if (!res.already_saved) saved += 1;
+      } catch (err) {
+        lastError = toFinanceError(err);
+        failed.push(`${formatDay(p.day)} ${p.patient_name}`);
+      }
+      setProgress((n) => n + 1);
+    }
+    if (failed.length > 0) {
+      setError(lastError);
+      setFormError(`${failed.length} işlem kaydedilemedi: ${failed.slice(0, 5).join(", ")}${failed.length > 5 ? "…" : ""}`);
+      setBusy(false);
+      return;
+    }
+    await onDone(saved === 0 ? "Değişiklik yok." : `${saved} işlem kaydedildi.`);
+  };
+
+  return (
+    <Modal title={records.length > 1 ? `${records.length} işleme hekim ata` : "İşlemi yapan hekim"} onClose={onClose} busy={busy}>
+      <form onSubmit={submit} className="space-y-4">
+        {records.length === 1 && first && (
+          <p className="text-sm text-gray-700">
+            {formatDay(first.day)} · {first.patient_name} · {first.proc_group_name ?? "İmplant"}
+            {first.procedure ? ` (${first.procedure}${first.tooth ? `, diş ${first.tooth}` : ""})` : ""}
+            {first.ext_doctor ? ` · Macro: ${first.ext_doctor}` : ""}
+          </p>
+        )}
+        <fieldset className="space-y-2">
+          <label className="flex items-start gap-2 text-sm text-gray-800">
+            <input type="radio" name="assign" className="mt-1" checked={choice === "doctor"} onChange={() => setChoice("doctor")} />
+            <span>İşlemi yapan hekim</span>
+          </label>
+          {choice === "doctor" && (
+            <div className="pl-6">
+              <DoctorSelect refData={refData} value={doctorId} onChange={setDoctorId} />
+            </div>
+          )}
+          <label className="flex items-start gap-2 text-sm text-gray-800">
+            <input type="radio" name="assign" className="mt-1" checked={choice === "none"} onChange={() => setChoice("none")} />
+            <span>
+              Hakediş yok
+              <span className="block text-xs text-gray-500">İşlem kimsenin hakedişine girmez; uyarı da verilmez.</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm text-gray-800">
+            <input
+              type="radio"
+              name="assign"
+              className="mt-1"
+              checked={choice === "unassigned"}
+              onChange={() => setChoice("unassigned")}
+            />
+            <span>Seçimi kaldır (hekim seçilmedi)</span>
+          </label>
+        </fieldset>
+        {busy && records.length > 1 && (
+          <p className="text-sm text-gray-500">
+            {progress} / {records.length}
+          </p>
+        )}
+        {formError && <div className="p-3 rounded bg-red-50 text-red-700 text-sm">{formError}</div>}
+        <ErrorBox error={error} onReload={onReload} />
+        <DialogButtons busy={busy} onClose={onClose} />
+      </form>
+    </Modal>
   );
 }
 
@@ -1004,7 +1368,8 @@ function LineDialog({
     day: record?.day ?? bounds.max,
     doctor_id: record?.doctor_id ?? "",
     patient_name: record?.patient_name ?? "",
-    method: record?.method ?? "cash",
+    // Imported lines (the only ones with 'unpaid') are never edited here.
+    method: record && record.method !== "unpaid" ? record.method : "cash",
     currency: record?.currency ?? "TRY",
     amount: centsToInput(record?.amount_cents),
     try_value: record && record.currency !== "TRY" ? centsToInput(record.try_cents) : "",

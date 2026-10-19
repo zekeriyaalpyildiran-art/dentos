@@ -2,7 +2,8 @@
 
 // Ay özeti of the Hakediş pages (finance and prep modes, HakedisParts): per payee the month's figures (with the bank /
 // cash split of 0032 when a payee has a bank part; v1.4: the lab costs taken off the ciro in the Lab column and the
-// minimum top-up), the warnings, the close / reopen of the month (finance mode only) and the lines per doctor.
+// minimum top-up; 0033: the 'Ödenmemiş' column and the procedure piece fees), the warnings, the close / reopen of the
+// month (finance mode only) and the lines and pieces per doctor (by procedure group).
 
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
@@ -20,6 +21,7 @@ import {
 import { Card, ErrorBox, Loading, Modal, SuccessBox, buttonDanger, buttonPrimary, buttonSecondary } from "./ui";
 import { formatDay, formatMonth, formatTL, formatTimestamp, toFinanceError, type FinanceError } from "@/lib/finance";
 import {
+  HK_LINE_METHODS,
   HK_METHODS,
   KIND_LABELS,
   LAB_LABELS,
@@ -42,7 +44,7 @@ import {
   warningText,
   type HkComponentJson,
   type HkLineJson,
-  type HkMethod,
+  type HkLineMethod,
   type HkMonthPayload,
   type HkStatementJson,
 } from "@/lib/hakedis";
@@ -170,6 +172,15 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                   ) : (
                     "yanlışsa klinik sahibine bildirin."
                   )}
+                </p>
+              )}
+              {current.warnings.some((w) => w.code === "UNASSIGNED_PIECES") && (
+                <p className="pt-1">
+                  Atanmamış işlemler ayın kapatılmasını engellemez. İşlemi yapan hekimi{" "}
+                  <Link href={`${base}/lines?month=${month}&tab=pieces`} className="underline">
+                    Satırlar ve hastalar → İmplant ve işlemler
+                  </Link>{" "}
+                  sekmesinden seçin.
                 </p>
               )}
               {current.warnings.some(isLabWarning) && (
@@ -363,8 +374,17 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
   const showTopup = rows.some((r) => r.s.minimum_topup_cents !== 0);
   // 0032: Bankadan / Elden when a payee has a bank part this month (part of the total, never on top of it).
   const showBank = rows.some((r) => r.s.bank_cents !== null);
+  // 0033: the 'Ödenmemiş' column when a payee has unpaid (Macro) ciro, the procedure fee column with procedure_piece.
+  const methods: readonly HkLineMethod[] = rows.some((r) => r.s.gross_by_method.unpaid !== 0) ? HK_LINE_METHODS : HK_METHODS;
+  const showProcedure = data.payees.some((p) => p.components.some((c) => c.kind === "procedure_piece"));
   const colCount =
-    16 + (showSalary ? 1 : 0) + (showAdjustments ? 1 : 0) + (showTopup ? 1 : 0) + (showBank ? 2 : 0);
+    12 +
+    methods.length +
+    (showProcedure ? 1 : 0) +
+    (showSalary ? 1 : 0) +
+    (showAdjustments ? 1 : 0) +
+    (showTopup ? 1 : 0) +
+    (showBank ? 2 : 0);
 
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto text-gray-900">
@@ -372,7 +392,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
         <thead className="bg-gray-100 border-b">
           <tr className="text-left text-gray-800">
             <th className="px-3 py-3 font-semibold">Kişi</th>
-            {HK_METHODS.map((m: HkMethod) => (
+            {methods.map((m) => (
               <th key={m} className="px-3 py-3 font-semibold text-right whitespace-nowrap">
                 {METHOD_LABELS[m]}
               </th>
@@ -384,6 +404,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
             <th className="px-3 py-3 font-semibold text-right">Oran</th>
             <th className="px-3 py-3 font-semibold text-right">Pay</th>
             <th className="px-3 py-3 font-semibold text-right">İmplant</th>
+            {showProcedure && <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">İşlem ücreti</th>}
             <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">Yönetim payı</th>
             {showSalary && <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">Sabit maaş</th>}
             {showAdjustments && <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">Prim ve diğer</th>}
@@ -416,7 +437,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                 <Fragment key={payee.payee_user_id}>
                   <tr className="border-b align-top">
                     <td className="px-3 py-2 font-medium">{payee.payee_name}</td>
-                    {HK_METHODS.map((m) => (
+                    {methods.map((m) => (
                       <td key={m} className={NUM}>
                         {dash(s.gross_by_method[m])}
                       </td>
@@ -442,6 +463,18 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                         "—"
                       )}
                     </td>
+                    {showProcedure && (
+                      <td className={NUM}>
+                        {s.procedure_qty || s.procedure_amount_cents ? (
+                          <>
+                            <div>{formatTL(s.procedure_amount_cents)}</div>
+                            <div className="text-xs text-gray-500">{s.procedure_qty} işlem</div>
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    )}
                     <td className={NUM}>{dash(s.management_cents)}</td>
                     {showSalary && <td className={NUM}>{dash(s.salary_cents)}</td>}
                     {showAdjustments && (
@@ -497,7 +530,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
           <tfoot className="bg-gray-50 border-t font-semibold">
             <tr>
               <td className="px-3 py-2">Toplam</td>
-              {HK_METHODS.map((m) => (
+              {methods.map((m) => (
                 <td key={m} className={NUM}>
                   {dash(totals.gross_by_method[m])}
                 </td>
@@ -518,6 +551,18 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                   "—"
                 )}
               </td>
+              {showProcedure && (
+                <td className={NUM}>
+                  {totals.procedure_qty || totals.procedure_amount_cents ? (
+                    <>
+                      <div>{formatTL(totals.procedure_amount_cents)}</div>
+                      <div className="text-xs text-gray-500 font-normal">{totals.procedure_qty} işlem</div>
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+              )}
               <td className={NUM}>{dash(totals.management_cents)}</td>
               {showSalary && <td className={NUM}>{dash(totals.salary_cents)}</td>}
               {showAdjustments && <td className={NUM}>{dash(totals.adjustments_cents)}</td>}
@@ -530,12 +575,14 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
         )}
       </table>
       <p className="px-4 py-3 text-xs text-gray-500 border-t">
-        Ödeme şekli sütunları hekimin brüt tahsilatıdır. İmplant payı ciroya girmez; kesintiler ödeme şekline göre
-        kalan tutardan düşülür. Lab: ortodontide hastanın ödemelerinden önce karşılanan lab gideri, ciro payında ayın
+        Ödeme şekli sütunları hekimin brüt tahsilatıdır (Macro&apos;dan gelen hekimlerde ay içinde yaptığı işlemler;
+        “Ödenmemiş” işlemin ay sonuna kadar ödenmemiş kısmıdır). İmplant payı ciroya girmez; kesintiler ödeme şekline
+        göre kalan tutardan düşülür. Lab: ortodontide hastanın ödemelerinden önce karşılanan lab gideri, ciro payında ayın
         lab gideri (kesintilerden sonra düşülür; ciroyu aşan kısım klinikte kalır). Oran matraha uygulanır. Yönetim
         payı kliniğin brüt cirosundan hesaplanır. Sabit maaş net tutardır; prim ve diğer satırları o ayın elle girilen tutarlarıdır (eksi
         tutar kesintidir). Ay kapatılınca hekimin bütün tutarları tek hakediş kaydına, personelin maaşı ve primi
         personel gideri olarak Finans&apos;a yazılır.
+        {showProcedure && " İşlem ücreti: hekimin “İşlem başı ücret” kurallarındaki gruplarda yaptığı işlemler × tutar."}
         {showTopup &&
           ` ${MINIMUM_TOPUP_COMPONENT_LABEL}: kişinin bu ayki toplamı taban maaşının altında kaldığı için eklenen fark.`}
         {showBank &&
@@ -683,24 +730,41 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
   );
 }
 
-/** Drill-down: the month's live lines grouped by doctor, with the engine's segment, rule and lab part. */
+/** Group key of rows without a doctor (0033: Macro lines of the clinic / an outside doctor, unassigned pieces). */
+const NO_DOCTOR = "";
+
+/**
+ * Drill-down: the month's live lines grouped by doctor, with the engine's segment, rule and lab part, and the doctor's
+ * pieces per procedure group (0033). Lines and pieces without a doctor are listed last.
+ */
 function LinesByDoctor({ data, month, base }: { data: HkMonthPayload; month: string; base: string }) {
   const groups = useMemo(() => {
-    const map = new Map<string, { name: string; lines: HkLineJson[]; gross: number; pieces: number }>();
+    type Group = { name: string; lines: HkLineJson[]; gross: number; pieces: Map<string, number> };
+    const map = new Map<string, Group>();
+    const groupOf = (id: string | null, name: string | null) => {
+      const key = id ?? NO_DOCTOR;
+      let g = map.get(key);
+      if (!g) {
+        g = { name: id ? name ?? "" : "Hekimsiz (klinik / dışarıdan hekim)", lines: [], gross: 0, pieces: new Map() };
+        map.set(key, g);
+      }
+      return g;
+    };
     for (const l of data.lines) {
       if (l.voided_at) continue;
-      const g = map.get(l.doctor_id) ?? { name: l.doctor_name, lines: [], gross: 0, pieces: 0 };
+      const g = groupOf(l.doctor_id, l.doctor_name);
       g.lines.push(l);
       g.gross += l.try_cents;
-      map.set(l.doctor_id, g);
     }
     for (const p of data.pieces) {
       if (p.voided_at) continue;
-      const g = map.get(p.doctor_id) ?? { name: p.doctor_name, lines: [], gross: 0, pieces: 0 };
-      g.pieces += p.qty;
-      map.set(p.doctor_id, g);
+      const g = groupOf(p.doctor_id, p.doctor_name);
+      const label = p.doctor_id || !p.assigned_none ? p.proc_group_name ?? "implant" : `${p.proc_group_name ?? "işlem"} (hakediş yok)`;
+      g.pieces.set(label, (g.pieces.get(label) ?? 0) + p.qty);
     }
-    return Array.from(map.entries()).sort((a, b) => a[1].name.localeCompare(b[1].name, "tr"));
+    return Array.from(map.entries()).sort(
+      (a, b) => Number(a[0] === NO_DOCTOR) - Number(b[0] === NO_DOCTOR) || a[1].name.localeCompare(b[1].name, "tr")
+    );
   }, [data.lines, data.pieces]);
   const payeeOfRule = new Map<string, string>();
   for (const p of data.payees) for (const c of p.components) if (c.rule_id) payeeOfRule.set(c.rule_id, p.payee_name);
@@ -715,71 +779,85 @@ function LinesByDoctor({ data, month, base }: { data: HkMonthPayload; month: str
       }
     >
       {groups.length === 0 ? (
-        <p className="text-sm text-gray-500">Bu ay için tahsilat satırı ya da implant kaydı yok.</p>
+        <p className="text-sm text-gray-500">Bu ay için tahsilat satırı ya da implant / işlem kaydı yok.</p>
       ) : (
         <div className="space-y-2">
-          {groups.map(([doctorId, g]) => (
-            <details key={doctorId} className="rounded border">
-              <summary className="cursor-pointer px-3 py-2 flex flex-wrap justify-between gap-2 text-sm">
-                <span className="font-medium">{g.name}</span>
-                <span className="text-gray-600 tabular-nums">
-                  {g.lines.length} satır · brüt {formatTL(g.gross)}
-                  {g.pieces ? ` · ${g.pieces} implant` : ""}
-                </span>
-              </summary>
-              {g.lines.length > 0 && (
-                <div className="overflow-x-auto border-t">
-                  <table className="w-full text-xs md:text-sm">
-                    <thead className="bg-gray-50">
-                      <tr className="text-left text-gray-700">
-                        <th className="px-3 py-2 font-medium">Tarih</th>
-                        <th className="px-3 py-2 font-medium">Hasta</th>
-                        <th className="px-3 py-2 font-medium">Ödeme</th>
-                        <th className="px-3 py-2 font-medium text-right">Tutar</th>
-                        <th className="px-3 py-2 font-medium text-right">İmplant payı</th>
-                        <th className="px-3 py-2 font-medium text-right">Lab payı</th>
-                        <th className="px-3 py-2 font-medium">Hasta grubu</th>
-                        <th className="px-3 py-2 font-medium">Kural</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {g.lines.map((l) => (
-                        <tr key={l.id} className="border-t">
-                          <td className="px-3 py-1.5 whitespace-nowrap">{formatDay(l.day)}</td>
-                          <td className="px-3 py-1.5">{l.patient_name}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap">{METHOD_LABELS[l.method]}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">
-                            {formatTL(l.try_cents)}
-                            {l.currency !== "TRY" && (
-                              <div className="text-xs text-gray-500">{formatMoney(l.amount_cents, l.currency)}</div>
-                            )}
-                          </td>
-                          <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">{dash(l.implant_cents)}</td>
-                          <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">{dash(l.lab_part ?? 0)}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap">
-                            {l.resolved_segment ? SEGMENT_LABELS[l.resolved_segment] : "—"}
-                            {l.segment ? <span className="text-xs text-gray-500"> (elle)</span> : null}
-                          </td>
-                          <td className="px-3 py-1.5 whitespace-nowrap">
-                            {l.rule_kind && l.rule_id ? (
-                              <>
-                                {KIND_LABELS[l.rule_kind]}
-                                {payeeOfRule.get(l.rule_id) && (
-                                  <span className="text-xs text-gray-500"> · {payeeOfRule.get(l.rule_id)}</span>
-                                )}
-                              </>
-                            ) : (
-                              <span className="text-amber-700">Kural yok</span>
-                            )}
-                          </td>
+          {groups.map(([doctorId, g]) => {
+            const pieceText = Array.from(g.pieces, ([label, qty]) => `${qty} ${label}`).join(", ");
+            return (
+              <details key={doctorId || "none"} className="rounded border">
+                <summary className="cursor-pointer px-3 py-2 flex flex-wrap justify-between gap-2 text-sm">
+                  <span className="font-medium">{g.name}</span>
+                  <span className="text-gray-600 tabular-nums">
+                    {g.lines.length} satır · brüt {formatTL(g.gross)}
+                    {pieceText ? ` · ${doctorId === NO_DOCTOR ? "atanmamış / hakedişsiz: " : ""}${pieceText}` : ""}
+                  </span>
+                </summary>
+                {g.lines.length > 0 && (
+                  <div className="overflow-x-auto border-t">
+                    <table className="w-full text-xs md:text-sm">
+                      <thead className="bg-gray-50">
+                        <tr className="text-left text-gray-700">
+                          <th className="px-3 py-2 font-medium">Tarih</th>
+                          <th className="px-3 py-2 font-medium">Hasta</th>
+                          <th className="px-3 py-2 font-medium">Ödeme</th>
+                          <th className="px-3 py-2 font-medium text-right">Tutar</th>
+                          <th className="px-3 py-2 font-medium text-right">İmplant payı</th>
+                          <th className="px-3 py-2 font-medium text-right">Lab payı</th>
+                          <th className="px-3 py-2 font-medium">Hasta grubu</th>
+                          <th className="px-3 py-2 font-medium">Kural</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </details>
-          ))}
+                      </thead>
+                      <tbody>
+                        {g.lines.map((l) => (
+                          <tr key={l.id} className="border-t">
+                            <td className="px-3 py-1.5 whitespace-nowrap">{formatDay(l.day)}</td>
+                            <td className="px-3 py-1.5">
+                              {l.patient_name}
+                              {(l.procedure || l.ext_doctor) && (
+                                <div className="text-xs text-gray-500">
+                                  {[l.procedure, l.tooth ? `diş ${l.tooth}` : null, !l.doctor_id ? l.ext_doctor : null]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 whitespace-nowrap">{METHOD_LABELS[l.method] ?? l.method}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">
+                              {formatTL(l.try_cents)}
+                              {l.currency !== "TRY" && (
+                                <div className="text-xs text-gray-500">{formatMoney(l.amount_cents, l.currency)}</div>
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">{dash(l.implant_cents)}</td>
+                            <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">{dash(l.lab_part ?? 0)}</td>
+                            <td className="px-3 py-1.5 whitespace-nowrap">
+                              {!l.doctor_id ? "—" : l.resolved_segment ? SEGMENT_LABELS[l.resolved_segment] : "—"}
+                              {l.segment ? <span className="text-xs text-gray-500"> (elle)</span> : null}
+                            </td>
+                            <td className="px-3 py-1.5 whitespace-nowrap">
+                              {!l.doctor_id ? (
+                                <span className="text-gray-600">Yalnız klinik cirosu</span>
+                              ) : l.rule_kind && l.rule_id ? (
+                                <>
+                                  {KIND_LABELS[l.rule_kind]}
+                                  {payeeOfRule.get(l.rule_id) && (
+                                    <span className="text-xs text-gray-500"> · {payeeOfRule.get(l.rule_id)}</span>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-amber-700">Kural yok</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </details>
+            );
+          })}
         </div>
       )}
     </Card>
@@ -801,6 +879,7 @@ function CloseDialog({
   const negative = data.payees.filter((p) => p.total_cents < 0);
   const bankOver = data.warnings.filter((w) => w.code === "BANK_OVER_TOTAL");
   const labWarnings = data.warnings.filter(isLabWarning);
+  const unassigned = data.warnings.filter((w) => w.code === "UNASSIGNED_PIECES");
   const [accept, setAccept] = useState(false);
   const [error, setError] = useState<FinanceError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -874,6 +953,16 @@ function CloseDialog({
               ))}
             </ul>
             <p>Tutarlar bu şekilde yazılır; ay yine de kapatılabilir.</p>
+          </div>
+        )}
+        {unassigned.length > 0 && (
+          <div className="p-3 rounded bg-amber-50 text-amber-900 text-sm space-y-1">
+            <ul className="list-disc pl-5 space-y-1">
+              {unassigned.map((w, i) => (
+                <li key={i}>{warningText(w)}</li>
+              ))}
+            </ul>
+            <p>Bu işlemler kimsenin hakedişine girmeden ay kapatılabilir; kapandıktan sonra atanamaz.</p>
           </div>
         )}
         {unruled.length > 0 && (

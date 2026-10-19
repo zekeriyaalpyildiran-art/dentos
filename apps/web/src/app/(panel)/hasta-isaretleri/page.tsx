@@ -333,7 +333,9 @@ function MarksList({
 
 /**
  * Add / edit a mark (hk_save_mark): patient name, patient no (optional; empty = the name is the key, as in manually
- * entered payments), own-portfolio doctor and birth date. A conflict on the patient offers the existing mark.
+ * entered payments; 0033: for a patient already imported from Macro, an empty no or the Macro file number puts the mark
+ * on the key of the patient's Macro rows), own-portfolio doctor and birth date. A conflict on the patient offers the
+ * existing mark.
  */
 function MarkDialog({
   record,
@@ -429,7 +431,7 @@ function MarkDialog({
         </Field>
         <Field
           label="Hasta no (isteğe bağlı)"
-          hint="Yalnız tahsilat kayıtları hasta numarasıyla geliyorsa girin; boş bırakılırsa hasta adı kullanılır."
+          hint="Boş bırakılırsa hasta adı kullanılır; Macro'dan gelen hasta adıyla ya da Macro dosya numarasıyla (D. NO) bulunur ve işaret Macro satırlarına da uygulanır. Tahsilat kayıtları hasta numarasıyla geliyorsa o numarayı girin."
         >
           <input className={inputClass} maxLength={200} value={no} onChange={(e) => setNo(e.target.value)} />
         </Field>

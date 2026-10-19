@@ -4,16 +4,16 @@
 // 'prep' in the 'Hakediş ve maaş' section (/hakedis/…) of the 'hakedis_prepare' holders. Reference data, the month in
 // the address (?month=YYYY-MM, kept when switching between the pages), the month payload, the sub-tabs, the month
 // picker, the void dialog of lines / pieces / lab costs / adjustments and the component breakdown (0032: the lab costs
-// taken off a ciro_share base and the minimum top-up).
+// taken off a ciro_share base and the minimum top-up; 0033: the 'unpaid' bucket and the procedure_piece component).
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ADJUSTMENT_KIND_LABELS,
-  HK_METHODS,
+  DEDUCT_LABELS,
+  HK_LINE_METHODS,
   LAB_LABELS,
-  METHOD_LABELS,
   addMonths,
   componentTitle,
   finHkMarks,
@@ -174,12 +174,14 @@ const SUB_TABS = [
   { path: "/lines", label: "Satırlar ve hastalar", keepMonth: true },
   { path: "/lab", label: LAB_LABELS.tab, keepMonth: true },
   { path: "/payroll", label: "Maaş ve prim", keepMonth: true },
+  { path: "/import", label: "Macro yükleme", keepMonth: false },
+  { path: "/groups", label: "İşlem grupları", keepMonth: false },
   { path: "/rules", label: "Kurallar", keepMonth: false },
 ];
 
 /**
- * Ay özeti / Satırlar ve hastalar / Lab özeti (0032) / Maaş ve prim / Kurallar of the mode; the chosen month travels
- * along.
+ * Ay özeti / Satırlar ve hastalar / Lab özeti (0032) / Maaş ve prim / Macro yükleme and İşlem grupları (0033) /
+ * Kurallar of the mode; the chosen month travels along.
  */
 export function HakedisTabs({ mode, month }: { mode: HkMode; month?: string | null }) {
   const pathname = usePathname();
@@ -360,7 +362,13 @@ export function HkVoidDialog({
  * the management component carries base and amount only).
  */
 export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
-  const methods = c.by_method ? HK_METHODS.filter((m) => c.by_method && (c.by_method[m].gross !== 0 || c.by_method[m].lab !== 0)) : [];
+  // 0033: the 'unpaid' bucket is present only on rules with an unpaid deduction or unpaid lines.
+  const methods = c.by_method
+    ? HK_LINE_METHODS.filter((m) => {
+        const b = c.by_method?.[m];
+        return !!b && (b.gross !== 0 || b.lab !== 0);
+      })
+    : [];
   return (
     <div className="rounded border bg-gray-50 p-3 text-sm text-gray-900 space-y-2">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -387,10 +395,11 @@ export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
                 </thead>
                 <tbody>
                   {methods.map((m) => {
-                    const b = c.by_method![m];
+                    const b = c.by_method?.[m];
+                    if (!b) return null;
                     return (
                       <tr key={m} className="border-b last:border-b-0">
-                        <td className="py-1 pr-3 whitespace-nowrap">{METHOD_LABELS[m]}</td>
+                        <td className="py-1 pr-3 whitespace-nowrap">{DEDUCT_LABELS[m]}</td>
                         <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{formatTL(b.gross)}</td>
                         <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{b.implant ? formatTL(-b.implant) : "—"}</td>
                         <td className="py-1 pr-3 text-right tabular-nums whitespace-nowrap">{b.lab ? formatTL(-b.lab) : "—"}</td>
@@ -421,6 +430,12 @@ export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
       {c.kind === "implant_piece" && (
         <p className="text-gray-700">
           {c.qty ?? 0} implant × {formatTL(c.piece_cents)} = <strong>{formatTL(c.amount_cents)}</strong>
+        </p>
+      )}
+      {c.kind === "procedure_piece" && (
+        <p className="text-gray-700">
+          {c.qty ?? 0} işlem{c.proc_group_name ? ` (${c.proc_group_name})` : ""} × {formatTL(c.piece_cents)} ={" "}
+          <strong>{formatTL(c.amount_cents)}</strong>
         </p>
       )}
       {c.kind === "clinic_ciro_share" && (

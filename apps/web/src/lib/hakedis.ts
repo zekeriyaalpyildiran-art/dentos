@@ -10,7 +10,13 @@
 // and v1.4 (same 0032): the month's lab costs of a ciro_share doctor are deducted from that rule's ciro after the
 // method deductions (floored at 0, LAB_OVER_CIRO / UNRULED_LAB), rule kind minimum_monthly = a monthly floor (the
 // 'minimum_topup' component tops the payee's total up to it; the bank split uses the final total) and the doctor × lab
-// summary of the month (lab_summary / lab_totals).
+// summary of the month (lab_summary / lab_totals), and v2 (0033_hakedis_macro_import.sql): lines imported from the
+// Macro reports (hakedis-macro.ts; fin_hk_import_macro) carry the Macro doctor, procedure, tooth and treatment day; the
+// part of a treatment still unpaid at the end of its month is a line of method 'unpaid' deducted at the rule's
+// deduct_unpaid_bp; lines of a Macro doctor mapped to the clinic or to an outside doctor have no doctor and count only
+// in the clinic ciro (clinic_ciro_share); procedure groups (fin_hk_proc_groups: Macro operation names) and rule kind
+// procedure_piece = a fixed amount per piece of one group for one doctor; imported pieces of the clinic wait for the
+// performing doctor (fin_hk_assign_piece, UNASSIGNED_PIECES).
 // Every rate and amount is data entered by the owner (basis points and integer cents); nothing here is hard-coded.
 // Month arguments are sent as 'YYYY-MM-01' dates; month values read back may be 'YYYY-MM' or 'YYYY-MM-DD', so every
 // helper compares them through monthKey().
@@ -23,18 +29,26 @@ import { createClient } from "./supabase";
 // Codes and labels (§2)
 // ---------------------------------------------------------------------------
 
+/** The payment methods of a line (and the rule deduction fields of the 0030 rules editor). */
 export type HkMethod = PaymentMethod;
+/**
+ * The method of a revenue line (fin_hk_lines.method): a payment method, or (0033) 'unpaid' = the part of a treatment
+ * still unpaid at the end of the treatment's month (Macro import), deducted at the rule's deduct_unpaid_bp.
+ */
+export type HkLineMethod = HkMethod | "unpaid";
 export type HkCurrency = Currency;
 /**
  * Rule kinds (fin_hk_rules.kind). fixed_monthly (0031): monthly net salary of any active user, in piece_cents.
  * bank_portion (0032): the fixed monthly amount of any active user paid by bank, in piece_cents; part of the payee's
  * total (hakediş or salary), never on top of it. minimum_monthly (0032, v1.4): the monthly floor of any active user, in
- * piece_cents; the payee's total is max(the other components, the floor).
+ * piece_cents; the payee's total is max(the other components, the floor). procedure_piece (0033): a doctor's fixed
+ * amount (piece_cents) per piece of one procedure group (proc_group_id).
  */
 export type HkKind =
   | "ciro_share"
   | "ortho_lab_first"
   | "implant_piece"
+  | "procedure_piece"
   | "clinic_ciro_share"
   | "fixed_monthly"
   | "bank_portion"
@@ -55,9 +69,18 @@ export type HkSegment = "standard" | "child" | "own";
 /** Lines: manual / import / burgan; pieces: manual / import / clinical (0030 CHECKs). */
 export type HkSource = "manual" | "import" | "burgan" | "clinical";
 export type HkMonthStatus = "open" | "closed";
+/**
+ * How the lines and pieces of a Macro doctor name are imported (fin_hk_ext_doctors.mode, 0033): 'doctor' = a DentOS
+ * doctor (doctor_id); 'clinic' = the clinic's own revenue (no doctor; its pieces wait for the performing doctor);
+ * 'outside' = an outside doctor without hakediş (no doctor; revenue in the clinic ciro, pieces not counted); 'ignore' =
+ * not imported at all.
+ */
+export type HkExtDoctorMode = "doctor" | "clinic" | "outside" | "ignore";
 
-/** Display order everywhere (tables, by_method columns). */
+/** Display order everywhere (tables, rules editor deduction fields). */
 export const HK_METHODS: readonly HkMethod[] = ["cash", "card", "transfer", "financing"];
+/** The line methods in display order (by_method columns from 0033): the payment methods, then 'unpaid'. */
+export const HK_LINE_METHODS: readonly HkLineMethod[] = [...HK_METHODS, "unpaid"];
 export const HK_SEGMENTS: readonly HkSegment[] = ["standard", "child", "own"];
 /**
  * Rule kinds in display order; also the component order of a payee (then the 'adjustments' component, then the
@@ -67,18 +90,47 @@ export const HK_KINDS: readonly HkKind[] = [
   "ciro_share",
   "ortho_lab_first",
   "implant_piece",
+  "procedure_piece",
   "clinic_ciro_share",
   "fixed_monthly",
   "bank_portion",
   "minimum_monthly",
 ];
 export const HK_ADJUSTMENT_KINDS: readonly HkAdjustmentKind[] = ["bonus", "other"];
+export const HK_EXT_DOCTOR_MODES: readonly HkExtDoctorMode[] = ["doctor", "clinic", "outside", "ignore"];
 
-export const METHOD_LABELS: Record<HkMethod, string> = {
+export const METHOD_LABELS: Record<HkLineMethod, string> = {
   cash: "Nakit",
   card: "Kart",
   transfer: "Havale / EFT",
   financing: "Finansman (Burgan)",
+  unpaid: "Ödenmemiş",
+};
+
+/** Rules editor titles of the deduction fields (0033: the unpaid one names the month-end cut-off). */
+export const DEDUCT_LABELS: Record<HkLineMethod, string> = {
+  ...METHOD_LABELS,
+  unpaid: "Ödenmemiş (ay sonu)",
+};
+
+/** Rules editor hint of the unpaid deduction (ciro_share, 0033). */
+export const UNPAID_DEDUCT_HINT =
+  "Ay içinde yapılan tedavinin ay sonuna kadar ödenmemiş kısmı bu oranla kesilerek ciroya eklenir; " +
+  "sonradan gelen ödemeler o ayı değiştirmez.";
+
+export const EXT_DOCTOR_MODE_LABELS: Record<HkExtDoctorMode, string> = {
+  doctor: "DentOS hekimi",
+  clinic: "Klinik",
+  outside: "Dışarıdan hekim (hakediş yok)",
+  ignore: "Yok say",
+};
+
+/** Hints of the Macro doctor mapping choices (0033). */
+export const EXT_DOCTOR_MODE_HINTS: Record<HkExtDoctorMode, string> = {
+  doctor: "Satırları seçilen hekimin cirosuna girer.",
+  clinic: "Ciro kliniğe aittir, hiçbir hekimin cirosuna girmez; işlemleri yapan hekimi siz seçersiniz.",
+  outside: "Hakediş hesaplanmaz; ciro klinik toplamına girer, işlem ücretleri sayılmaz.",
+  ignore: "Bu hekimin satırları aktarılmaz.",
 };
 
 export const SEGMENT_LABELS: Record<HkSegment, string> = {
@@ -91,6 +143,7 @@ export const KIND_LABELS: Record<HkKind, string> = {
   ciro_share: "Ciro payı",
   ortho_lab_first: "Ortodonti (önce lab)",
   implant_piece: "İmplant (adet başı)",
+  procedure_piece: "İşlem başı ücret",
   clinic_ciro_share: "Yönetim payı (klinik cirosu)",
   fixed_monthly: "Sabit aylık maaş",
   bank_portion: "Bankadan ödenen sabit tutar",
@@ -147,21 +200,94 @@ export const SOURCE_LABELS: Record<HkSource, string> = {
   clinical: "Klinik kayıtlarından",
 };
 
-/** Which form fields a rule kind uses (§1 fin_hk_rules checks); the others are sent as null / 0. */
+/** Rules editor hint of the procedure_piece kind (0033). */
+export const PROCEDURE_PIECE_HINT =
+  "Seçilen işlem grubundaki her işlem için sabit tutar; işlemin fiyatı (0 TL olsa da) dikkate alınmaz.";
+
+/**
+ * Which form fields a rule kind uses (§1 fin_hk_rules checks); the others are sent as null / 0. deductions = the four
+ * payment method deductions; unpaid (0033) = deduct_unpaid_bp; group (0033) = proc_group_id.
+ */
 export const RULE_FIELDS: Record<
   HkKind,
-  { doctor: boolean; segment: boolean; share: boolean; piece: boolean; deductions: boolean }
+  {
+    doctor: boolean;
+    segment: boolean;
+    share: boolean;
+    piece: boolean;
+    deductions: boolean;
+    unpaid: boolean;
+    group: boolean;
+  }
 > = {
-  ciro_share: { doctor: true, segment: true, share: true, piece: false, deductions: true },
-  ortho_lab_first: { doctor: true, segment: false, share: true, piece: false, deductions: true },
-  implant_piece: { doctor: true, segment: false, share: false, piece: true, deductions: false },
-  clinic_ciro_share: { doctor: false, segment: false, share: true, piece: false, deductions: false },
+  ciro_share: { doctor: true, segment: true, share: true, piece: false, deductions: true, unpaid: true, group: false },
+  ortho_lab_first: {
+    doctor: true,
+    segment: false,
+    share: true,
+    piece: false,
+    deductions: true,
+    unpaid: false,
+    group: false,
+  },
+  implant_piece: {
+    doctor: true,
+    segment: false,
+    share: false,
+    piece: true,
+    deductions: false,
+    unpaid: false,
+    group: false,
+  },
+  // piece_cents holds the amount per piece of the rule's procedure group (0033).
+  procedure_piece: {
+    doctor: true,
+    segment: false,
+    share: false,
+    piece: true,
+    deductions: false,
+    unpaid: false,
+    group: true,
+  },
+  clinic_ciro_share: {
+    doctor: false,
+    segment: false,
+    share: true,
+    piece: false,
+    deductions: false,
+    unpaid: false,
+    group: false,
+  },
   // piece_cents holds the monthly net salary; the payee may be any active user of the clinic (staff or doctor).
-  fixed_monthly: { doctor: false, segment: false, share: false, piece: true, deductions: false },
+  fixed_monthly: {
+    doctor: false,
+    segment: false,
+    share: false,
+    piece: true,
+    deductions: false,
+    unpaid: false,
+    group: false,
+  },
   // piece_cents holds the monthly amount paid by bank; the payee may be any active user of the clinic.
-  bank_portion: { doctor: false, segment: false, share: false, piece: true, deductions: false },
+  bank_portion: {
+    doctor: false,
+    segment: false,
+    share: false,
+    piece: true,
+    deductions: false,
+    unpaid: false,
+    group: false,
+  },
   // piece_cents holds the monthly floor; the payee may be any active user of the clinic.
-  minimum_monthly: { doctor: false, segment: false, share: false, piece: true, deductions: false },
+  minimum_monthly: {
+    doctor: false,
+    segment: false,
+    share: false,
+    piece: true,
+    deductions: false,
+    unpaid: false,
+    group: false,
+  },
 };
 
 /**
@@ -177,18 +303,35 @@ export function pieceFieldLabel(kind: HkKind): string {
   if (kind === "fixed_monthly") return "Aylık net maaş (TL)";
   if (kind === "bank_portion") return "Aylık bankadan ödenen tutar (TL)";
   if (kind === "minimum_monthly") return "Aylık taban tutar (TL)";
+  if (kind === "procedure_piece") return "İşlem başı tutar (TL)";
   return "İmplant başı tutar (TL)";
 }
 
-const DEDUCT_FIELD: Record<
-  HkMethod,
-  "deduct_cash_bp" | "deduct_card_bp" | "deduct_transfer_bp" | "deduct_financing_bp"
-> = {
+type HkDeductField =
+  | "deduct_cash_bp"
+  | "deduct_card_bp"
+  | "deduct_transfer_bp"
+  | "deduct_financing_bp"
+  | "deduct_unpaid_bp";
+
+/** The fin_hk_rules deduction column of each line method (deduct_unpaid_bp from 0033). */
+export const DEDUCT_FIELD: Record<HkLineMethod, HkDeductField> = {
   cash: "deduct_cash_bp",
   card: "deduct_card_bp",
   transfer: "deduct_transfer_bp",
   financing: "deduct_financing_bp",
+  unpaid: "deduct_unpaid_bp",
 };
+
+/** A rule's deduction rate of a line method; deduct_unpaid_bp is 0 when the rule (from before 0033) has none. */
+export function ruleDeductBp(
+  rule: Pick<HkRuleJson, "deduct_cash_bp" | "deduct_card_bp" | "deduct_transfer_bp" | "deduct_financing_bp"> & {
+    deduct_unpaid_bp?: number | null;
+  },
+  method: HkLineMethod
+): number {
+  return rule[DEDUCT_FIELD[method]] ?? 0;
+}
 
 // ---------------------------------------------------------------------------
 // Exact rounding: round half away from zero, the same as PostgreSQL round(numeric)
@@ -299,6 +442,26 @@ export function normalizePatientRef(name: string | null | undefined): string {
     s += i >= 0 ? TR_LOWER[i] : ch;
   }
   return s.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** Patient key prefix of the rows imported from Macro: 'macro:' + D. NO (0033). */
+export const HK_MACRO_REF_PREFIX = "macro:";
+
+/**
+ * The patient mark of a line / lab cost (0033, fin__hk_eval_lines / fin__hk_eval_lab_costs): the mark of its own key;
+ * a Macro key ('macro:' + file number) without one takes the mark keyed by the bare file number (a reception
+ * "Hasta no"), else the mark of the normalized patient name (a mark entered by name before the import). Any other key
+ * takes its own mark only.
+ */
+export function markFor<M>(
+  marks: ReadonlyMap<string, M>,
+  row: { patient_ref: string; patient_name?: string | null }
+): M | undefined {
+  const own = marks.get(row.patient_ref);
+  if (own !== undefined || !row.patient_ref.startsWith(HK_MACRO_REF_PREFIX)) return own;
+  return (
+    marks.get(row.patient_ref.slice(HK_MACRO_REF_PREFIX.length)) ?? marks.get(normalizePatientRef(row.patient_name))
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -419,8 +582,8 @@ export interface HkRuleJson {
   /** ciro_share / ortho_lab_first / clinic_ciro_share: 1..10000 */
   share_bp: number | null;
   /**
-   * implant_piece: amount per implant; fixed_monthly: monthly net salary; bank_portion: monthly bank amount;
-   * minimum_monthly: monthly floor
+   * implant_piece: amount per implant; procedure_piece: amount per piece of the group; fixed_monthly: monthly net
+   * salary; bank_portion: monthly bank amount; minimum_monthly: monthly floor
    */
   piece_cents: number | null;
   /** 0 unless ciro_share / ortho_lab_first */
@@ -428,6 +591,11 @@ export interface HkRuleJson {
   deduct_card_bp: number;
   deduct_transfer_bp: number;
   deduct_financing_bp: number;
+  /** 0033: the deduction of the 'unpaid' lines (ciro_share only, else 0); absent before 0033 */
+  deduct_unpaid_bp?: number;
+  /** 0033: procedure_piece only: the procedure group (fin_hk_proc_groups); null / absent otherwise */
+  proc_group_id?: string | null;
+  proc_group_name?: string | null;
   /** 1st of month */
   from_month: string;
   /** 1st of month, inclusive; null = open-ended */
@@ -459,6 +627,36 @@ export interface HkSettingsJson {
   child_age_limit: number;
 }
 
+/**
+ * A procedure group (fin_hk_proc_groups, 0033): Macro operation names whose treatments rows are pieces of the group
+ * (procedure_piece rules; is_implant groups also feed implant_piece rules). op_names are stored normalized
+ * (fin__normalize_name), each unique across the clinic's groups.
+ */
+export interface HkProcGroupJson extends HkStamped {
+  id: string;
+  version: number;
+  /** 1..80 characters, unique (normalized) in the clinic */
+  name: string;
+  is_implant: boolean;
+  op_names: string[];
+  is_active: boolean;
+  note: string;
+}
+
+/** A Macro doctor name and how its rows are imported (fin_hk_ext_doctors, 0033). */
+export interface HkExtDoctorJson extends HkStamped {
+  id: string;
+  version: number;
+  /** normalized Macro doctor name (fin__normalize_name), unique in the clinic */
+  ext_name: string;
+  /** the name as typed / as in the report (spaces collapsed) */
+  display_name: string;
+  mode: HkExtDoctorMode;
+  /** mode 'doctor' only */
+  doctor_id: string | null;
+  doctor_name: string | null;
+}
+
 export interface HkReferenceJson {
   today: string;
   current_month: string;
@@ -478,6 +676,28 @@ export interface HkReferenceJson {
   /** Lab name picker (datalist): active lab counterparties (Cariler) and names already used in lab costs. */
   lab_names: string[];
   settings: HkSettingsJson;
+  /** 0033: the clinic's procedure groups (inactive ones included); absent before 0033 */
+  proc_groups?: HkProcGroupJson[];
+  /** 0033: the Macro doctor mapping (by display name); absent before 0033 */
+  ext_doctors?: HkExtDoctorJson[];
+  /** 0033: the last 30 Macro imports, newest first (counts only); absent before 0033 */
+  import_batches?: HkImportBatchJson[];
+}
+
+/** A Macro import of fin_hk_reference (0033): the range, the files and the counts of its summary. */
+export interface HkImportBatchJson {
+  id: string;
+  version: number;
+  from_day: string;
+  to_day: string;
+  file_names: string[];
+  /** lines / pieces written by the import (the summary's counts) */
+  lines: number | null;
+  pieces: number | null;
+  /** a later import of a range covering this one replaced it */
+  replaced_by_batch: string | null;
+  created_at: string;
+  created_by_name: string | null;
 }
 
 interface HkVoidable {
@@ -501,12 +721,17 @@ export interface HkLineJson extends HkVoidable, HkStamped {
   source: HkSource;
   source_key: string | null;
   batch_id: string | null;
+  /** payment day; for a Macro production line (0033) the treatment day */
   day: string;
-  doctor_id: string;
-  doctor_name: string;
+  /**
+   * 0033: null only on an imported line of a Macro doctor mapped to the clinic or to an outside doctor (counted in the
+   * clinic ciro only, never UNRULED)
+   */
+  doctor_id: string | null;
+  doctor_name: string | null;
   patient_ref: string;
   patient_name: string;
-  method: HkMethod;
+  method: HkLineMethod;
   currency: HkCurrency;
   /** original currency */
   amount_cents: number;
@@ -526,22 +751,59 @@ export interface HkLineJson extends HkVoidable, HkStamped {
   /** ortho lab-first part of this line (TL cents), 0 elsewhere; null on voided lines */
   lab_part: number | null;
   description: string;
+  /**
+   * 0033, Macro import: 'production' = a treatments-report line (day = treatment day), 'payment' = an orthodontist's
+   * payments-report line (day = payment day); null on manual / Burgan lines
+   */
+  basis?: HkImportBasis | null;
+  /** 0033, Macro import: the Macro doctor name as in the report */
+  ext_doctor?: string | null;
+  /** 0033, Macro import: the Macro operation name */
+  procedure?: string | null;
+  /** 0033, Macro import: tooth / teeth as in the report ("36", "31,32,33") */
+  tooth?: string | null;
+  /** 0033, Macro import: the treatment day (= day for a production line; earlier or later for a payment line) */
+  treatment_day?: string | null;
+  /** 0033: the procedure group of the operation, if any */
+  proc_group_id?: string | null;
+  proc_group_name?: string | null;
+  /** 0033, Macro import: the patient file number (D. NO) */
+  macro_patient_no?: string | null;
 }
 
-/** Implants placed (implant_piece rules). */
+/** Pieces (implant_piece rules; from 0033 also procedure_piece rules, by procedure group). */
 export interface HkPieceJson extends HkVoidable, HkStamped {
   id: string;
   version: number;
   source: HkSource;
   source_key: string | null;
   day: string;
-  doctor_id: string;
-  doctor_name: string;
+  /**
+   * 0033: null only on an imported piece of a Macro doctor mapped to the clinic (waiting for the performing doctor,
+   * fin_hk_assign_piece) or marked "no hakediş" (assigned_none)
+   */
+  doctor_id: string | null;
+  doctor_name: string | null;
   patient_ref: string;
   patient_name: string;
   /** negative = correction */
   qty: number;
   description: string;
+  /** 0033: the import that wrote the piece (null on manual / clinical pieces) */
+  batch_id?: string | null;
+  /** 0033: the procedure group; null = a manual (implant) piece; an imported piece always has one */
+  proc_group_id?: string | null;
+  proc_group_name?: string | null;
+  proc_group_is_implant?: boolean | null;
+  /** 0033, Macro import */
+  ext_doctor?: string | null;
+  procedure?: string | null;
+  tooth?: string | null;
+  macro_patient_no?: string | null;
+  /** 0033: the preparer marked the piece "Hakediş yok" (no doctor, not counted, no warning) */
+  assigned_none?: boolean;
+  /** 0033: no doctor and not "Hakediş yok": waiting for the performing doctor (UNASSIGNED_PIECES) */
+  is_unassigned?: boolean;
 }
 
 export interface HkMarkJson extends HkStamped {
@@ -649,7 +911,11 @@ export interface HkMethodBucketJson {
   deduction: number;
 }
 
-export type HkByMethodJson = Record<HkMethod, HkMethodBucketJson>;
+/**
+ * The method buckets of a ciro_share / ortho_lab_first component. 'unpaid' (0033) is present only when the rule has a
+ * deduct_unpaid_bp or 'unpaid' lines in the month, so a component without either keeps its 0032 keys.
+ */
+export type HkByMethodJson = Record<HkMethod, HkMethodBucketJson> & { unpaid?: HkMethodBucketJson };
 
 /** Ortho lab-first totals of one patient, to the end of the month. */
 export interface HkLabPatientJson {
@@ -676,18 +942,19 @@ export interface HkRuleComponentJson {
   doctor_name: string | null;
   segment: HkSegment | null;
   share_bp: number | null;
-  /** implant_piece: amount per implant; fixed_monthly: the monthly net salary */
+  /** implant_piece: amount per implant; procedure_piece: amount per piece; fixed_monthly: the monthly net salary */
   piece_cents: number | null;
   /** ciro_share / ortho_lab_first only */
   by_method: HkByMethodJson | null;
   /**
    * matrah: Σ(eligible − deduction) for ciro / ortho (ciro_share from 0032: minus lab_cents), gross clinic ciro for
-   * clinic_ciro_share; implant_piece: null in the SQL payload, 0 from computeMonth; fixed_monthly: null
+   * clinic_ciro_share; implant_piece: null in the SQL payload, 0 from computeMonth; procedure_piece and fixed_monthly:
+   * null
    */
   base_cents: number | null;
   /** fixed_monthly: the salary (= piece_cents) */
   amount_cents: number;
-  /** implant_piece only: Σ qty */
+  /** implant_piece / procedure_piece only: Σ qty */
   qty: number | null;
   /** fixed_monthly: 0 */
   lines_count: number;
@@ -701,6 +968,9 @@ export interface HkRuleComponentJson {
   lab_cents?: number;
   /** 0032, with lab_cents: L − lab_cents, the lab cost left with the clinic (LAB_OVER_CIRO when > 0) */
   lab_excess_cents?: number;
+  /** 0033, procedure_piece only: the rule's procedure group */
+  proc_group_id?: string | null;
+  proc_group_name?: string | null;
   items?: undefined;
 }
 
@@ -727,6 +997,8 @@ export interface HkAdjustmentsComponentJson {
   lab_patients?: undefined;
   lab_cents?: undefined;
   lab_excess_cents?: undefined;
+  proc_group_id?: undefined;
+  proc_group_name?: undefined;
 }
 
 /**
@@ -750,6 +1022,8 @@ export interface HkMinimumTopupComponentJson {
   lab_patients?: undefined;
   lab_cents?: undefined;
   lab_excess_cents?: undefined;
+  proc_group_id?: undefined;
+  proc_group_name?: undefined;
   items?: undefined;
 }
 
@@ -827,7 +1101,27 @@ export type HkWarningJson =
       doctor_id: string;
       doctor_name: string;
       lab_cents: number;
+    }
+  | {
+      /**
+       * 0033: the month's live imported pieces of a procedure group without a doctor (a Macro doctor mapped to the
+       * clinic) that the preparer has neither assigned to the performing doctor nor marked "Hakediş yok". Counted for
+       * nobody until then; the close is not blocked.
+       */
+      code: "UNASSIGNED_PIECES";
+      /** Σ qty */
+      count: number;
+      /** per group, by group name */
+      groups: HkUnassignedGroupJson[];
     };
+
+/** A procedure group of the UNASSIGNED_PIECES warning (0033). */
+export interface HkUnassignedGroupJson {
+  proc_group_id: string;
+  name: string;
+  /** Σ qty */
+  count: number;
+}
 
 /** A doctor × lab row of the month's lab summary (0032, fin_hk_month lab_summary). */
 export interface HkLabSummaryRowJson {
@@ -968,7 +1262,7 @@ export interface HkMyLineJson {
   id?: string;
   day: string;
   patient_name: string;
-  method: HkMethod;
+  method: HkLineMethod;
   currency: HkCurrency;
   amount_cents: number;
   try_cents: number;
@@ -981,6 +1275,9 @@ export interface HkMyLineJson {
    * counted under another payee's rule are never returned.
    */
   counted: boolean;
+  /** 0033, an imported line: the Macro operation and tooth */
+  procedure?: string | null;
+  tooth?: string | null;
 }
 
 export interface HkMyPieceJson {
@@ -989,6 +1286,10 @@ export interface HkMyPieceJson {
   patient_name: string;
   qty: number;
   description?: string;
+  /** 0033, a grouped piece: its procedure group, the Macro operation and tooth */
+  proc_group_name?: string | null;
+  procedure?: string | null;
+  tooth?: string | null;
 }
 
 export interface HkMyLabCostJson {
@@ -1107,13 +1408,20 @@ export interface HkSaveRuleArgs {
   p_from_month: string;
   p_to_month: string | null;
   p_note: string;
+  /** 0033: ciro_share only (0..10000), else 0; sent as 0 when left out */
+  p_deduct_unpaid_bp?: number;
+  /** 0033: procedure_piece only, else null; sent as null when left out */
+  p_proc_group_id?: string | null;
 }
 
+/** Saves a rule; from 0033 p_deduct_unpaid_bp and p_proc_group_id are always sent (0 / null when left out). */
 export function finHkSaveRule(args: HkSaveRuleArgs) {
   return rpc<HkWriteResult<HkRuleJson>>("fin_hk_save_rule", {
     ...args,
     p_from_month: monthStart(args.p_from_month),
     p_to_month: args.p_to_month ? monthStart(args.p_to_month) : null,
+    p_deduct_unpaid_bp: args.p_deduct_unpaid_bp ?? 0,
+    p_proc_group_id: args.p_proc_group_id ?? null,
   });
 }
 
@@ -1123,9 +1431,12 @@ export interface HkSaveLineArgs {
   p_day: string;
   p_doctor_id: string;
   p_patient_name: string;
-  /** null → fin__normalize_name(p_patient_name) */
+  /**
+   * null → fin__normalize_name(p_patient_name); 0033: a new key of a patient already imported from Macro (an empty key
+   * or a typed Macro file number) becomes the key of the patient's imported rows (fin__hk_resolve_ref)
+   */
   p_patient_ref: string | null;
-  p_method: HkMethod;
+  p_method: HkLineMethod;
   p_currency: HkCurrency;
   p_amount_cents: number;
   p_try_cents: number;
@@ -1154,6 +1465,7 @@ export interface HkSavePieceArgs {
   p_day: string;
   p_doctor_id: string;
   p_patient_name: string;
+  /** as HkSaveLineArgs.p_patient_ref (0033: resolved against the Macro import) */
   p_patient_ref: string | null;
   p_qty: number;
   p_description: string;
@@ -1167,9 +1479,254 @@ export function finHkVoidPiece(args: HkVoidArgs) {
   return rpc<HkWriteResult<HkPieceJson>>("fin_hk_void_piece", { ...args });
 }
 
+/**
+ * 0033: the doctor of an imported piece (typically one of a Macro doctor mapped to the clinic): the performing doctor
+ * (p_doctor_id), "Hakediş yok" (p_none true, p_doctor_id null) or neither (back to unassigned). Live pieces of open
+ * months only; 'finance' or 'hakedis_prepare'.
+ */
+export function finHkAssignPiece(args: { p_id: string; p_version: number; p_doctor_id: string | null; p_none: boolean }) {
+  return rpc<HkWriteResult<HkPieceJson>>("fin_hk_assign_piece", { ...args });
+}
+
+export interface HkSaveProcGroupArgs {
+  p_id: string;
+  /** 0 = create with the client-generated p_id */
+  p_version: number;
+  /** 1..80 characters, unique (normalized) in the clinic */
+  p_name: string;
+  p_is_implant: boolean;
+  /** Macro operation names (1..200 characters each); normalized and de-duplicated by the server */
+  p_op_names: string[];
+  p_is_active: boolean;
+  p_note: string;
+}
+
+/** 0033: creates / updates a procedure group ('finance' or 'hakedis_prepare'). */
+export function finHkSaveProcGroup(args: HkSaveProcGroupArgs) {
+  return rpc<HkWriteResult<HkProcGroupJson>>("fin_hk_save_proc_group", { ...args });
+}
+
+export interface HkSaveExtDoctorArgs {
+  p_id: string;
+  /** 0 = create with the client-generated p_id */
+  p_version: number;
+  /** the Macro doctor name (normalized by the server) */
+  p_ext_name: string;
+  p_mode: HkExtDoctorMode;
+  /** mode 'doctor' only, else null */
+  p_doctor_id: string | null;
+}
+
+/** 0033: maps a Macro doctor name ('finance' or 'hakedis_prepare'). */
+export function finHkSaveExtDoctor(args: HkSaveExtDoctorArgs) {
+  return rpc<HkWriteResult<HkExtDoctorJson>>("fin_hk_save_ext_doctor", { ...args });
+}
+
+/** Line basis of a Macro import line (0033). */
+export type HkImportBasis = "production" | "payment";
+/** Methods of a Macro import line: Macro İŞLEM (Nakit / POS / Banka), or the unpaid remainder of a treatment. */
+export type HkImportMethod = "cash" | "card" | "transfer" | "unpaid";
+
+/**
+ * One element of fin_hk_import_macro p_lines (buildMacroImport, hakedis-macro.ts). Amounts are integer cents of
+ * `currency`; the server converts them to TL with the clinic's fx_rates (latest rate on or before `day`), maps
+ * ext_doctor through fin_hk_ext_doctors, assigns the procedure group from the operation name (active groups; implant
+ * groups make the whole amount implant_cents) and sets patient_ref ('macro:' || patient_no, else the normalized name;
+ * a payment line without a number takes the only key known for its name; a file number whose 'macro:' key is still
+ * unused keeps the only other key its name has: a mark, lab cost or earlier line keyed by the name or by the bare
+ * number). Every day must lie in [p_from, p_to].
+ */
+export interface HkImportLineArg {
+  /** unique within the import (≤ 100 characters; only echoed in errors, never stored) */
+  key: string;
+  /** production = treatments report (day = treatment day); payment = payments report of an orthodontist */
+  basis: HkImportBasis;
+  /** 'YYYY-MM-DD': the treatment day (production) or the payment day (payment) */
+  day: string;
+  /** 'YYYY-MM-DD': the treatment day (= day for production lines) */
+  treatment_day: string;
+  /** the Macro doctor name as in the report */
+  ext_doctor: string;
+  patient_name: string;
+  /** Macro D. NO, null when unknown */
+  patient_no: string | null;
+  procedure: string;
+  tooth: string | null;
+  method: HkImportMethod;
+  currency: HkCurrency;
+  /** > 0, except a correction (negative report row) */
+  amount_cents: number;
+}
+
+/** One element of fin_hk_import_macro p_pieces: one per treatments row in the range (whatever its price). */
+export interface HkImportPieceArg {
+  key: string;
+  /** the treatment day */
+  day: string;
+  ext_doctor: string;
+  patient_name: string;
+  patient_no: string | null;
+  procedure: string;
+  tooth: string | null;
+  qty: number;
+}
+
+export interface HkImportMacroArgs {
+  /** client-generated; a retry with the same id returns the saved summary (already_saved) */
+  p_batch_id: string;
+  /**
+   * 'YYYY-MM-DD', inclusive, at most 366 days, p_to not after today; the range replaces the previous import of the
+   * same days (lines by day, pieces by day) and may not touch a closed month or a month before a later closed one
+   */
+  p_from: string;
+  p_to: string;
+  p_lines: HkImportLineArg[];
+  p_pieces: HkImportPieceArg[];
+  /** the report file names (≤ 10, 1..200 characters each) */
+  p_files: string[];
+  /** true: validate and summarize, then roll back (preview) */
+  p_dry_run?: boolean;
+}
+
+/** A Macro doctor of the payload in the import summary (0033); every amount in TL cents. */
+export interface HkImportDoctorSummaryJson {
+  /** the mapping's display name */
+  ext_doctor: string;
+  /** normalized (fin_hk_ext_doctors.ext_name) */
+  ext_name: string;
+  mode: HkExtDoctorMode;
+  doctor_id: string | null;
+  doctor_name: string | null;
+  /** lines written (payment basis included) */
+  lines: number;
+  payment_lines: number;
+  /** lines of an ignored Macro doctor (not written) */
+  skipped_lines: number;
+  gross_cents: number;
+  gross_by_method: Record<HkImportMethod, number>;
+  /** the lines of implant-group operations (implant_cents = the whole TL amount) */
+  implant_cents: number;
+  /** stored pieces (rows) and their Σ qty */
+  pieces: number;
+  pieces_qty: number;
+  /** stored pieces per group (Σ qty), by group name */
+  pieces_by_group: HkUnassignedGroupJson[];
+  /** Σ qty of stored pieces without a doctor (clinic rows not yet assigned) */
+  unassigned_pieces: number;
+  /** rows of operations without an active group (not stored) */
+  ungrouped_pieces: number;
+  /** rows of an outside / ignored Macro doctor (not stored) */
+  skipped_pieces: number;
+}
+
+/** An operation name of the payload in the import summary (0033): its active group, if any. */
+export interface HkImportOperationJson {
+  /** the first spelling (by text) */
+  name: string;
+  /** fin__normalize_name: what a group's op_names hold */
+  normalized: string;
+  proc_group_id: string | null;
+  proc_group_name: string | null;
+  is_implant: boolean | null;
+  /** payload lines / pieces with this operation (ignored doctors included) */
+  lines: number;
+  pieces: number;
+}
+
+/** A foreign currency rate used by the import (0033): one row per (currency, rate, rate day). */
+export interface HkImportFxJson {
+  currency: HkCurrency;
+  rate: number;
+  rate_day: string;
+  lines: number;
+  first_day: string;
+  last_day: string;
+}
+
+/** A foreign currency converted with a rate older than 7 days (0033). */
+export interface HkImportFxWarningJson {
+  currency: HkCurrency;
+  /** the line's day */
+  day: string;
+  rate_day: string;
+  rate: number;
+  age_days: number;
+}
+
+/**
+ * fin_hk_import_macro result (0033), also stored as the batch's stats. replaced_* are the live imported lines /
+ * pieces of the range voided ('Yeniden yüklendi') and the earlier batches inside the range (a dry run reports what
+ * would be replaced).
+ */
+export interface HkImportSummaryJson {
+  batch_id: string;
+  from: string;
+  to: string;
+  files: string[];
+  lines: number;
+  pieces: number;
+  try_total_cents: number;
+  implant_total_cents: number;
+  skipped_lines: number;
+  skipped_pieces: number;
+  ungrouped_pieces: number;
+  unassigned_pieces: number;
+  /** "Hakediş yok" / doctor choices of replaced clinic pieces carried over to the same new rows */
+  carried_assignments: number;
+  replaced_lines?: number;
+  replaced_pieces?: number;
+  replaced_batches?: number;
+  doctors: HkImportDoctorSummaryJson[];
+  operations: HkImportOperationJson[];
+  fx: HkImportFxJson[];
+  fx_warnings: HkImportFxWarningJson[];
+  /** a retry with a saved p_batch_id: the saved summary, nothing written */
+  already_saved?: boolean;
+  dry_run?: boolean;
+}
+
+/**
+ * Why fin_hk_import_macro refused (0033), from the error's DETAIL (PostgREST 'details'): the Macro doctors without a
+ * mapping, or the currencies without a rate on or before the first day that needs one. Null for other errors.
+ */
+export interface HkImportRefusal {
+  unmapped_ext_doctors?: string[];
+  missing_fx?: { currency: HkCurrency; day: string }[];
+}
+
+export function importRefusalOf(err: { details?: string | null } | null | undefined): HkImportRefusal | null {
+  const raw = err?.details;
+  if (!raw || raw[0] !== "{") return null;
+  try {
+    const d = JSON.parse(raw) as Record<string, unknown>;
+    const out: HkImportRefusal = {};
+    if (Array.isArray(d.unmapped_ext_doctors)) {
+      out.unmapped_ext_doctors = d.unmapped_ext_doctors.filter((x): x is string => typeof x === "string");
+    }
+    if (Array.isArray(d.missing_fx)) {
+      out.missing_fx = d.missing_fx
+        .filter((x): x is { currency: HkCurrency; day: string } => !!x && typeof x === "object" && "currency" in x)
+        .map((x) => ({ currency: x.currency, day: String(x.day ?? "") }));
+    }
+    return out.unmapped_ext_doctors || out.missing_fx ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 0033: imports the Macro reports of a day range ('finance' or 'hakedis_prepare'; refused when the range touches a
+ * closed month, a Macro doctor is unmapped or a currency has no rate: importRefusalOf reads the DETAIL of the last two).
+ * p_dry_run is always sent (false by default); a dry run returns the same summary and writes nothing.
+ */
+export function finHkImportMacro(args: HkImportMacroArgs) {
+  return rpc<HkImportSummaryJson>("fin_hk_import_macro", { ...args, p_dry_run: args.p_dry_run ?? false });
+}
+
 export interface HkSaveMarkArgs {
   p_id: string;
   p_version: number;
+  /** as HkSaveLineArgs.p_patient_ref (0033: resolved against the Macro import) */
   p_patient_ref: string | null;
   p_patient_name: string;
   p_own_doctor_id: string | null;
@@ -1194,6 +1751,7 @@ export interface HkSaveLabCostArgs {
   p_day: string;
   p_doctor_id: string;
   p_patient_name: string;
+  /** as HkSaveLineArgs.p_patient_ref (0033: resolved against the Macro import, the doctor's imported rows first) */
   p_patient_ref: string | null;
   p_lab_name: string;
   p_amount_cents: number;
@@ -1281,7 +1839,10 @@ export interface HkReceptionSaveMarkArgs {
   p_id: string;
   /** 0 = create with the client-generated p_id */
   p_version: number;
-  /** null → fin__normalize_name(p_patient_name) */
+  /**
+   * null → fin__normalize_name(p_patient_name); 0033: a new key of a patient already imported from Macro (empty, or
+   * the Macro file number) becomes the key of the patient's imported rows
+   */
   p_patient_ref: string | null;
   p_patient_name: string;
   p_own_doctor_id: string | null;
@@ -1315,6 +1876,10 @@ export interface HkRuleInput {
   deduct_card_bp: number;
   deduct_transfer_bp: number;
   deduct_financing_bp: number;
+  /** 0033: ciro_share only; absent = 0 */
+  deduct_unpaid_bp?: number | null;
+  /** 0033: procedure_piece only; absent = null */
+  proc_group_id?: string | null;
   from_month: string;
   to_month: string | null;
 }
@@ -1332,18 +1897,26 @@ export function validateRule(r: HkRuleInput): string | null {
   }
   if (f.doctor && !r.doctor_id) return "Hekimi seçin.";
   if (f.segment && !r.segment) return "Hasta grubunu seçin.";
+  if (f.group && !r.proc_group_id) return "İşlem grubunu seçin.";
+  if (!f.group && r.proc_group_id) return "İşlem grubu yalnızca işlem başı ücret kuralında seçilir.";
   if (f.share && (r.share_bp === null || !Number.isInteger(r.share_bp) || r.share_bp < 1 || r.share_bp > 10000)) {
     return "Pay oranı %0,01 ile %100 arasında olmalı.";
   }
   if (f.piece && (r.piece_cents === null || !Number.isInteger(r.piece_cents) || r.piece_cents <= 0)) {
     if (salary) return "Aylık net maaş 0'dan büyük olmalı.";
     if (minimum) return "Aylık taban tutar 0'dan büyük olmalı.";
+    if (r.kind === "procedure_piece") return "İşlem başı tutar 0'dan büyük olmalı.";
     return bank ? "Aylık bankadan ödenen tutar 0'dan büyük olmalı." : "Adet başı tutar 0'dan büyük olmalı.";
   }
-  for (const method of HK_METHODS) {
-    const bp = r[DEDUCT_FIELD[method]];
-    if (!Number.isInteger(bp) || bp < 0 || bp > 10000) return "Kesinti oranı %0 ile %100 arasında olmalı.";
-    if (!f.deductions && bp !== 0) return "Bu kural türünde kesinti girilemez.";
+  for (const method of HK_LINE_METHODS) {
+    const raw = r[DEDUCT_FIELD[method]];
+    // deduct_unpaid_bp may be left out (a form from before 0033): 0.
+    const bp = method === "unpaid" ? raw ?? 0 : raw;
+    if (typeof bp !== "number" || !Number.isInteger(bp) || bp < 0 || bp > 10000) {
+      return "Kesinti oranı %0 ile %100 arasında olmalı.";
+    }
+    const allowed = method === "unpaid" ? f.unpaid : f.deductions;
+    if (!allowed && bp !== 0) return "Bu kural türünde kesinti girilemez.";
   }
   if (!MONTH_KEY_RE.test(r.from_month)) return "Başlangıç ayını seçin.";
   if (r.to_month) {
@@ -1355,12 +1928,15 @@ export function validateRule(r: HkRuleInput): string | null {
 
 /**
  * Rules that may not be active in the same month (fin_hk_save_rule overlap check): fixed_monthly, bank_portion and
- * minimum_monthly per (kind, payee), every other kind per (kind, doctor, segment) regardless of the payee.
+ * minimum_monthly per (kind, payee), procedure_piece (0033) per (kind, doctor, procedure group), every other kind per
+ * (kind, doctor, segment) regardless of the payee.
  */
-export function ruleOverlapKey(r: Pick<HkRuleInput, "kind" | "payee_user_id" | "doctor_id" | "segment">): string {
-  return kindAllowsAnyUser(r.kind)
-    ? `${r.kind}|${r.payee_user_id ?? ""}`
-    : `${r.kind}|${r.doctor_id ?? ""}|${r.segment ?? ""}`;
+export function ruleOverlapKey(
+  r: Pick<HkRuleInput, "kind" | "payee_user_id" | "doctor_id" | "segment"> & { proc_group_id?: string | null }
+): string {
+  if (kindAllowsAnyUser(r.kind)) return `${r.kind}|${r.payee_user_id ?? ""}`;
+  if (r.kind === "procedure_piece") return `${r.kind}|${r.doctor_id ?? ""}|${r.proc_group_id ?? ""}`;
+  return `${r.kind}|${r.doctor_id ?? ""}|${r.segment ?? ""}`;
 }
 
 /** Do two month ranges (from_month … to_month inclusive, null = open-ended) share a month? */
@@ -1384,6 +1960,30 @@ export function findOverlappingRule<T extends HkRuleInput & { id: string }>(
   const key = ruleOverlapKey(rule);
   return rules
     .filter((r) => r.id !== rule.id && ruleOverlapKey(r) === key && monthRangesOverlap(r, rule))
+    .sort((a, b) => byText(monthKey(a.from_month), monthKey(b.from_month)) || byText(a.id, b.id))[0];
+}
+
+/**
+ * 0033: the saved rule that would count the same implant pieces twice (fin_hk_save_rule refuses it): for a
+ * procedure_piece rule of an implant group, the doctor's implant_piece rule active in a shared month; for an
+ * implant_piece rule, the doctor's procedure_piece rules of implant groups. The earliest by from_month, then id.
+ */
+export function findImplantPieceConflict<T extends HkRuleInput & { id: string }>(
+  rules: readonly T[],
+  rule: HkRuleInput & { id?: string | null },
+  groups: readonly Pick<HkProcGroupJson, "id" | "is_implant">[]
+): T | undefined {
+  const implantGroup = (id: string | null | undefined) => !!id && !!groups.find((g) => g.id === id)?.is_implant;
+  let clashes: (r: T) => boolean;
+  if (rule.kind === "procedure_piece" && implantGroup(rule.proc_group_id)) {
+    clashes = (r) => r.kind === "implant_piece";
+  } else if (rule.kind === "implant_piece") {
+    clashes = (r) => r.kind === "procedure_piece" && implantGroup(r.proc_group_id);
+  } else {
+    return undefined;
+  }
+  return rules
+    .filter((r) => r.id !== rule.id && r.doctor_id === rule.doctor_id && clashes(r) && monthRangesOverlap(r, rule))
     .sort((a, b) => byText(monthKey(a.from_month), monthKey(b.from_month)) || byText(a.id, b.id))[0];
 }
 
@@ -1447,6 +2047,114 @@ export function bankSplitText(p: { total_cents: number; bank_cents?: number | nu
   return `${SPLIT_LABELS.bank} ${formatTL(split.bank_cents)} · ${SPLIT_LABELS.cash} ${formatTL(split.cash_cents)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Procedure groups and the Macro doctor mapping (0033)
+// ---------------------------------------------------------------------------
+
+/** fin_hk_proc_groups.name and op_names limits (CHECKs, fin_hk_save_proc_group). */
+export const HK_PROC_GROUP_NAME_MAX = 80;
+export const HK_OP_NAME_MAX = 200;
+export const HK_OP_NAMES_MAX = 500;
+/** fin_hk_ext_doctors.display_name limit. */
+export const HK_EXT_NAME_MAX = 120;
+
+/** Operation names as fin_hk_save_proc_group stores them: normalized (fin__normalize_name), blanks dropped, unique. */
+export function normalizeOpNames(names: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const name of names) {
+    const n = normalizePatientRef(name);
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+export interface HkProcGroupInput {
+  id?: string | null;
+  name: string;
+  op_names: readonly string[];
+}
+
+/**
+ * Client-side mirror of the fin_hk_save_proc_group checks: a name (1..80), each operation name ≤ 200 characters and
+ * unique across the clinic's groups (normalized), the group name unique too. Null when valid.
+ */
+export function validateProcGroup(
+  g: HkProcGroupInput,
+  others: readonly Pick<HkProcGroupJson, "id" | "name" | "op_names">[] = []
+): string | null {
+  const name = (g.name ?? "").trim().replace(/\s+/g, " ");
+  if (!name) return "Grup adını girin.";
+  if (name.length > HK_PROC_GROUP_NAME_MAX) return `Grup adı en fazla ${HK_PROC_GROUP_NAME_MAX} karakter olabilir.`;
+  if (g.op_names.length > HK_OP_NAMES_MAX) return `Bir grupta en fazla ${HK_OP_NAMES_MAX} işlem adı olabilir.`;
+  if (g.op_names.some((op) => op.trim().length > HK_OP_NAME_MAX)) {
+    return `İşlem adı en fazla ${HK_OP_NAME_MAX} karakter olabilir.`;
+  }
+  const rest = others.filter((o) => o.id !== g.id);
+  if (rest.some((o) => normalizePatientRef(o.name) === normalizePatientRef(name))) {
+    return "Bu adla başka bir işlem grubu var.";
+  }
+  for (const op of normalizeOpNames(g.op_names)) {
+    if (op.length > HK_OP_NAME_MAX) return `İşlem adı en fazla ${HK_OP_NAME_MAX} karakter olabilir.`;
+    const owner = rest.find((o) => o.op_names.some((x) => normalizePatientRef(x) === op));
+    if (owner) return `“${op}” işlemi zaten “${owner.name}” grubunda.`;
+  }
+  return null;
+}
+
+/**
+ * The group saves (fin_hk_save_proc_group) that put a Macro operation name into the group `targetId` (null = into no
+ * group): out of the group that holds it (any group, inactive ones too: a name belongs to at most one group of the
+ * clinic), then into the target. Empty when it is already where it should be. op_names come back normalized.
+ */
+export function opNameMoves<T extends Pick<HkProcGroupJson, "id" | "op_names">>(
+  groups: readonly T[],
+  operation: string,
+  targetId: string | null
+): { group: T; op_names: string[] }[] {
+  const op = normalizePatientRef(operation);
+  if (!op) return [];
+  const holder = groups.find((g) => g.op_names.some((x) => normalizePatientRef(x) === op));
+  if ((holder?.id ?? null) === targetId) return [];
+  const moves: { group: T; op_names: string[] }[] = [];
+  if (holder) {
+    moves.push({ group: holder, op_names: normalizeOpNames(holder.op_names).filter((x) => x !== op) });
+  }
+  const target = targetId ? groups.find((g) => g.id === targetId) : undefined;
+  if (target) moves.push({ group: target, op_names: normalizeOpNames([...target.op_names, op]) });
+  return moves;
+}
+
+/** The procedure group of a Macro operation name (normalized match), active groups only; undefined if none. */
+export function procGroupOfOperation<T extends Pick<HkProcGroupJson, "op_names" | "is_active">>(
+  groups: readonly T[],
+  operation: string
+): T | undefined {
+  const op = normalizePatientRef(operation);
+  if (!op) return undefined;
+  return groups.find((g) => g.is_active && g.op_names.some((x) => normalizePatientRef(x) === op));
+}
+
+/** The mapping of a Macro doctor name (normalized match); undefined while unmapped. */
+export function extDoctorOf<T extends Pick<HkExtDoctorJson, "ext_name">>(
+  mapping: readonly T[],
+  extName: string
+): T | undefined {
+  const key = normalizePatientRef(extName);
+  return mapping.find((m) => normalizePatientRef(m.ext_name) === key);
+}
+
+/** Client-side mirror of the fin_hk_save_ext_doctor checks; null when valid. */
+export function validateExtDoctor(m: { ext_name: string; mode: HkExtDoctorMode | null; doctor_id: string | null }): string | null {
+  if (!normalizePatientRef(m.ext_name)) return "Macro hekim adı boş olamaz.";
+  if (m.ext_name.trim().replace(/\s+/g, " ").length > HK_EXT_NAME_MAX) {
+    return `Macro hekim adı en fazla ${HK_EXT_NAME_MAX} karakter olabilir.`;
+  }
+  if (!m.mode || !HK_EXT_DOCTOR_MODES.includes(m.mode)) return "Eşleştirme türünü seçin.";
+  if (m.mode === "doctor" && !m.doctor_id) return "DentOS hekimini seçin.";
+  if (m.mode !== "doctor" && m.doctor_id) return "Hekim yalnızca “DentOS hekimi” seçeneğinde seçilir.";
+  return null;
+}
+
 /** fin_hk_adjustments.description length limit. */
 export const HK_ADJUSTMENT_DESCRIPTION_MAX = 500;
 /** |amount_cents| limit of fin_hk_save_adjustment (10.000.000.000 TL). */
@@ -1497,14 +2205,19 @@ export function hkLedgerVisible(x: { ledger_visible?: boolean | null }): boolean
   return x.ledger_visible ?? true;
 }
 
-/** "Ciro payı · Çocuk hasta · Hekim A"; "Sabit aylık maaş"; "Prim ve diğer"; "Taban maaş tamamlaması" */
+/**
+ * "Ciro payı · Çocuk hasta · Hekim A"; "İşlem başı ücret · Grup X · Hekim A"; "Sabit aylık maaş"; "Prim ve diğer";
+ * "Taban maaş tamamlaması"
+ */
 export function componentTitle(
-  c: Pick<HkComponentJson, "kind"> & Partial<Pick<HkComponentJson, "segment" | "doctor_name">>
+  c: Pick<HkComponentJson, "kind"> &
+    Partial<Pick<HkComponentJson, "segment" | "doctor_name">> & { proc_group_name?: string | null }
 ): string {
   if (c.kind === "adjustments") return ADJUSTMENTS_COMPONENT_LABEL;
   if (c.kind === "minimum_topup") return MINIMUM_TOPUP_COMPONENT_LABEL;
   const parts = [KIND_LABELS[c.kind] ?? c.kind];
   if (c.kind === "ciro_share" && c.segment) parts.push(SEGMENT_LABELS[c.segment] ?? c.segment);
+  if (c.kind === "procedure_piece" && c.proc_group_name) parts.push(c.proc_group_name);
   if (c.doctor_name) parts.push(c.doctor_name);
   return parts.join(" · ");
 }
@@ -1533,6 +2246,10 @@ export function warningText(w: HkWarningJson): string {
     }
     case "UNRULED_LAB":
       return `${w.doctor_name || "Hekim"}: ${formatTL(w.lab_cents)} lab maliyeti için ciro payı veya ortodonti kuralı yok; hakedişten düşülmedi.`;
+    case "UNASSIGNED_PIECES": {
+      const groups = (w.groups ?? []).map((g) => `${g.name} ${g.count}`).join(", ");
+      return `Klinik adına aktarılan ${w.count} işlem için işlemi yapan hekim seçilmedi${groups ? ` (${groups})` : ""}; seçilene kadar hakedişe dahil edilmez.`;
+    }
     default:
       return "Bilinmeyen uyarı.";
   }
@@ -1541,10 +2258,10 @@ export function warningText(w: HkWarningJson): string {
 /**
  * Payee table row (§2): ciro by method, implant part, lab, deductions, base, share, implants, management, total; from
  * 0031 also the fixed salary and the month's bonus / other rows; from 0032 the minimum top-up and the ciro_share lab
- * deduction.
+ * deduction; from 0033 the unpaid ciro (gross_by_method.unpaid) and the procedure piece fees.
  */
 export interface HkPayeeSummary {
-  gross_by_method: Record<HkMethod, number>;
+  gross_by_method: Record<HkLineMethod, number>;
   gross_cents: number;
   implant_cents: number;
   /**
@@ -1563,6 +2280,9 @@ export interface HkPayeeSummary {
   share_bps: number[];
   implant_qty: number;
   implant_amount_cents: number;
+  /** 0033: procedure_piece components (Σ qty, Σ amount) */
+  procedure_qty: number;
+  procedure_amount_cents: number;
   management_base_cents: number;
   management_cents: number;
   /** fixed_monthly components */
@@ -1585,7 +2305,7 @@ export interface HkPayeeSummary {
 /** A summary with every figure 0 (and the given total), without a bank part. */
 export function emptyPayeeSummary(totalCents = 0): HkPayeeSummary {
   return {
-    gross_by_method: { cash: 0, card: 0, transfer: 0, financing: 0 },
+    gross_by_method: { cash: 0, card: 0, transfer: 0, financing: 0, unpaid: 0 },
     gross_cents: 0,
     implant_cents: 0,
     lab_cents: 0,
@@ -1597,6 +2317,8 @@ export function emptyPayeeSummary(totalCents = 0): HkPayeeSummary {
     share_bps: [],
     implant_qty: 0,
     implant_amount_cents: 0,
+    procedure_qty: 0,
+    procedure_amount_cents: 0,
     management_base_cents: 0,
     management_cents: 0,
     salary_cents: 0,
@@ -1618,7 +2340,7 @@ export function emptyPayeeSummary(totalCents = 0): HkPayeeSummary {
 export function sumPayeeSummaries(rows: readonly HkPayeeSummary[]): HkPayeeSummary {
   const out = emptyPayeeSummary();
   for (const s of rows) {
-    for (const m of HK_METHODS) out.gross_by_method[m] += s.gross_by_method[m];
+    for (const m of HK_LINE_METHODS) out.gross_by_method[m] += s.gross_by_method[m] ?? 0;
     out.gross_cents += s.gross_cents;
     out.implant_cents += s.implant_cents;
     out.lab_cents += s.lab_cents;
@@ -1630,6 +2352,8 @@ export function sumPayeeSummaries(rows: readonly HkPayeeSummary[]): HkPayeeSumma
     for (const bp of s.share_bps) if (!out.share_bps.includes(bp)) out.share_bps.push(bp);
     out.implant_qty += s.implant_qty;
     out.implant_amount_cents += s.implant_amount_cents;
+    out.procedure_qty += s.procedure_qty;
+    out.procedure_amount_cents += s.procedure_amount_cents;
     out.management_cents += s.management_cents;
     out.salary_cents += s.salary_cents;
     out.bonus_cents += s.bonus_cents;
@@ -1670,11 +2394,14 @@ export function summarizePayee(p: {
     } else if (c.kind === "implant_piece") {
       s.implant_qty += c.qty ?? 0;
       s.implant_amount_cents += c.amount_cents;
+    } else if (c.kind === "procedure_piece") {
+      s.procedure_qty += c.qty ?? 0;
+      s.procedure_amount_cents += c.amount_cents;
     } else if (c.kind === "clinic_ciro_share") {
       s.management_base_cents += c.base_cents ?? 0;
       s.management_cents += c.amount_cents;
     } else {
-      for (const method of HK_METHODS) {
+      for (const method of HK_LINE_METHODS) {
         const b = c.by_method?.[method];
         if (!b) continue;
         s.gross_by_method[method] += b.gross;
@@ -1837,15 +2564,23 @@ export type HkComputeRule = Pick<
   | "deduct_financing_bp"
   | "from_month"
   | "to_month"
-> & { payee_name?: string | null; doctor_name?: string | null };
+> & {
+  payee_name?: string | null;
+  doctor_name?: string | null;
+  /** 0033 (ciro_share): deduction of the 'unpaid' lines; absent = 0 */
+  deduct_unpaid_bp?: number | null;
+  /** 0033 (procedure_piece): the rule's procedure group */
+  proc_group_id?: string | null;
+};
 
 export interface HkComputeLine {
   id: string;
   day: string;
-  doctor_id: string;
+  /** 0033: null = a line of a Macro doctor mapped to the clinic / an outside doctor (clinic ciro only) */
+  doctor_id: string | null;
   patient_ref: string;
   patient_name?: string;
-  method: HkMethod;
+  method: HkLineMethod;
   try_cents: number;
   implant_cents: number;
   segment: HkSegment | null;
@@ -1857,9 +2592,25 @@ export interface HkComputeLine {
 export interface HkComputePiece {
   id: string;
   day: string;
-  doctor_id: string;
+  /** 0033: null = an imported piece without a doctor (unassigned, or assigned_none) */
+  doctor_id: string | null;
   qty: number;
   voided_at?: string | null;
+  /**
+   * 0033: the procedure group; absent / null = an implant piece (manual / clinical pieces; the import stores only
+   * pieces of grouped operations)
+   */
+  proc_group_id?: string | null;
+  source?: HkSource;
+  /** 0033: marked "Hakediş yok" by the preparer (never UNASSIGNED_PIECES) */
+  assigned_none?: boolean;
+}
+
+/** A procedure group as the engine needs it (0033). */
+export interface HkComputeProcGroup {
+  id: string;
+  name: string;
+  is_implant: boolean;
 }
 
 export interface HkComputeLabCost {
@@ -1912,6 +2663,8 @@ export interface HkComputeInput {
   marks?: readonly HkComputeMark[];
   /** bonus / other rows of any month: voided ones and other months are ignored */
   adjustments?: readonly HkComputeAdjustment[];
+  /** 0033: the clinic's procedure groups (pieces and procedure_piece rules refer to them) */
+  proc_groups?: readonly HkComputeProcGroup[];
   /** fin_settings hakediş fields; child_age_limit defaults to HK_DEFAULT_CHILD_AGE_LIMIT */
   settings?: { child_age_limit?: number | null } | null;
   doctors?: readonly { id: string; name: string }[];
@@ -1964,7 +2717,7 @@ export function markIsChildOn(
  * child on the line's day (markIsChildOn); else standard. Same order as fin_hk__compute.
  */
 export function resolveSegment(
-  line: Pick<HkComputeLine, "segment" | "doctor_id" | "day">,
+  line: Pick<HkComputeLine, "segment" | "day"> & { doctor_id: string | null },
   mark: Pick<HkComputeMark, "own_doctor_id" | "is_child" | "birth_date"> | null | undefined,
   childAgeLimit: number = HK_DEFAULT_CHILD_AGE_LIMIT
 ): HkSegment {
@@ -1978,11 +2731,20 @@ const isLive = (r: { voided_at?: string | null }) => !r.voided_at;
 const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const byName = (a: string, b: string) => a.localeCompare(b, "tr");
 
+const emptyBucket = (rule: HkComputeRule, method: HkLineMethod): HkMethodBucketJson => ({
+  gross: 0,
+  implant: 0,
+  lab: 0,
+  eligible: 0,
+  deduct_bp: rule[DEDUCT_FIELD[method]] ?? 0,
+  deduction: 0,
+});
+
+/** The four payment method buckets, plus 'unpaid' (0033) when the rule has a deduct_unpaid_bp. */
 function emptyByMethod(rule: HkComputeRule): HkByMethodJson {
   const out = {} as HkByMethodJson;
-  for (const method of HK_METHODS) {
-    out[method] = { gross: 0, implant: 0, lab: 0, eligible: 0, deduct_bp: rule[DEDUCT_FIELD[method]] ?? 0, deduction: 0 };
-  }
+  for (const method of HK_METHODS) out[method] = emptyBucket(rule, method);
+  if ((rule.deduct_unpaid_bp ?? 0) !== 0) out.unpaid = emptyBucket(rule, "unpaid");
   return out;
 }
 
@@ -2033,7 +2795,7 @@ function orthoWalk(
   }
   const linesByPatient = new Map<string, HkComputeLine[]>();
   for (const l of lines) {
-    if (l.doctor_id !== doctorId) continue;
+    if (!l.doctor_id || l.doctor_id !== doctorId) continue;
     const list = linesByPatient.get(l.patient_ref) ?? [];
     list.push(l);
     linesByPatient.set(l.patient_ref, list);
@@ -2114,6 +2876,16 @@ function orthoWalk(
  * LAB_OVER_CIRO (by doctor name, doctor id, segment).
  * Lab summary (fin_hk_month lab_summary / lab_totals, built by fin__hk_lab_alloc next to the compute): shares are
  * rounded cumulatively in byte order of the lab names (COLLATE "C"), rows listed by doctor name / id, then lab name.
+ * Macro import (0033): an 'unpaid' line goes to the 'unpaid' bucket, deducted at the rule's deduct_unpaid_bp (the
+ * bucket exists when the rule has that rate or such lines, so other components keep their 0032 keys). A line without a
+ * doctor (Macro doctor mapped to the clinic / an outside doctor) has no rule and no warning; like every live line it is
+ * in clinic_total_cents (the clinic_ciro_share base). A procedure_piece rule pays piece_cents × Σ qty of the month's
+ * live pieces of its doctor and group (component with qty, lines_count, proc_group_id / proc_group_name, base null),
+ * ranked with implant_piece and after the doctor's implant_piece component, by group name. An implant_piece rule counts
+ * its doctor's implant-type pieces: of an implant group, or without a group (manual / clinical; the import stores only
+ * grouped pieces). UNRULED_PIECES covers only implant-type pieces when neither rule takes them; pieces of other groups
+ * without a rule are ordinary treatments. UNASSIGNED_PIECES (last) sums the month's live pieces of a group that have no
+ * doctor and are not marked "Hakediş yok", per group (by group name, then id).
  */
 export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const month = monthKey(input.month);
@@ -2123,6 +2895,18 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const childAgeLimit = childAgeLimitOf(input.settings);
   const doctorName = (id: string | null, fallback?: string | null) =>
     id ? doctorNames.get(id) ?? fallback ?? "" : fallback ?? null;
+  const groups = new Map((input.proc_groups ?? []).map((g) => [g.id, g]));
+  // 0033: an implant-type piece = a piece without a group (manual / clinical) or of an implant group (SQL:
+  // coalesce(g.is_implant, true)).
+  const isImplantPiece = (p: HkComputePiece) => (p.proc_group_id ? groups.get(p.proc_group_id)?.is_implant ?? true : true);
+  // 0033: a doctor's procedure_piece components follow the implant_piece one by group name (SQL pgrp: every group of
+  // the clinic by name, then id; 1-based, 0 when unknown).
+  const groupRank = new Map(
+    (input.proc_groups ?? [])
+      .slice()
+      .sort((a, b) => byName(a.name, b.name) || byText(a.id, b.id))
+      .map((g, i) => [g.id, i + 1])
+  );
 
   // Active rules; the newest from_month wins if invalid data ever has two for the same key.
   const index = ruleIndexOf(input.rules, month);
@@ -2145,7 +2929,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     }
     const segment = resolveSegment(
       { segment: null, doctor_id: c.doctor_id, day: c.day },
-      marks.get(c.patient_ref),
+      markFor(marks, c),
       childAgeLimit
     );
     return { segment, rule: costIndex.ruleFor(c.doctor_id, segment) };
@@ -2174,20 +2958,27 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const ruleOf = new Map<string, HkComputeRule>();
   for (const r of componentRules) {
     ruleOf.set(r.id, r);
+    const piece = r.kind === "implant_piece" || r.kind === "procedure_piece";
     components.set(r.id, {
       rule_id: r.id,
       kind: r.kind,
       doctor_id: r.doctor_id,
       doctor_name: doctorName(r.doctor_id, r.doctor_name),
       segment: r.kind === "ciro_share" ? r.segment : null,
-      share_bp: r.kind === "implant_piece" || r.kind === "fixed_monthly" ? null : r.share_bp,
-      piece_cents: r.kind === "implant_piece" || r.kind === "fixed_monthly" ? r.piece_cents : null,
+      share_bp: piece || r.kind === "fixed_monthly" ? null : r.share_bp,
+      piece_cents: piece || r.kind === "fixed_monthly" ? r.piece_cents : null,
       by_method: r.kind === "ciro_share" || r.kind === "ortho_lab_first" ? emptyByMethod(r) : null,
-      base_cents: r.kind === "fixed_monthly" ? null : 0,
+      base_cents: r.kind === "fixed_monthly" || r.kind === "procedure_piece" ? null : 0,
       amount_cents: 0,
-      qty: r.kind === "implant_piece" ? 0 : null,
+      qty: piece ? 0 : null,
       lines_count: 0,
       ...(r.kind === "ortho_lab_first" ? { lab_patients: walks.get(r.id)?.patients ?? [] } : {}),
+      ...(r.kind === "procedure_piece"
+        ? {
+            proc_group_id: r.proc_group_id ?? null,
+            proc_group_name: (r.proc_group_id && groups.get(r.proc_group_id)?.name) || null,
+          }
+        : {}),
     });
   }
 
@@ -2195,7 +2986,12 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   const lineResults: HkLineResult[] = [];
   const unruled = new Map<string, { count: number; try_cents: number }>();
   for (const l of monthLines) {
-    const segment = resolveSegment(l, marks.get(l.patient_ref), childAgeLimit);
+    const segment = resolveSegment(l, markFor(marks, l), childAgeLimit);
+    if (!l.doctor_id) {
+      // 0033: clinic / outside doctor revenue: in the clinic ciro only, never unruled.
+      lineResults.push({ id: l.id, segment, rule_id: null, lab_part: 0 });
+      continue;
+    }
     const rule = ruleFor(l.doctor_id, segment);
     if (!rule) {
       const u = unruled.get(l.doctor_id) ?? { count: 0, try_cents: 0 };
@@ -2207,7 +3003,8 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     }
     const lab = rule.kind === "ortho_lab_first" ? walks.get(rule.id)?.labPart.get(l.id) ?? 0 : 0;
     const c = components.get(rule.id)!;
-    const b = c.by_method![l.method];
+    const byMethod = c.by_method!;
+    const b = (byMethod[l.method] ??= emptyBucket(rule, l.method));
     b.gross += l.try_cents;
     b.implant += l.implant_cents;
     b.lab += lab;
@@ -2235,15 +3032,17 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   }
 
   const clinicTotal = monthLines.reduce((sum, l) => sum + l.try_cents, 0);
-  const pieceDoctors = new Set<string>();
+  // Pieces counted by an implant_piece / procedure_piece component (0033: UNRULED_PIECES = implant pieces outside it).
+  const pieceRuled = new Set<string>();
   const labOverCiro: Extract<HkWarningJson, { code: "LAB_OVER_CIRO" }>[] = [];
 
   components.forEach((c, ruleId) => {
     const rule = ruleOf.get(ruleId)!;
     if (c.by_method) {
       let base = 0;
-      for (const method of HK_METHODS) {
+      for (const method of HK_LINE_METHODS) {
         const b = c.by_method[method];
+        if (!b) continue;
         b.deduction = applyBp(b.eligible, b.deduct_bp);
         base += b.eligible - b.deduction;
       }
@@ -2270,9 +3069,13 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       }
       c.base_cents = base;
       c.amount_cents = applyBp(base, rule.share_bp ?? 0);
-    } else if (rule.kind === "implant_piece") {
-      pieceDoctors.add(rule.doctor_id ?? "");
-      const mine = livePieces.filter((p) => p.doctor_id === rule.doctor_id);
+    } else if (rule.kind === "implant_piece" || rule.kind === "procedure_piece") {
+      const mine = livePieces.filter((p) =>
+        !!p.doctor_id &&
+        p.doctor_id === rule.doctor_id &&
+        (rule.kind === "implant_piece" ? isImplantPiece(p) : !!p.proc_group_id && p.proc_group_id === rule.proc_group_id)
+      );
+      for (const p of mine) pieceRuled.add(p.id);
       const qty = mine.reduce((sum, p) => sum + p.qty, 0);
       c.qty = qty;
       c.lines_count = mine.length;
@@ -2287,10 +3090,17 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   });
 
   // Payees: every payee with an active rule or a live adjustment in the month; components in kind / doctor / segment
-  // order, then the 'adjustments' component, then the 'minimum_topup' one.
+  // order, then the 'adjustments' component, then the 'minimum_topup' one. procedure_piece (0033) ranks with
+  // implant_piece and sorts after it by group name (SQL kind_ord 3, seg_ord = the group's rank).
   const kindOrder = (k: HkComponentKind) =>
-    k === "adjustments" ? HK_KINDS.length : k === "minimum_topup" ? HK_KINDS.length + 1 : HK_KINDS.indexOf(k);
+    k === "adjustments"
+      ? HK_KINDS.length
+      : k === "minimum_topup"
+        ? HK_KINDS.length + 1
+        : HK_KINDS.indexOf(k === "procedure_piece" ? "implant_piece" : k);
   const segmentOrder = (s: HkSegment | null | undefined) => (s ? HK_SEGMENTS.indexOf(s) : -1);
+  const componentOrder = (c: HkComponentJson) =>
+    c.kind === "procedure_piece" ? (c.proc_group_id ? groupRank.get(c.proc_group_id) ?? 0 : 0) : segmentOrder(c.segment);
   const payeeMap = new Map<string, HkPayeeJson>();
   const payeeOf = (userId: string, fallbackName: string | null | undefined): HkPayeeJson => {
     let p = payeeMap.get(userId);
@@ -2365,7 +3175,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       (a, b) =>
         kindOrder(a.kind) - kindOrder(b.kind) ||
         byName(a.doctor_name ?? "", b.doctor_name ?? "") ||
-        segmentOrder(a.segment) - segmentOrder(b.segment) ||
+        componentOrder(a) - componentOrder(b) ||
         byText(a.rule_id ?? "", b.rule_id ?? "")
     );
   }
@@ -2385,7 +3195,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
   });
   const unruledPieces = new Map<string, number>();
   for (const p of livePieces) {
-    if (pieceDoctors.has(p.doctor_id)) continue;
+    if (!p.doctor_id || pieceRuled.has(p.id) || !isImplantPiece(p)) continue;
     unruledPieces.set(p.doctor_id, (unruledPieces.get(p.doctor_id) ?? 0) + p.qty);
   }
   const pieceWarnings: HkWarningJson[] = [];
@@ -2443,6 +3253,29 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
         byDoctorWarning(a, b) || segmentOrder(a.segment) - segmentOrder(b.segment) || byText(a.rule_id, b.rule_id)
     )
   );
+  // 0033: imported pieces of a group still waiting for the performing doctor (one warning; a group whose pieces net to
+  // zero stays listed, as in the SQL).
+  const unassigned = new Map<string, HkUnassignedGroupJson>();
+  for (const p of livePieces) {
+    if (p.doctor_id || p.assigned_none || !p.proc_group_id) continue;
+    const g = unassigned.get(p.proc_group_id) ?? {
+      proc_group_id: p.proc_group_id,
+      name: groups.get(p.proc_group_id)?.name ?? "",
+      count: 0,
+    };
+    g.count += p.qty;
+    unassigned.set(p.proc_group_id, g);
+  }
+  const unassignedGroups = Array.from(unassigned.values()).sort(
+    (a, b) => byName(a.name, b.name) || byText(a.proc_group_id, b.proc_group_id)
+  );
+  if (unassignedGroups.length) {
+    warnings.push({
+      code: "UNASSIGNED_PIECES",
+      count: unassignedGroups.reduce((sum, g) => sum + g.count, 0),
+      groups: unassignedGroups,
+    });
+  }
 
   // Doctor × lab summary (0032): the month's live costs of every doctor, and what was deducted from each doctor's
   // figures this month per lab (ciro_share: each rule's lab_cents split over its labs; ortho: the walk's recovery).

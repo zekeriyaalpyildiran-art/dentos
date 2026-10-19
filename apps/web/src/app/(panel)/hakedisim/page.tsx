@@ -35,7 +35,8 @@ import { formatMoney } from "@/lib/payments";
  * Hakedişim: the signed-in doctor's (or the owner's) own hakediş, read-only. hk_my_months / hk_my_month return only
  * the caller's figures and lines; no finance permission is needed. Doctors and the owner only (layout.tsx). v1.3
  * (0032): the part paid by bank and the rest in cash, when the caller has a bank amount in the month. v1.4 (0032): the
- * month's lab costs taken off the caller's ciro (total, per lab and the cost rows) and the minimum top-up.
+ * month's lab costs taken off the caller's ciro (total, per lab and the cost rows) and the minimum top-up. v2 (0033):
+ * the procedure piece fees (pieces by group) and the Macro operation / tooth of imported lines.
  */
 export default function HakedisimPage() {
   return (
@@ -265,6 +266,8 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
   const s = summarizePayee({ total_cents: total, components });
   const hasShare = components.some((c) => c.kind === "ciro_share" || c.kind === "ortho_lab_first");
   const hasImplant = components.some((c) => c.kind === "implant_piece");
+  // 0033: a fixed amount per piece of a procedure group.
+  const hasProcedure = components.some((c) => c.kind === "procedure_piece");
   const management = components.filter((c) => c.kind === "clinic_ciro_share");
   // 0031: a fixed monthly salary and the month's bonus / other rows are part of the same monthly entry.
   const hasSalary = components.some((c) => c.kind === "fixed_monthly");
@@ -344,6 +347,9 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
             </>
           )}
           {hasImplant && <SummaryTile label="İmplant" cents={s.implant_amount_cents} caption={`${s.implant_qty} adet`} />}
+          {hasProcedure && (
+            <SummaryTile label="İşlem ücreti" cents={s.procedure_amount_cents} caption={`${s.procedure_qty} işlem`} />
+          )}
           {management.length > 0 && (
             <SummaryTile
               label="Yönetim payı"
@@ -421,10 +427,10 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
 
       {(hasShare || data.lines.length > 0) && <LinesCard lines={data.lines} />}
 
-      {hasImplant && (
-        <Card title="İmplantlar">
+      {(hasImplant || hasProcedure) && (
+        <Card title={hasProcedure ? "İmplant ve işlemler" : "İmplantlar"}>
           {data.pieces.length === 0 ? (
-            <p className="text-sm text-gray-500">Bu ay implant kaydı yok.</p>
+            <p className="text-sm text-gray-500">Bu ay {hasProcedure ? "implant ya da işlem" : "implant"} kaydı yok.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -432,14 +438,25 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
                   <tr className="text-left text-gray-700 border-b">
                     <th className="py-2 pr-3 font-semibold">Tarih</th>
                     <th className="py-2 pr-3 font-semibold">Hasta</th>
+                    {hasProcedure && <th className="py-2 pr-3 font-semibold">İşlem</th>}
                     <th className="py-2 font-semibold text-right">Adet</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.pieces.map((p, i) => (
-                    <tr key={p.id ?? i} className="border-b last:border-b-0">
+                    <tr key={p.id ?? i} className="border-b last:border-b-0 align-top">
                       <td className="py-2 pr-3 whitespace-nowrap">{formatDay(p.day)}</td>
                       <td className="py-2 pr-3">{p.patient_name}</td>
+                      {hasProcedure && (
+                        <td className="py-2 pr-3">
+                          {p.proc_group_name ?? "İmplant"}
+                          {(p.procedure || p.tooth) && (
+                            <span className="block text-xs text-gray-500">
+                              {[p.procedure, p.tooth ? `diş ${p.tooth}` : null].filter(Boolean).join(" · ")}
+                            </span>
+                          )}
+                        </td>
+                      )}
                       <td className={`py-2 text-right tabular-nums ${p.qty < 0 ? "text-red-600" : ""}`}>{p.qty}</td>
                     </tr>
                   ))}
@@ -593,6 +610,12 @@ function LinesCard({ lines }: { lines: HkMyLineJson[] }) {
                 <div className="text-xs text-gray-600 mt-1">
                   {formatDay(l.day)} · {METHOD_LABELS[l.method]} · {SEGMENT_LABELS[l.segment] ?? l.segment}
                 </div>
+                {l.procedure && (
+                  <div className="text-xs text-gray-600">
+                    {l.procedure}
+                    {l.tooth ? ` · diş ${l.tooth}` : ""}
+                  </div>
+                )}
                 {(l.implant_cents !== 0 || l.lab_part !== 0) && (
                   <div className="text-xs text-gray-600">
                     {l.implant_cents !== 0 ? `İmplant payı ${formatTL(l.implant_cents)}` : ""}
@@ -623,6 +646,12 @@ function LinesCard({ lines }: { lines: HkMyLineJson[] }) {
                     <td className="py-2 pr-3 whitespace-nowrap">{formatDay(l.day)}</td>
                     <td className="py-2 pr-3">
                       {l.patient_name}
+                      {l.procedure && (
+                        <span className="block text-xs text-gray-500">
+                          {l.procedure}
+                          {l.tooth ? ` · diş ${l.tooth}` : ""}
+                        </span>
+                      )}
                       {!l.counted && <span className="block text-xs">Hakedişinize dahil değil</span>}
                     </td>
                     <td className="py-2 pr-3 whitespace-nowrap">{METHOD_LABELS[l.method]}</td>
@@ -637,6 +666,8 @@ function LinesCard({ lines }: { lines: HkMyLineJson[] }) {
           </div>
           <p className="text-xs text-gray-500 mt-3">
             Tutarlar TL karşılığıdır; eksi tutar düzeltmedir. İmplant payı cironuza girmez (implant adet başı ödenir).
+            {lines.some((l) => l.method === "unpaid") &&
+              ` “${METHOD_LABELS.unpaid}”: ay içinde yaptığınız işlemin ay sonuna kadar ödenmemiş kısmı; sonradan gelen ödemeler o ayı değiştirmez.`}
           </p>
         </>
       )}

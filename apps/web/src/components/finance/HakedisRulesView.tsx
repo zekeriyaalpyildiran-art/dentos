@@ -4,10 +4,13 @@
 // limit. Only finance mode offers the editors, and only to 'finance' holders (fin_hk_save_rule / fin_hk_save_settings
 // stay finance-only in 0031); the prep section shows the same list read-only. v1.3 (0032): kind bank_portion, the fixed
 // monthly part of a payee's total paid by bank (any active user, like the fixed monthly salary). v1.4 (0032): kind
-// minimum_monthly, the monthly floor of a payee's total (any active user), and how lab costs reach the hakediş.
+// minimum_monthly, the monthly floor of a payee's total (any active user), and how lab costs reach the hakediş. v2
+// (0033): the 'Ödenmemiş (ay sonu)' deduction of ciro_share rules (the part of a Macro treatment unpaid at the end of
+// its month) and kind procedure_piece, a doctor's fixed amount per piece of one procedure group (İşlem grupları).
 
+import Link from "next/link";
 import { useState } from "react";
-import { HakedisTabs, useHkReference, type HkMode } from "./HakedisParts";
+import { HK_BASE, HakedisTabs, useHkReference, type HkMode } from "./HakedisParts";
 import {
   Card,
   ErrorBox,
@@ -32,6 +35,7 @@ import {
 } from "@/lib/finance";
 import {
   BANK_PORTION_HINT,
+  DEDUCT_LABELS,
   HK_CHILD_AGE_LIMIT_MAX,
   HK_CHILD_AGE_LIMIT_MIN,
   HK_KINDS,
@@ -42,8 +46,10 @@ import {
   METHOD_LABELS,
   MINIMUM_MONTHLY_HINT,
   MINIMUM_TOPUP_COMPONENT_LABEL,
+  PROCEDURE_PIECE_HINT,
   RULE_FIELDS,
   SEGMENT_LABELS,
+  UNPAID_DEDUCT_HINT,
   bpToInput,
   childAgeLimitOf,
   finHkSaveRule,
@@ -54,10 +60,11 @@ import {
   parsePercent,
   pieceFieldLabel,
   ruleActiveIn,
+  ruleDeductBp,
   validateChildAgeLimit,
   validateRule,
   type HkKind,
-  type HkMethod,
+  type HkLineMethod,
   type HkPayeeRefJson,
   type HkReferenceJson,
   type HkRuleJson,
@@ -141,6 +148,20 @@ export function HakedisRulesView({ mode }: { mode: HkMode }) {
           bir şey eklenmez. Aynı kişi için ayları çakışan iki taban maaş kuralı olamaz.
         </p>
         <p>Lab giderleri: {LAB_DEDUCTION_TEXT}</p>
+        <p>
+          Macro&apos;dan yüklenen hekimlerde ciro, ay içinde yapılan işlemlerdir: işlemin ay sonuna kadar ödenen kısmı ödeme
+          şeklinin kesintisiyle, ödenmeyen kısmı ciro payı kuralının “{DEDUCT_LABELS.unpaid}” kesintisiyle cirosuna
+          girer. Ortodonti kuralı olan hekimin satırları ödeme gününe göredir.
+        </p>
+        <p>
+          İşlem başı ücret: hekimin seçilen işlem grubunda (ör. çekim, kist) yaptığı her işlem için sabit tutar; işlemin
+          fiyatı dikkate alınmaz. Gruplar ve Macro işlem adları{" "}
+          <Link href={`${HK_BASE[mode]}/groups`} className="underline">
+            İşlem grupları
+          </Link>{" "}
+          sayfasındadır. Bir hekime aynı aylarda hem implant (adet başı) kuralı hem de implant grubu için işlem başı ücret
+          tanımlanamaz.
+        </p>
       </div>
 
       {groups.size === 0 ? (
@@ -165,7 +186,13 @@ export function HakedisRulesView({ mode }: { mode: HkMode }) {
               ) : undefined
             }
           >
-            <RuleTable rules={g.rules} currentMonth={data.current_month} canWrite={canWrite} onEdit={(r) => setDialog({ record: r })} />
+            <RuleTable
+              rules={g.rules}
+              groups={data.proc_groups ?? []}
+              currentMonth={data.current_month}
+              canWrite={canWrite}
+              onEdit={(r) => setDialog({ record: r })}
+            />
           </Card>
         ))
       )}
@@ -288,18 +315,25 @@ function ChildAgeLimitCard({
 
 function rateText(r: HkRuleJson): string {
   if (r.kind === "implant_piece") return `${formatTL(r.piece_cents)} / implant`;
+  if (r.kind === "procedure_piece") return `${formatTL(r.piece_cents)} / işlem`;
   if (r.kind === "fixed_monthly" || r.kind === "bank_portion") return `${formatTL(r.piece_cents)} / ay`;
   if (r.kind === "minimum_monthly") return `en az ${formatTL(r.piece_cents)} / ay`;
   return formatBp(r.share_bp);
 }
 
+/** The method deductions of a rule; the unpaid one (0033) on ciro_share rules once it is set. */
 function deductionsText(r: HkRuleJson): string {
-  if (!RULE_FIELDS[r.kind].deductions) return "—";
-  return HK_METHODS.map((m) => `${METHOD_LABELS[m]} ${formatBp(ruleDeduct(r, m))}`).join(" · ");
+  const f = RULE_FIELDS[r.kind];
+  if (!f.deductions) return "—";
+  const methods: HkLineMethod[] = [...HK_METHODS];
+  if (f.unpaid && r.deduct_unpaid_bp !== undefined) methods.push("unpaid");
+  return methods.map((m) => `${DEDUCT_LABELS[m]} ${formatBp(ruleDeductBp(r, m))}`).join(" · ");
 }
 
-function ruleDeduct(r: Pick<HkRuleJson, "deduct_cash_bp" | "deduct_card_bp" | "deduct_transfer_bp" | "deduct_financing_bp">, m: HkMethod) {
-  return m === "cash" ? r.deduct_cash_bp : m === "card" ? r.deduct_card_bp : m === "transfer" ? r.deduct_transfer_bp : r.deduct_financing_bp;
+/** The group of a procedure_piece rule (the rule's own name, else the reference list's). */
+function groupName(r: HkRuleJson, groups: HkReferenceJson["proc_groups"]): string | null {
+  if (r.kind !== "procedure_piece") return null;
+  return r.proc_group_name ?? groups?.find((g) => g.id === r.proc_group_id)?.name ?? null;
 }
 
 function RuleStatus({ rule, currentMonth }: { rule: HkRuleJson; currentMonth: string }) {
@@ -315,11 +349,13 @@ function RuleStatus({ rule, currentMonth }: { rule: HkRuleJson; currentMonth: st
 
 function RuleTable({
   rules,
+  groups,
   currentMonth,
   canWrite,
   onEdit,
 }: {
   rules: HkRuleJson[];
+  groups: HkReferenceJson["proc_groups"];
   currentMonth: string;
   canWrite: boolean;
   onEdit: (r: HkRuleJson) => void;
@@ -331,7 +367,7 @@ function RuleTable({
           <tr className="text-left text-gray-700 border-b">
             <th className="py-2 pr-3 font-semibold">Tür</th>
             <th className="py-2 pr-3 font-semibold">Hekim</th>
-            <th className="py-2 pr-3 font-semibold">Hasta grubu</th>
+            <th className="py-2 pr-3 font-semibold whitespace-nowrap">Hasta / işlem grubu</th>
             <th className="py-2 pr-3 font-semibold text-right">Oran / tutar</th>
             <th className="py-2 pr-3 font-semibold">Ödeme şekline göre kesinti</th>
             <th className="py-2 pr-3 font-semibold">Geçerli aylar</th>
@@ -347,7 +383,9 @@ function RuleTable({
                 {r.note && <div className="text-xs text-gray-500 max-w-xs">{r.note}</div>}
               </td>
               <td className="py-2 pr-3 whitespace-nowrap">{r.doctor_name ?? (r.kind === "clinic_ciro_share" ? "Tüm klinik" : "—")}</td>
-              <td className="py-2 pr-3 whitespace-nowrap">{r.segment ? SEGMENT_LABELS[r.segment] : "—"}</td>
+              <td className="py-2 pr-3 whitespace-nowrap">
+                {r.segment ? SEGMENT_LABELS[r.segment] : groupName(r, groups) ?? "—"}
+              </td>
               <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap font-medium">{rateText(r)}</td>
               <td className="py-2 pr-3 text-xs text-gray-700">{deductionsText(r)}</td>
               <td className="py-2 pr-3 whitespace-nowrap capitalize">
@@ -378,7 +416,10 @@ interface RuleForm {
   segment: HkSegment;
   share: string;
   piece: string;
-  deduct: Record<HkMethod, string>;
+  /** the four payment methods, and (0033, ciro_share) 'unpaid' */
+  deduct: Record<HkLineMethod, string>;
+  /** 0033: procedure_piece only */
+  proc_group_id: string;
   from_month: string;
   to_month: string;
   note: string;
@@ -398,7 +439,9 @@ function initialForm(ref: HkReferenceJson, record: HkRuleJson | null, payeeUserI
         card: bpToInput(record.deduct_card_bp),
         transfer: bpToInput(record.deduct_transfer_bp),
         financing: bpToInput(record.deduct_financing_bp),
+        unpaid: bpToInput(record.deduct_unpaid_bp ?? 0),
       },
+      proc_group_id: record.proc_group_id ?? "",
       from_month: monthKey(record.from_month),
       to_month: record.to_month ? monthKey(record.to_month) : "",
       note: record.note ?? "",
@@ -413,7 +456,8 @@ function initialForm(ref: HkReferenceJson, record: HkRuleJson | null, payeeUserI
     segment: "standard",
     share: "",
     piece: "",
-    deduct: { cash: "0", card: "0", transfer: "0", financing: "0" },
+    deduct: { cash: "0", card: "0", transfer: "0", financing: "0", unpaid: "0" },
+    proc_group_id: "",
     from_month: monthKey(ref.current_month),
     to_month: "",
     note: "",
@@ -445,6 +489,7 @@ function RuleDialog({
   const [busy, setBusy] = useState(false);
 
   const f = RULE_FIELDS[form.kind];
+  const procedure = form.kind === "procedure_piece";
   const salary = form.kind === "fixed_monthly";
   const bank = form.kind === "bank_portion";
   const minimum = form.kind === "minimum_monthly";
@@ -457,17 +502,35 @@ function RuleDialog({
   );
   const payee = refData.payees.find((p) => p.user_id === form.payee_user_id);
   const doctors = refData.doctors.filter((d) => d.is_active || d.id === form.doctor_id);
+  // 0033: active procedure groups (the rule's own stays listed even if deactivated since).
+  const groups = (refData.proc_groups ?? []).filter((g) => g.is_active || g.id === record?.proc_group_id);
   const overlapping =
     error?.isConflict && error.details && UUID_RE.test(error.details)
       ? refData.rules.find((r) => r.id === error.details && r.id !== id)
       : undefined;
 
   const set = <K extends keyof RuleForm>(key: K, value: RuleForm[K]) => setForm((prev) => ({ ...prev, [key]: value }));
+  // 0033: a procedure_piece rule pays the doctor who performs the pieces (payee = the doctor's own user).
+  const setDoctor = (doctorId: string) =>
+    setForm((prev) => {
+      if (prev.kind !== "procedure_piece") return { ...prev, doctor_id: doctorId };
+      const user = refData.doctors.find((d) => d.id === doctorId)?.user_id;
+      return { ...prev, doctor_id: doctorId, payee_user_id: user ?? prev.payee_user_id };
+    });
   const setPayee = (userId: string) =>
     setForm((prev) => {
       const payee = refData.payees.find((p) => p.user_id === userId);
-      // A doctor's own rules are the usual case: pick the payee's doctors row while no doctor is chosen yet.
-      return { ...prev, payee_user_id: userId, doctor_id: prev.doctor_id || payee?.doctor_id || "" };
+      // A doctor's own rules are the usual case: pick the payee's doctors row while no doctor is chosen yet (always
+      // for procedure_piece, whose payee is the performing doctor, 0033).
+      const doctorId =
+        prev.kind === "procedure_piece" ? payee?.doctor_id ?? prev.doctor_id : prev.doctor_id || payee?.doctor_id || "";
+      return { ...prev, payee_user_id: userId, doctor_id: doctorId };
+    });
+  const setKind = (kind: HkKind) =>
+    setForm((prev) => {
+      if (kind !== "procedure_piece" || !prev.doctor_id) return { ...prev, kind };
+      const user = refData.doctors.find((d) => d.id === prev.doctor_id)?.user_id;
+      return { ...prev, kind, payee_user_id: user ?? prev.payee_user_id };
     });
 
   const submit = async (ev: React.FormEvent) => {
@@ -491,18 +554,19 @@ function RuleDialog({
             ? "Aylık bankadan ödenen tutar"
             : minimum
               ? "Aylık taban tutar"
-              : "Adet başı tutar";
+              : procedure
+                ? "İşlem başı tutar"
+                : "Adet başı tutar";
         return setFormError(`${label}: ${p.error}`);
       }
       pieceCents = p.cents;
     }
-    const deduct: Record<HkMethod, number> = { cash: 0, card: 0, transfer: 0, financing: 0 };
-    if (f.deductions) {
-      for (const m of HK_METHODS) {
-        const p = parsePercent(form.deduct[m].trim() === "" ? "0" : form.deduct[m], { allowZero: true });
-        if (!p.ok) return setFormError(`${METHOD_LABELS[m]} kesintisi: ${p.error}`);
-        deduct[m] = p.bp;
-      }
+    const deduct: Record<HkLineMethod, number> = { cash: 0, card: 0, transfer: 0, financing: 0, unpaid: 0 };
+    const methods: HkLineMethod[] = [...(f.deductions ? HK_METHODS : []), ...(f.unpaid ? (["unpaid"] as const) : [])];
+    for (const m of methods) {
+      const p = parsePercent(form.deduct[m].trim() === "" ? "0" : form.deduct[m], { allowZero: true });
+      if (!p.ok) return setFormError(`${DEDUCT_LABELS[m]} kesintisi: ${p.error}`);
+      deduct[m] = p.bp;
     }
     if (!isMonth(form.from_month)) return setFormError("Başlangıç ayını seçin.");
     if (form.to_month && !isMonth(form.to_month)) return setFormError("Bitiş ayı geçersiz.");
@@ -519,11 +583,16 @@ function RuleDialog({
       deduct_card_bp: deduct.card,
       deduct_transfer_bp: deduct.transfer,
       deduct_financing_bp: deduct.financing,
+      deduct_unpaid_bp: deduct.unpaid,
+      proc_group_id: f.group ? form.proc_group_id || null : null,
       from_month: form.from_month,
       to_month: form.to_month || null,
     };
     const invalid = validateRule(input);
     if (invalid) return setFormError(invalid);
+    if (procedure && refData.doctors.find((d) => d.id === input.doctor_id)?.user_id !== input.payee_user_id) {
+      return setFormError("İşlem başı ücret kuralında hakediş sahibi işlemi yapan hekimin kendisi olmalı.");
+    }
     if (!anyUser && payee && !canHaveHakedisRules(payee)) {
       return setFormError(
         "Hakediş yalnızca hekimlere ve klinik sahibine tanımlanabilir. Personel için “Sabit aylık maaş”, “Bankadan ödenen sabit tutar” ya da “Taban maaş” seçin."
@@ -548,6 +617,8 @@ function RuleDialog({
         p_from_month: input.from_month,
         p_to_month: input.to_month,
         p_note: form.note.trim(),
+        p_deduct_unpaid_bp: input.deduct_unpaid_bp,
+        p_proc_group_id: input.proc_group_id,
       });
       await onSaved(res.already_saved);
     } catch (err) {
@@ -570,7 +641,13 @@ function RuleDialog({
                     ? "Taban maaş alacak kişi"
                     : "Hakediş sahibi"
             }
-            hint={anyUser ? "Klinikteki herhangi bir aktif kullanıcı (personel ya da hekim)." : "Hekimler ve klinik sahibi."}
+            hint={
+              anyUser
+                ? "Klinikteki herhangi bir aktif kullanıcı (personel ya da hekim)."
+                : procedure
+                  ? "İşlemi yapan hekimin kendisi (hekim seçilince kendiliğinden gelir)."
+                  : "Hekimler ve klinik sahibi."
+            }
           >
             <select className={inputClass} value={form.payee_user_id} onChange={(e) => setPayee(e.target.value)} required>
               <option value="">Seçin</option>
@@ -585,7 +662,7 @@ function RuleDialog({
             </select>
           </Field>
           <Field label="Kural türü">
-            <select className={inputClass} value={form.kind} onChange={(e) => set("kind", e.target.value as HkKind)}>
+            <select className={inputClass} value={form.kind} onChange={(e) => setKind(e.target.value as HkKind)}>
               {HK_KINDS.map((k) => (
                 <option key={k} value={k}>
                   {KIND_LABELS[k]}
@@ -599,16 +676,47 @@ function RuleDialog({
               hint={
                 form.kind === "implant_piece"
                   ? "Bu hekimin taktığı implantlar sayılır."
-                  : "Bu hekimin tahsilat satırları bu kurala girer."
+                  : procedure
+                    ? "Bu hekimin seçilen gruptaki işlemleri sayılır; hakediş sahibi hekimin kendisidir."
+                    : "Bu hekimin tahsilat satırları bu kurala girer."
               }
             >
-              <select className={inputClass} value={form.doctor_id} onChange={(e) => set("doctor_id", e.target.value)} required>
+              <select className={inputClass} value={form.doctor_id} onChange={(e) => setDoctor(e.target.value)} required>
                 <option value="">Seçin</option>
                 {doctors.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name}
                     {d.specialty ? ` · ${d.specialty}` : ""}
                     {d.is_active ? "" : " (pasif)"}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          {f.group && (
+            <Field
+              label="İşlem grubu"
+              hint={
+                groups.length === 0 ? (
+                  <>
+                    Henüz işlem grubu yok;{" "}
+                    <Link href={`${HK_BASE.finance}/groups`} className="underline">
+                      İşlem grupları
+                    </Link>{" "}
+                    sayfasından ekleyin.
+                  </>
+                ) : (
+                  PROCEDURE_PIECE_HINT
+                )
+              }
+            >
+              <select className={inputClass} value={form.proc_group_id} onChange={(e) => set("proc_group_id", e.target.value)} required>
+                <option value="">Seçin</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                    {g.is_implant ? " (implant grubu)" : ""}
+                    {g.is_active ? "" : " (pasif)"}
                   </option>
                 ))}
               </select>
@@ -671,9 +779,20 @@ function RuleDialog({
                   />
                 </Field>
               ))}
+              {f.unpaid && (
+                <Field label={DEDUCT_LABELS.unpaid} className="col-span-2 md:col-span-1">
+                  <input
+                    className={inputClass}
+                    inputMode="decimal"
+                    value={form.deduct.unpaid}
+                    onChange={(e) => set("deduct", { ...form.deduct, unpaid: e.target.value })}
+                  />
+                </Field>
+              )}
             </div>
             <p className="text-xs text-gray-500 mt-2">
               Hekimin payı hesaplanmadan önce o ödeme şeklindeki tutardan düşülür (ör. kart komisyonu). Kesinti yoksa 0.
+              {f.unpaid && ` ${DEDUCT_LABELS.unpaid}: ${UNPAID_DEDUCT_HINT}`}
             </p>
           </fieldset>
         )}
