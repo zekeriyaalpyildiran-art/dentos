@@ -46,7 +46,8 @@ export default function TasksPage() {
   const canManage = useCanManageCrm();
   const canSeeAll = useCanAssignTasks();
   const staff = useStaff();
-  // CRM is closed to some roles (assistants, lib/nav.ts): no CRM button, and a task's lead is shown as plain text.
+  // CRM is closed to some roles (assistants and doctors, lib/nav.ts): no CRM button, and a task's lead is shown as
+  // plain text.
   const canOpenCrmToday = useCanOpenPath("/crm/today");
   const canOpenLeads = useCanOpenPath("/crm/leads");
   const [scope, setScope] = useState<TaskScope>("mine");

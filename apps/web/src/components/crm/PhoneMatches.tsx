@@ -16,7 +16,8 @@ export function hasPhoneMatches(m: PhoneMatchesJson | null | undefined): m is Ph
  * patients with the same normalized number and links to each with "Mevcut kaydı aç".
  */
 export function PhoneMatchesList({ matches, title }: { matches: PhoneMatchesJson | null; title?: string }) {
-  // The patient form is shared with roles CRM is closed to (assistants, lib/nav.ts): they see the lead, without a link.
+  // The patient form is shared with roles CRM is closed to (assistants and doctors, lib/nav.ts): they see the lead,
+  // without a link.
   const canOpenLeads = useCanOpenPath("/crm/leads");
   if (!hasPhoneMatches(matches)) return null;
   return (

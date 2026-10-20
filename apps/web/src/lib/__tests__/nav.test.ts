@@ -161,8 +161,8 @@ describe("sections closed for a role", () => {
     }
   });
 
-  it("other roles keep CRM, Ekip and Raporlar", () => {
-    for (const role of ["owner", "admin", "doctor", "reception"]) {
+  it("owner, admins and reception keep CRM, Ekip and Raporlar", () => {
+    for (const role of ["owner", "admin", "reception"]) {
       const list = hrefs(menuItemsFor(user(role)));
       expect(list, role).toEqual(expect.arrayContaining(["/crm/today", "/crm/leads", "/team", "/reports"]));
     }
@@ -186,6 +186,77 @@ describe("sections closed for a role", () => {
         if ((roles as readonly string[]).includes(role)) expect(home === section || home.startsWith(section + "/"), role).toBe(false);
       }
     }
+  });
+});
+
+describe("doctors (owner's decision 2026-10-20: no CRM, İmplantlar, Raporlar or Ekip)", () => {
+  const CLOSED = ["/crm/today", "/crm/leads", "/clinical/implants", "/team", "/reports"];
+  const KEPT = ["/appointments", "/patients", "/treatment-plans", "/tasks", "/lab", "/inventory", "/hakedisim", "/settings"];
+
+  it("leaves those sections out of the doctor's menu; the rest of it stays", () => {
+    const list = hrefs(menuItemsFor(user("doctor")));
+    for (const href of CLOSED) expect(list, href).not.toContain(href);
+    for (const href of KEPT) expect(list, href).toContain(href);
+  });
+
+  it("goes by role: a doctor holding CRM, clinical or finance permissions still does not get them", () => {
+    const list = hrefs(menuItemsFor(user("doctor", ["crm_manage", "clinical", "finance", "stock_cost_view"])));
+    for (const href of CLOSED) expect(list, href).not.toContain(href);
+    expect(list).toContain("/finance");
+    expect(list).toContain("/lab");
+  });
+
+  it("refuses typed addresses into those sections, query and fragment ignored", () => {
+    for (const href of [
+      "/crm",
+      "/crm/today",
+      "/crm/leads/0b6c3c8e-1d2f-4a8b-9c1d-2e3f4a5b6c7d",
+      "/crm/leads?stage=new",
+      "/clinical",
+      "/clinical/implants",
+      "/clinical/brands",
+      "/clinical/implants?status=active",
+      "/clinical/implants#liste",
+      "/team",
+      "/team/abc",
+      "/reports",
+      "/reports?month=2026-10",
+    ]) {
+      expect(canOpenPath("doctor", href), href).toBe(false);
+    }
+  });
+
+  it("keeps the Lab, the patient card's implants and every look-alike path open", () => {
+    for (const href of [
+      "/lab",
+      "/lab/labs",
+      "/lab/new",
+      "/lab/0b6c3c8e-1d2f-4a8b-9c1d-2e3f4a5b6c7d/edit",
+      "/patients/abc?tab=implants",
+      "/clinicalx",
+      "/crm-archive",
+      "/teams",
+      "/finance/reports",
+      "/inventory/reports",
+      "/hakedisim",
+    ]) {
+      expect(canOpenPath("doctor", href), href).toBe(true);
+    }
+  });
+
+  it("closes İmplantlar to doctors only; its layout refuses them", () => {
+    expect([...rolesAllowedFor("/clinical")].sort()).toEqual(["admin", "assistant", "owner", "reception"]);
+    for (const role of ["owner", "admin", "assistant", "reception"]) {
+      expect(hrefs(menuItemsFor(user(role))), role).toContain("/clinical/implants");
+      expect(canOpenPath(role, "/clinical/brands"), role).toBe(true);
+    }
+    expect(readFileSync(`${PANEL_DIR}/clinical/layout.tsx`, "utf8")).toContain('rolesAllowedFor("/clinical")');
+  });
+
+  it("keeps the doctor's start page (Ajanda) open", () => {
+    expect(homePathForUser({ role: "doctor", permissions: [] })).toBe("/appointments");
+    expect(homePathForUser({ role: "doctor", permissions: ["finance"] })).toBe("/appointments");
+    expect(canOpenPath("doctor", homePathFor("doctor"))).toBe(true);
   });
 });
 
@@ -380,8 +451,8 @@ describe("canOpenPath (links from shared pages)", () => {
     }
   });
 
-  it("lets every other role open the closed sections, and does not guess for a user not loaded yet", () => {
-    for (const role of ["owner", "admin", "doctor", "reception"]) {
+  it("lets owner, admins and reception open the closed sections, and does not guess for a user not loaded yet", () => {
+    for (const role of ["owner", "admin", "reception"]) {
       for (const href of ["/crm/today", "/crm/leads/x", "/team", "/reports"]) expect(canOpenPath(role, href), role).toBe(true);
     }
     expect(canOpenPath(null, "/crm/today")).toBe(true);

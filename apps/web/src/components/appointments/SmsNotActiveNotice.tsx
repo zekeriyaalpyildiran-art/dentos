@@ -8,7 +8,8 @@ import { useCanOpenPath } from "@/components/useCanOpenPath";
  * or will be sent automatically. Reminders are done by phone from CRM "Bugün" or with the agenda's WhatsApp link.
  */
 export function SmsNotActiveNotice({ className = "" }: { className?: string }) {
-  // CRM is closed to some roles (assistants, lib/nav.ts); they are pointed at the agenda's WhatsApp link only.
+  // CRM is closed to some roles (assistants and doctors, lib/nav.ts); they are pointed at the agenda's WhatsApp link
+  // only.
   const canOpenCrmToday = useCanOpenPath("/crm/today");
   return (
     <div

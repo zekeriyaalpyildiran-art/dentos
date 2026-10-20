@@ -23,6 +23,7 @@ import {
 } from "@/lib/clinical/rpc";
 import { LIMITS } from "@/lib/clinical/codes";
 import { formatDateTime } from "@/lib/clinical/dates";
+import { labOwnOnly } from "@/lib/clinical/permissions";
 import {
   ClinicalNotice,
   EmptyState,
@@ -283,6 +284,8 @@ export default function LabsPage() {
   const [editing, setEditing] = useState<LabRow | "new" | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // A doctor's "açık iş" counts cover their own jobs only (the lab_orders read rule, 0036).
+  const ownOnly = labOwnOnly(user, flags);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -369,7 +372,11 @@ export default function LabsPage() {
                         </a>
                       )}
                       {l.email && <span>{l.email}</span>}
-                      {openCounts && <span>{openCounts.get(l.id) ?? 0} açık iş</span>}
+                      {openCounts && (
+                        <span>
+                          {openCounts.get(l.id) ?? 0} {ownOnly ? "açık işiniz" : "açık iş"}
+                        </span>
+                      )}
                     </div>
                   </div>
                   {flags.can_write ? (

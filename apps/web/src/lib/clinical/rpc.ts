@@ -120,6 +120,11 @@ export interface ClinicalFlags {
   can_finance: boolean;
   can_view_deleted: boolean;
   can_restore: boolean;
+  /** 0036: lab jobs of the caller's own doctor record only (a doctor without 'finance' / 'finance_readonly'). Absent
+   *  before 0036; see labOwnOnly (lib/clinical/permissions.ts). */
+  lab_own_only?: boolean;
+  /** 0036: doctors.id of the caller (null without a doctor record). */
+  my_doctor_id?: string | null;
 }
 
 export const NO_FLAGS: ClinicalFlags = {
@@ -686,6 +691,8 @@ export function clinSaveSettings(
 
 export interface DoctorRef {
   id: string;
+  /** users.id of the doctor's account (public.users, AuthUser.user_id): finds the signed-in doctor's own record. */
+  user_id: string | null;
   name: string;
   /** users.is_active of the doctor's account. Forms offer active doctors only (0024 stock__check_patient_refs
    *  refuses an inactive one with E_DOCTOR); list filters keep every doctor for old records. */
@@ -697,17 +704,19 @@ export interface DoctorRef {
 export async function listDoctors(): Promise<DoctorRef[]> {
   const { data, error } = await clinicalDb()
     .from("doctors")
-    .select("id,specialty,users(full_name,is_active)")
+    .select("id,user_id,specialty,users(full_name,is_active)")
     .limit(500);
   if (error) throw toClinicalError(error);
   const rows = (data || []) as unknown as {
     id: string;
+    user_id: string | null;
     specialty: string | null;
     users: { full_name: string; is_active: boolean | null } | null;
   }[];
   return rows
     .map((d) => ({
       id: d.id,
+      user_id: d.user_id ?? null,
       name: d.users?.full_name || d.specialty || "İsimsiz hekim",
       active: d.users?.is_active === true,
     }))

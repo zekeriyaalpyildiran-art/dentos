@@ -56,14 +56,19 @@ export const MENU_ITEMS: readonly MenuItem[] = [
  * Sections a role does not use (owner's choice, 2026-10-16: assistants work on the agenda, patients, stock, lab and
  * implants, not on CRM, staff or reports). Such a section is left out of that role's menu, and the section's own
  * layout (app/(panel)/<section>/layout.tsx) refuses the role, so a typed address does not open it either.
+ * Doctors (owner's decision 2026-10-20) do not use CRM, İmplantlar, Raporlar or Ekip either; the implants of a
+ * patient stay on the patient card (only the /clinical section is closed), and the Lab stays, limited by the server
+ * to the doctor's own jobs (0036). The closure goes by role: a doctor holding 'crm_manage' or 'clinical' still does
+ * not get these sections.
  * Hakedişim is for the payees only: doctors and the owner (management share); reception has no hakediş.
  * Hasta işaretleri (owner's decision 2026-10-18) is for the reception desk: reception, admins and the owner mark the
  * patients; assistants and doctors (the payees) do not.
  */
 export const SECTIONS_CLOSED_FOR: Readonly<Record<string, readonly UserRole[]>> = {
-  "/crm": ["assistant"],
-  "/team": ["assistant"],
-  "/reports": ["assistant"],
+  "/crm": ["assistant", "doctor"],
+  "/clinical": ["doctor"],
+  "/team": ["assistant", "doctor"],
+  "/reports": ["assistant", "doctor"],
   "/hakedisim": ["reception", "assistant", "admin"],
   "/hasta-isaretleri": ["assistant", "doctor"],
 };

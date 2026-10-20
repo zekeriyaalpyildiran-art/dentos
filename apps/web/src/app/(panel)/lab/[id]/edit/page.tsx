@@ -70,6 +70,7 @@ export default function EditLabOrderPage() {
           items={detail.items}
           today={detail.today ?? istanbulToday()}
           cancelHref={`/lab/${id}`}
+          flags={detail.flags}
           onSaved={(order) => router.push(`/lab/${order.id}`)}
         />
       )}

@@ -2,10 +2,14 @@
 
 // Lab job form (spec p9_clinical §7.7): one atomic clin_lab_order_save call replaces the two inserts and the manual
 // rollback of the old page. Edit of an arrived / delivered / cancelled job changes the notes only.
+// A doctor (without finance access) opens and edits jobs only under their own doctor record (0036: the server refuses
+// any other doctor with CL_LAB_OWN_DOCTOR), so for them the doctor is fixed text, not a choice.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { PatientPicker, type PatientRef } from "@/components/stock/PatientPicker";
+import { useAuthStore } from "@/lib/store";
+import { LAB_NO_DOCTOR_TEXT, labOwnOnly, ownDoctor } from "@/lib/clinical/permissions";
 import {
   ClinicalError,
   clinLabOrderSave,
@@ -15,6 +19,7 @@ import {
   listPatientPlans,
   newKey,
   toClinicalError,
+  type ClinicalFlags,
   type DoctorRef,
   type LabItemInput,
   type LabOrderItemJson,
@@ -64,6 +69,7 @@ const TEXT = {
   future: "Gönderim, geliş ve teslim tarihleri bugünden sonra olamaz.",
   notes: "Not en fazla 4000 karakter olabilir.",
   labName: "Laboratuvar adı 1–120 karakter olmalı.",
+  noDoctor: LAB_NO_DOCTOR_TEXT,
 };
 
 function toPayload(items: ItemDraft[]): LabItemInput[] {
@@ -100,6 +106,7 @@ export function LabForm({
   today,
   onSaved,
   cancelHref,
+  flags,
 }: {
   /** Edit mode when set. */
   order?: LabOrderJson | null;
@@ -107,6 +114,8 @@ export function LabForm({
   today: string;
   onSaved: (order: LabOrderJson) => void;
   cancelHref: string;
+  /** The server's flags when the page has them (edit): lab_own_only wins over the role. */
+  flags?: ClinicalFlags | null;
 }) {
   const editing = !!order;
   const locked = !!order && LOCKED_STATUSES.includes(order.status);
@@ -135,7 +144,11 @@ export function LabForm({
   );
 
   const [doctors, setDoctors] = useState<DoctorRef[]>([]);
+  const [doctorsLoaded, setDoctorsLoaded] = useState(false);
   const activeDoctors = useMemo(() => doctors.filter((d) => d.active), [doctors]);
+  const user = useAuthStore((s) => s.user);
+  const ownOnly = labOwnOnly(user, flags);
+  const mine = useMemo(() => ownDoctor(doctors, user), [doctors, user]);
   const [labs, setLabs] = useState<LabRow[]>([]);
   const [plans, setPlans] = useState<TreatmentPlanRef[]>([]);
   const [refError, setRefError] = useState<ClinicalError | null>(null);
@@ -156,6 +169,7 @@ export function LabForm({
       .then(([d, l]) => {
         if (cancelled) return;
         setDoctors(d);
+        setDoctorsLoaded(true);
         setLabs(l);
       })
       .catch((err) => {
@@ -165,6 +179,12 @@ export function LabForm({
       cancelled = true;
     };
   }, []);
+
+  // A doctor's new job is always their own.
+  useEffect(() => {
+    if (ownOnly && !editing && mine && !doctorId) setDoctorId(mine.id);
+  }, [ownOnly, editing, mine, doctorId]);
+  const missingOwnDoctor = ownOnly && !editing && doctorsLoaded && !mine;
 
   const patientId = patient?.id ?? "";
   useEffect(() => {
@@ -207,6 +227,10 @@ export function LabForm({
 
   const submit = async (mode: "draft" | "submit") => {
     if (savingRef.current) return;
+    if (missingOwnDoctor) {
+      setError(new ClinicalError(TEXT.noDoctor, null, null, null));
+      return;
+    }
     if (!patientId || !doctorId || !labId || !dueDate) {
       setError(new ClinicalError(TEXT.fields, null, null, null));
       return;
@@ -324,22 +348,34 @@ export function LabForm({
             />
           )}
         </Field>
-        <Field label="Hekim" required>
-          <select className={clinInput} value={doctorId} disabled={fieldsDisabled} onChange={(e) => setDoctorId(e.target.value)}>
-            <option value="">Seçin</option>
-            {doctorId && !activeDoctors.some((d) => d.id === doctorId) && (
-              <option value={doctorId}>
-                {order?.doctor_name || doctors.find((d) => d.id === doctorId)?.name || "Seçili hekim"}
-                {doctors.some((d) => d.id === doctorId && !d.active) ? " (pasif)" : ""}
-              </option>
+        {ownOnly ? (
+          <Field label="Hekim" required group>
+            {missingOwnDoctor ? (
+              <p className="p-2 min-h-[44px] rounded border border-amber-200 bg-amber-50 text-amber-900 text-sm">{TEXT.noDoctor}</p>
+            ) : (
+              <div className="p-2 min-h-[44px] border rounded bg-gray-50 font-medium flex items-center">
+                {order?.doctor_name || mine?.name || "…"}
+              </div>
             )}
-            {activeDoctors.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-        </Field>
+          </Field>
+        ) : (
+          <Field label="Hekim" required>
+            <select className={clinInput} value={doctorId} disabled={fieldsDisabled} onChange={(e) => setDoctorId(e.target.value)}>
+              <option value="">Seçin</option>
+              {doctorId && !activeDoctors.some((d) => d.id === doctorId) && (
+                <option value={doctorId}>
+                  {order?.doctor_name || doctors.find((d) => d.id === doctorId)?.name || "Seçili hekim"}
+                  {doctors.some((d) => d.id === doctorId && !d.active) ? " (pasif)" : ""}
+                </option>
+              )}
+              {activeDoctors.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         <Field label="Laboratuvar" required group>
           <select
             className={clinInput}

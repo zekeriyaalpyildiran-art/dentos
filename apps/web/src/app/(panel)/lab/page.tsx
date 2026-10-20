@@ -1,6 +1,8 @@
 "use client";
 
 // Laboratuvar işleri (spec p9_clinical §7.6): tiles, filters, late detection from the server, status dialog.
+// A doctor (without finance access) gets only the jobs of their own doctor record from the server (0036), so the
+// doctor filter is left out for them.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -22,7 +24,7 @@ import {
 import { LAB_STATUSES, LAB_STATUS_LABELS, isLabStatus, type LabStatus } from "@/lib/clinical/codes";
 import { formatDayShort, istanbulToday } from "@/lib/clinical/dates";
 import { formatTl } from "@/lib/clinical/numbers";
-import { canWriteClinical } from "@/lib/clinical/permissions";
+import { canWriteClinical, labOwnOnly } from "@/lib/clinical/permissions";
 import { LabStatusDialog, statusWarningText } from "@/components/clinical/LabStatusDialog";
 import { LabStatusBadge, PayableChip } from "@/components/clinical/LabBadges";
 import {
@@ -164,6 +166,7 @@ export default function LabPage() {
   };
 
   const f: ClinicalFlags = flags ?? { ...NO_FLAGS, can_write: canWriteClinical(user) };
+  const ownOnly = labOwnOnly(user, flags);
   const filtered = !!q || state.status.length > 0 || state.late || state.payablePending || !!state.labId || !!state.doctorId;
 
   const activeTile = (tile: Exclude<Tile, null>) => {
@@ -192,7 +195,10 @@ export default function LabPage() {
   return (
     <div className="p-4 md:p-8 space-y-6 text-gray-900">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <h1 className="text-2xl md:text-3xl font-bold">Laboratuvar işleri</h1>
+        <div className="space-y-1">
+          <h1 className="text-2xl md:text-3xl font-bold">{ownOnly ? "Lab işlerim" : "Laboratuvar işleri"}</h1>
+          {ownOnly && <p className="text-sm text-gray-600">Yalnızca sizin adınıza açılan lab işleri listelenir.</p>}
+        </div>
         <div className="flex flex-wrap gap-2">
           <Link href="/lab/labs" className={`${clinSecondary} inline-flex items-center`}>
             Laboratuvarlar
@@ -277,7 +283,7 @@ export default function LabPage() {
             Gecikenler
           </label>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className={`grid gap-3 ${ownOnly ? "" : "sm:grid-cols-2"}`}>
           <select className={clinInput} aria-label="Laboratuvar" value={state.labId} onChange={(e) => setState((p) => ({ ...p, labId: e.target.value }))}>
             <option value="">Tüm laboratuvarlar</option>
             {labs.map((l) => (
@@ -287,21 +293,23 @@ export default function LabPage() {
               </option>
             ))}
           </select>
-          <select className={clinInput} aria-label="Hekim" value={state.doctorId} onChange={(e) => setState((p) => ({ ...p, doctorId: e.target.value }))}>
-            <option value="">Tüm hekimler</option>
-            {doctors.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
+          {!ownOnly && (
+            <select className={clinInput} aria-label="Hekim" value={state.doctorId} onChange={(e) => setState((p) => ({ ...p, doctorId: e.target.value }))}>
+              <option value="">Tüm hekimler</option>
+              {doctors.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
 
       {loading && rows.length === 0 ? (
         <Loading />
       ) : rows.length === 0 && !error ? (
-        <EmptyState title={filtered ? "Eşleşen iş bulunamadı" : "Henüz laboratuvar işi yok"}>
+        <EmptyState title={filtered ? "Eşleşen iş bulunamadı" : ownOnly ? "Henüz lab işiniz yok" : "Henüz laboratuvar işi yok"}>
           {filtered ? "Aramayı veya filtreyi değiştirin." : null}
         </EmptyState>
       ) : (
