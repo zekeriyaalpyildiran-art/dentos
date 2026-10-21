@@ -2,8 +2,9 @@
 // salaries and bonus / other adjustments; v1.3 bank / cash split: bank_portion rules; v1.4 lab costs deducted from
 // the ciro, minimum_monthly floors and the doctor × lab summary; v2 Macro import: unpaid lines, lines without a
 // doctor, procedure groups and procedure_piece rules; v2.1 the performing doctor of any imported piece; v2.2 unmarked
-// patients counted as children for a flagged doctor and the adult mark). Made-up doctors, staff, patients, labs,
-// groups, rates and amounts only.
+// patients counted as children for a flagged doctor and the adult mark; v2.4 the paid netting of the month close:
+// Ödenen / Kalan with the payee's other payments, OVERPAID and the payee counterparties). Made-up doctors, staff,
+// patients, labs, groups, rates and amounts only.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -20,10 +21,12 @@ import {
   bankSplitText,
   bpToInput,
   childAgeLimitOf,
+  closeDeductionText,
   compareCodePoints,
   componentKey,
   componentTitle,
   computeMonth,
+  COUNTERPARTY_STATUS_LABELS,
   DEDUCT_LABELS,
   emptyPayeeSummary,
   EXT_DOCTOR_MODE_HINTS,
@@ -35,6 +38,7 @@ import {
   findImplantPieceConflict,
   findOverlappingRule,
   finHkAssignPiece,
+  finHkEnsureCounterparties,
   HK_MACRO_REF_PREFIX,
   markFor,
   finHkImportMacro,
@@ -105,6 +109,7 @@ import {
   SEGMENT_SOURCE_LABELS,
   segmentSourceOf,
   SPLIT_LABELS,
+  statementPaidOf,
   sumPayeeSummaries,
   summarizePayee,
   UNMARKED_DEFAULT_LABEL,
@@ -129,6 +134,7 @@ import {
   type HkComputeRule,
   type HkLineMethod,
   type HkRuleInput,
+  type HkStatementJson,
 } from "../hakedis";
 
 // RPC wrappers are checked against a stub client (argument names are the SQL contract).
@@ -4067,5 +4073,135 @@ describe("Burgan financing (v2.3)", () => {
     });
     expect(s.fee_cents).toBe(0);
     expect(sumPayeeSummaries([s, s]).fee_cents).toBe(0);
+  });
+});
+
+describe("paid netting of the month close (v2.4)", () => {
+  beforeEach(() => {
+    rpcMock.mockReset();
+  });
+
+  const statement = (extra: Partial<HkStatementJson> = {}): HkStatementJson => ({
+    id: "st-1",
+    month: "2026-09-01",
+    payee_user_id: "u-a",
+    payee_name: "Hekim A",
+    total_cents: TL(40_000),
+    breakdown: { payee_user_id: "u-a", payee_name: "Hekim A", total_cents: TL(40_000), components: [] },
+    fin_entry_id: "e-1",
+    entry: { id: "e-1", version: 2, amount_cents: TL(25_000), paid_cents: TL(5_000), outstanding_cents: TL(20_000), is_cancelled: false },
+    created_at: "2026-10-02T09:00:00Z",
+    created_by_name: "Sahip",
+    superseded_at: null,
+    ...extra,
+  });
+
+  it("Ödenen / Kalan count the payee's other payments of the month (0038 keys, live)", () => {
+    // Total 40.000: 15.000 paid in cash during the month on separate entries, the rest (25.000) on the hakediş entry,
+    // of which 5.000 is paid.
+    const st = statement({
+      other_booked_cents: TL(15_000),
+      other_paid_cents: TL(15_000),
+      other_count: 2,
+      paid_cents: TL(20_000),
+      remaining_cents: TL(20_000),
+      overpaid_cents: 0,
+    });
+    expect(statementPaidOf(st)).toEqual({
+      paid_cents: TL(20_000),
+      other_paid_cents: TL(15_000),
+      remaining_cents: TL(20_000),
+      overpaid_cents: 0,
+    });
+    // Paid above the total: Kalan is negative, the excess is reported, nothing else changes.
+    const over = statement({
+      fin_entry_id: null,
+      entry: null,
+      other_booked_cents: TL(42_000),
+      other_paid_cents: TL(42_000),
+      other_count: 3,
+      paid_cents: TL(42_000),
+      remaining_cents: TL(-2_000),
+      overpaid_cents: TL(2_000),
+    });
+    expect(statementPaidOf(over)).toEqual({
+      paid_cents: TL(42_000),
+      other_paid_cents: TL(42_000),
+      remaining_cents: TL(-2_000),
+      overpaid_cents: TL(2_000),
+    });
+  });
+
+  it("reads statements without the 0038 keys from their entry; the preparer gets nothing", () => {
+    expect(statementPaidOf(statement())).toEqual({
+      paid_cents: TL(5_000),
+      other_paid_cents: 0,
+      remaining_cents: TL(20_000),
+      overpaid_cents: 0,
+    });
+    const cancelled = statement({ entry: { ...statement().entry!, is_cancelled: true, outstanding_cents: 0 } });
+    expect(statementPaidOf(cancelled)?.remaining_cents).toBe(0);
+    // fin__hk_strip_ledger: no entry, no keyed entry id (0038) and no payment keys for 'hakedis_prepare' callers.
+    expect(statementPaidOf(statement({ entry: null, fin_entry_id: null }))).toBe(null);
+    // A counterparty linked to another person since the close: the stored figures, other_count null.
+    const frozen = statement({ other_booked_cents: TL(15_000), other_paid_cents: TL(15_000), other_count: null,
+                               paid_cents: TL(20_000), remaining_cents: TL(20_000), overpaid_cents: 0 });
+    expect(statementPaidOf(frozen)?.paid_cents).toBe(TL(20_000));
+  });
+
+  it("close dialog: what the close deducts (booked) next to what was paid", () => {
+    expect(closeDeductionText({ paid_so_far: TL(3_000), booked_so_far: TL(3_000) })).toBe("Bu ay ödenen ₺3.000,00");
+    // Next month's bank salary entered ahead as a planned (unpaid) entry: deducted at close, not paid yet.
+    expect(closeDeductionText({ paid_so_far: TL(1_000), booked_so_far: TL(21_000) })).toBe(
+      "Kapanışta düşülecek ₺21.000,00 (ödenen ₺1.000,00)"
+    );
+    expect(closeDeductionText({ paid_so_far: 0, booked_so_far: TL(20_000) })).toBe("Kapanışta düşülecek ₺20.000,00 (ödenen ₺0,00)");
+    expect(closeDeductionText({ paid_so_far: 0, booked_so_far: 0 })).toBe(null);
+    // Before 0038 / older payloads: paid only; the preparer gets neither key.
+    expect(closeDeductionText({ paid_so_far: TL(500) })).toBe("Bu ay ödenen ₺500,00");
+    expect(closeDeductionText({})).toBe(null);
+  });
+
+  it("OVERPAID warning text", () => {
+    expect(warningText({ code: "OVERPAID", payee_user_id: "u-a", payee_name: "Hekim A", overpaid_cents: TL(2_000) })).toBe(
+      "Hekim A: bu ay için hakediş / maaş kaydına ödenen ve ayrı kayıtlarla girilen tutar, hakedişi ₺2.000,00 aşıyor."
+    );
+    expect(warningText({ code: "OVERPAID", payee_user_id: "u-b", payee_name: "", overpaid_cents: TL(1) })).toBe(
+      "Hakediş sahibi: bu ay için hakediş / maaş kaydına ödenen ve ayrı kayıtlarla girilen tutar, hakedişi ₺1,00 aşıyor."
+    );
+  });
+
+  it("finHkEnsureCounterparties calls the RPC without arguments and reads the per-payee list", async () => {
+    const rows = [
+      {
+        payee_user_id: "u-a",
+        payee_name: "Hekim A",
+        kind: "physician" as const,
+        counterparty_id: "cp-a",
+        counterparty_name: "Hekim A",
+        is_active: true,
+        status: "created" as const,
+        message: null,
+      },
+      {
+        payee_user_id: "u-x",
+        payee_name: "Kişi X",
+        kind: null,
+        counterparty_id: null,
+        counterparty_name: null,
+        is_active: null,
+        status: "no_doctor" as const,
+        message: "Kişi X için hekim kaydı yok, hakediş cari kaydı açılamadı. Önce Ekip ekranından hekim kaydını ekleyin.",
+      },
+    ];
+    rpcMock.mockResolvedValueOnce({ data: rows, error: null });
+    expect(await finHkEnsureCounterparties()).toEqual(rows);
+    expect(rpcMock).toHaveBeenLastCalledWith("fin_hk_ensure_counterparties");
+    rpcMock.mockResolvedValueOnce({ data: null, error: null });
+    expect(await finHkEnsureCounterparties()).toEqual([]);
+    const forbidden = "Bu işlem için finans yetkisi gerekir.";
+    rpcMock.mockResolvedValueOnce({ data: null, error: { message: forbidden, code: "42501" } });
+    await expect(finHkEnsureCounterparties()).rejects.toMatchObject({ message: forbidden, isForbidden: true });
+    expect(Object.keys(COUNTERPARTY_STATUS_LABELS).sort()).toEqual(["created", "error", "existing", "linked", "no_doctor"]);
   });
 });

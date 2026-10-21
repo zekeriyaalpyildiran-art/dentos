@@ -30,6 +30,7 @@ import {
   SUBCATEGORY_LABELS,
   UUID_RE,
   centsToInput,
+  entitlementMonthLabel,
   finCancelEntry,
   finCorrectPayment,
   finEditEntry,
@@ -196,7 +197,10 @@ function EntryDetailView() {
           <Info label="Kategori" value={e.category_name} sub={BUCKET_LABELS[e.report_bucket]} />
           <Info label="Yön" value={DIRECTION_LABELS[e.direction]} />
           <Info label="Alt tür" value={e.subcategory ? SUBCATEGORY_LABELS[e.subcategory] : "—"} />
-          <Info label="Hakediş ayı" value={e.entitlement_month ? formatMonth(e.entitlement_month) : "—"} />
+          <Info
+            label={entitlementMonthLabel(e.report_bucket)}
+            value={e.entitlement_month ? formatMonth(e.entitlement_month) : "—"}
+          />
           <Info label="Vade / tarih" value={formatDay(e.due_date)} sub={e.is_overdue ? "Vadesi geçti" : undefined} />
           <Info label="Tutar" value={formatTL(e.amount_cents)} />
           <Info label="Gerçekleşen" value={formatTL(e.paid_cents)} />
@@ -678,7 +682,7 @@ function EditDialog({ refData, detail, onClose, onReload, onDone }: DialogProps 
           today={detail.today}
           lockCategory={e.paid_cents > 0 || e.is_entitlement || isPayroll}
           lockCounterparty={e.is_entitlement || isPayroll}
-          lockMonth={e.is_entitlement}
+          lockMonth={e.is_entitlement || isPayroll}
           originalCategoryId={e.category_id}
           disabled={busy}
         />

@@ -6,7 +6,11 @@
 // month (finance mode only) and the lines and pieces per doctor (by procedure group). 0034: the informational
 // UNMARKED_AS_CHILD warning (a doctor's unmarked patients counted as children) with a link to the marks. 0035: the
 // Burgan bank's fee share (column and breakdown), the financed part of each line and the informational
-// FINANCING_MATCHED / FINANCING_UNMATCHED warnings (the preparer sees no loan amounts).
+// FINANCING_MATCHED / FINANCING_UNMATCHED warnings (the preparer sees no loan amounts). 0038: the close nets what was
+// already booked for the month on the payee's other entries; statements show Ödenen / Kalan / Fazla kayıt with those
+// entries, open months "Bu ay ödenen" per payee and, in the close dialog, what the close will deduct (finance readers
+// only), the OVERPAID warning, and "Hakediş carilerini hazırla" (finance writers) links or creates every payee's
+// counterparty. The preparer sees no keyed entry id (only "Finans'a yazıldı" for a positive total).
 
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
@@ -23,8 +27,17 @@ import {
   type HkMode,
 } from "./HakedisParts";
 import { Card, ErrorBox, Loading, Modal, SuccessBox, buttonDanger, buttonPrimary, buttonSecondary } from "./ui";
-import { formatDay, formatMonth, formatTL, formatTimestamp, toFinanceError, type FinanceError } from "@/lib/finance";
 import {
+  COUNTERPARTY_KIND_LABELS,
+  formatDay,
+  formatMonth,
+  formatTL,
+  formatTimestamp,
+  toFinanceError,
+  type FinanceError,
+} from "@/lib/finance";
+import {
+  COUNTERPARTY_STATUS_LABELS,
   FINANCING_FEE_LABEL,
   FINANCING_NOTE,
   HK_LINE_METHODS,
@@ -37,8 +50,10 @@ import {
   SPLIT_LABELS,
   bankSplitOf,
   bankSplitText,
+  closeDeductionText,
   componentKey,
   finHkCloseMonth,
+  finHkEnsureCounterparties,
   finHkReopenMonth,
   formatBp,
   hkCanPrepare,
@@ -46,10 +61,12 @@ import {
   isLabWarning,
   lineMethodText,
   monthKey,
+  statementPaidOf,
   sumPayeeSummaries,
   summarizePayee,
   warningText,
   type HkComponentJson,
+  type HkEnsureCounterpartyJson,
   type HkLineJson,
   type HkLineMethod,
   type HkMonthPayload,
@@ -57,7 +74,7 @@ import {
 } from "@/lib/hakedis";
 import { formatMoney } from "@/lib/payments";
 
-type Dialog = "close" | "reopen" | null;
+type Dialog = "close" | "reopen" | "counterparties" | null;
 
 /** Shown in prep mode instead of the close / reopen buttons. */
 export const HK_PREP_CLOSE_TEXT = "Ayı klinik sahibi Finans → Hakediş'ten kapatır.";
@@ -146,6 +163,7 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
             busy={loading}
             onClose={() => setDialog("close")}
             onReopen={() => setDialog("reopen")}
+            onCounterparties={() => setDialog("counterparties")}
           />
           {current.warnings.length > 0 && (
             <div className="p-4 rounded bg-amber-50 text-amber-900 text-sm space-y-1">
@@ -233,6 +251,13 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                   )}
                 </p>
               )}
+              {current.warnings.some((w) => w.code === "OVERPAID") && (
+                <p className="pt-1">
+                  Fazla ödeme: kişinin bu ayki hakediş / maaş kaydına ödenen ve aynı ay için ayrı kayıtlarla (kişinin
+                  hakediş carisi ve hakediş ayıyla) girilen tutar, kapanış toplamından fazla. Kayıtlar ve tutarlar
+                  değiştirilmedi; mahsubu siz belirleyin (örneğin sonraki ayda eksi tutarlı bir “Prim ve diğer” satırı).
+                </p>
+              )}
               {current.warnings.some(isLabWarning) && (
                 <p className="pt-1">
                   Lab uyarıları ayın kapatılmasını engellemez. Hekim ve laboratuvar ayrıntısı{" "}
@@ -270,9 +295,17 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
             setMessage(
               next.already_saved
                 ? "Bu ay zaten kapatılmıştı."
-                : "Ay kapatıldı. Hakediş ve maaş kayıtları Finans → Ödeme ve tahsilatlar listesinde oluşturuldu / güncellendi."
+                : "Ay kapatıldı. Hakediş ve maaş kayıtları Finans → Ödeme ve tahsilatlar listesinde oluşturuldu / güncellendi; bu ay için ayrı kayıtlarla girilen tutarlar düşüldü."
             );
             await ref.reload();
+          }}
+        />
+      )}
+      {mode === "finance" && dialog === "counterparties" && (
+        <CounterpartiesDialog
+          onClose={async (changed) => {
+            setDialog(null);
+            if (changed) await reloadAll();
           }}
         />
       )}
@@ -307,6 +340,7 @@ function StatusCard({
   busy,
   onClose,
   onReopen,
+  onCounterparties,
 }: {
   data: HkMonthPayload;
   mode: HkMode;
@@ -315,6 +349,8 @@ function StatusCard({
   busy: boolean;
   onClose: () => void;
   onReopen: () => void;
+  /** 0038: "Hakediş carilerini hazırla" */
+  onCounterparties: () => void;
 }) {
   const closed = data.status === "closed";
   const grand = data.payees.reduce((sum, p) => sum + p.total_cents, 0);
@@ -364,6 +400,11 @@ function StatusCard({
             {data.can_write && closed && data.is_owner && (
               <button type="button" className={buttonDanger} onClick={onReopen} disabled={busy}>
                 Ayı yeniden aç
+              </button>
+            )}
+            {data.can_write && (
+              <button type="button" className={buttonSecondary} onClick={onCounterparties} disabled={busy}>
+                Hakediş carilerini hazırla
               </button>
             )}
           </div>
@@ -434,8 +475,11 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
   const financed = data.lines.some(
     (l) => !l.voided_at && l.resolved_method === "financing" && (l.financing_cents ?? 0) !== 0
   );
+  // 0038: an open month's payments so far per payee (finance readers only; the server leaves it out otherwise).
+  const showPaidSoFar = ledger && data.status !== "closed" && data.payees.some((p) => typeof p.paid_so_far === "number");
   const colCount =
     12 +
+    (showPaidSoFar ? 1 : 0) +
     methods.length +
     (showFee ? 1 : 0) +
     (showProcedure ? 1 : 0) +
@@ -477,6 +521,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                 <th className="px-3 py-3 font-semibold text-right">{SPLIT_LABELS.cash}</th>
               </>
             )}
+            {showPaidSoFar && <th className="px-3 py-3 font-semibold text-right whitespace-nowrap">Bu ay ödenen</th>}
             <th className="px-3 py-3 font-semibold">Kayıt</th>
             <th className="px-3 py-3" />
           </tr>
@@ -543,6 +588,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                     {showTopup && <td className={NUM}>{dash(s.minimum_topup_cents)}</td>}
                     <td className={`${NUM} font-semibold ${payee.total_cents < 0 ? "text-red-600" : ""}`}>{formatTL(payee.total_cents)}</td>
                     {showBank && <SplitCells bank={s.bank_cents} cash={s.cash_cents} />}
+                    {showPaidSoFar && <td className={NUM}>{dash(payee.paid_so_far ?? 0)}</td>}
                     <td className="px-3 py-2 text-xs whitespace-nowrap">
                       <StatementCell
                         statement={st}
@@ -630,6 +676,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
               {showTopup && <td className={NUM}>{dash(totals.minimum_topup_cents)}</td>}
               <td className={NUM}>{formatTL(totals.total_cents)}</td>
               {showBank && <SplitCells bank={totals.bank_cents} cash={totals.cash_cents} />}
+              {showPaidSoFar && <td className={NUM}>{dash(data.payees.reduce((n, p) => n + (p.paid_so_far ?? 0), 0))}</td>}
               <td colSpan={2} />
             </tr>
           </tfoot>
@@ -650,6 +697,8 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
           ` ${MINIMUM_TOPUP_COMPONENT_LABEL}: kişinin bu ayki toplamı taban maaşının altında kaldığı için eklenen fark.`}
         {showBank &&
           " Bankadan: kişinin bu ay bankadan (resmi maaş olarak) ödenen sabit tutarı; Elden: toplamdan kalan kısım. Bu bölünme toplamı değiştirmez; ay kapatılınca Finans kaydının açıklamasına yazılır."}
+        {showPaidSoFar &&
+          " Bu ay ödenen: Finans'ta kişinin hakediş carisi ve bu hakediş ayıyla Hekim hakedişi / Personel kategorisinde girilmiş kayıtlara yapılan ödemeler (ör. ay içi avans, bankadan maaş). Ay kapatılınca bu kayıtların tutarı (ödenmemiş planlı kayıtlar dahil) toplamdan düşülür; hakediş / maaş kaydına kalan yazılır."}
       </p>
     </div>
   );
@@ -679,22 +728,34 @@ function StatementCell({
 }) {
   if (!closed) return <span className="text-gray-500">Ay kapanınca</span>;
   if (!statement) return <span className="text-amber-700">Döküm yok</span>;
+  // 0038: Ödenen / Kalan with the payee's other payments of the month (live).
+  const paid = ledger ? statementPaidOf(statement) : null;
   return (
     <div className="space-y-0.5">
-      {!statement.fin_entry_id ? (
-        <span className="text-gray-500">Kayıt yok (0)</span>
-      ) : ledger ? (
-        <Link href={`/finance/entries/${statement.fin_entry_id}`} className="text-blue-600 hover:underline">
-          Finans kaydı
-        </Link>
+      {/* 0038: the preparer gets no keyed entry id (it would tell who was paid by other entries); only the total. */}
+      {!ledger ? (
+        statement.total_cents === 0 ? (
+          <span className="text-gray-500">Kayıt yok (0)</span>
+        ) : (
+          <span className="text-gray-700">Finans&apos;a yazıldı</span>
+        )
+      ) : !statement.fin_entry_id ? (
+        <span className="text-gray-500">
+          {(statement.other_count ?? 0) > 0
+            ? "Ayrı kayıtlarla karşılandı"
+            : statement.total_cents === 0
+              ? "Kayıt yok (0)"
+              : "Kayıt yok"}
+        </span>
       ) : (
-        <span className="text-gray-700">Finans&apos;a yazıldı</span>
+        <Link href={`/finance/entries/${statement.fin_entry_id}`} className="text-blue-600 hover:underline">
+          Finans kaydı{statement.entry?.is_cancelled ? " (iptal)" : ""}
+        </Link>
       )}
-      {ledger && statement.entry && (
-        <div className="text-gray-600">
-          {statement.entry.is_cancelled
-            ? "İptal edilmiş"
-            : `Ödenen ${formatTL(statement.entry.paid_cents)} · kalan ${formatTL(statement.entry.outstanding_cents)}`}
+      {paid && (
+        <div className={paid.remaining_cents < 0 ? "text-amber-700" : "text-gray-600"}>
+          Ödenen {formatTL(paid.paid_cents)} ·{" "}
+          {paid.remaining_cents < 0 ? `fazla ${formatTL(-paid.remaining_cents)}` : `kalan ${formatTL(paid.remaining_cents)}`}
         </div>
       )}
       {statement.total_cents !== liveTotal && (
@@ -712,6 +773,10 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
   // 0032: the bank / cash split frozen in the statement (statements of closes before 0032 have none).
   const splits = new Map(data.statements.map((st) => [st.id, st.breakdown ? bankSplitOf(st.breakdown) : null]));
   const showBank = Array.from(splits.values()).some((x) => x !== null);
+  // 0038: Ödenen / Kalan with the payee's other payments of the month (live), and what the close could not net.
+  const paid = new Map(data.statements.map((st) => [st.id, ledger ? statementPaidOf(st) : null]));
+  const showOverpaid = Array.from(paid.values()).some((x) => (x?.overpaid_cents ?? 0) > 0);
+  const netted = data.statements.some((st) => (st.other_count ?? 0) > 0);
   return (
     <Card title="Kapanış dökümleri">
       {data.statements.length === 0 ? (
@@ -734,6 +799,7 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
                   <>
                     <th className="py-2 pr-3 font-semibold text-right">Ödenen</th>
                     <th className="py-2 pr-3 font-semibold text-right">Kalan</th>
+                    {showOverpaid && <th className="py-2 pr-3 font-semibold text-right">Fazla kayıt / ödeme</th>}
                     <th className="py-2 font-semibold">Finans kaydı</th>
                   </>
                 )}
@@ -743,6 +809,7 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
               {data.statements.map((st) => {
                 const now = live.get(st.payee_user_id) ?? 0;
                 const split = splits.get(st.id) ?? null;
+                const p = paid.get(st.id) ?? null;
                 return (
                   <tr key={st.id} className="border-b last:border-b-0">
                     <td className="py-2 pr-3">{st.payee_name}</td>
@@ -760,15 +827,29 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
                     </td>
                     {ledger && (
                       <>
-                        <td className="py-2 pr-3 text-right tabular-nums">{st.entry ? formatTL(st.entry.paid_cents) : "—"}</td>
                         <td className="py-2 pr-3 text-right tabular-nums">
-                          {st.entry ? (st.entry.is_cancelled ? "İptal" : formatTL(st.entry.outstanding_cents)) : "—"}
+                          {p ? formatTL(p.paid_cents) : "—"}
+                          {p && p.other_paid_cents !== 0 && (
+                            <span className="block text-xs text-gray-500">
+                              ayrı kayıtlarla {formatTL(p.other_paid_cents)}
+                            </span>
+                          )}
                         </td>
+                        <td className={`py-2 pr-3 text-right tabular-nums ${p && p.remaining_cents < 0 ? "text-amber-700" : ""}`}>
+                          {p ? formatTL(p.remaining_cents) : "—"}
+                        </td>
+                        {showOverpaid && (
+                          <td className="py-2 pr-3 text-right tabular-nums text-amber-700">
+                            {p && p.overpaid_cents > 0 ? formatTL(p.overpaid_cents) : "—"}
+                          </td>
+                        )}
                         <td className="py-2">
                           {st.fin_entry_id ? (
                             <Link href={`/finance/entries/${st.fin_entry_id}`} className="text-blue-600 hover:underline">
-                              Aç
+                              Aç{st.entry?.is_cancelled ? " (iptal)" : ""}
                             </Link>
+                          ) : (st.other_count ?? 0) > 0 ? (
+                            <span className="text-xs text-gray-500">Gerekmedi</span>
                           ) : (
                             "—"
                           )}
@@ -788,6 +869,9 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
           : ledger
             ? "Kapanış dökümü ve finans kaydı ay kapatıldığı andaki hesaptır. Ödemeleri finans kaydına ekleyin."
             : "Kapanış dökümü ay kapatıldığı andaki hesaptır; ödemeleri Finans yetkilisi kaydeder."}
+        {ledger &&
+          (netted || showOverpaid) &&
+          " Ödenen: hakediş / maaş kaydına ve kişinin hakediş carisi ve bu hakediş ayıyla girilmiş ayrı kayıtlara ödenen toplam; Kalan = kapanıştaki toplam − Ödenen (eksi: fazla ödeme). Kapanıştan sonra girilen, değişen ya da iptal edilen ayrı kayıtlar hakediş kaydının tutarını kendiliğinden günceller."}
       </p>
     </Card>
   );
@@ -983,7 +1067,11 @@ function CloseDialog({
           Kapatınca her kişi için bu ayın dökümü saklanır. Hekimin bu ayki hakediş kaydı (maaşı ve primi varsa dahil)
           ve personelin bu ayki maaş kaydı (personel gideri) Finans → Ödeme ve tahsilatlar listesinde oluşturulur ya da
           tutarı güncellenir. Kapalı ayın ve ondan önceki ayların satırları, implant, lab ve prim kayıtları
-          değiştirilemez; düzeltmeler son kapatılan aydan sonraki bir aya düzeltme satırı olarak girilir.
+          değiştirilemez; düzeltmeler son kapatılan aydan sonraki bir aya düzeltme satırı olarak girilir. Kişi için bu
+          ay ayrı kayıtlarla (kişinin hakediş carisi ve bu hakediş ayıyla Hekim hakedişi / Personel kategorisinde; ör.
+          ay içi avans, bankadan maaş) girilen tutarlar (ödenmemiş planlı kayıtlar dahil) toplamdan düşülür ve kayda
+          yalnızca kalan yazılır; hiçbir şey kalmıyorsa kayıt açılmaz. Fazla ödeme ayın kapanmasını engellemez, uyarı
+          olarak gösterilir.
           {data.payees.some((p) => bankSplitOf(p)) &&
             " Bankadan ödenen sabit tutarı olan kişinin kaydının açıklamasına bankadan ve elden ödenecek kısımlar yazılır; kayıt tutarı yine toplamdır."}
           {data.payees.some((p) => p.components.some((c) => c.kind === "minimum_topup")) &&
@@ -995,12 +1083,15 @@ function CloseDialog({
           ) : (
             data.payees.map((p) => {
               const split = bankSplitText(p);
+              const deduction = closeDeductionText(p);
               return (
                 <div key={p.payee_user_id} className="flex justify-between gap-4 px-3 py-2 border-b last:border-b-0 text-sm">
                   <span>{p.payee_name}</span>
                   <span className="text-right">
                     <span className={`tabular-nums font-medium ${p.total_cents < 0 ? "text-red-600" : ""}`}>{formatTL(p.total_cents)}</span>
                     {split && <span className="block text-xs text-gray-600 tabular-nums">{split}</span>}
+                    {/* 0038: paid / booked for the month so far (finance readers); the close deducts the booked amount. */}
+                    {deduction && <span className="block text-xs text-gray-600 tabular-nums">{deduction}</span>}
                   </span>
                 </div>
               );
@@ -1141,6 +1232,90 @@ function ReopenDialog({
           </button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+/**
+ * 0038: "Hakediş carilerini hazırla" (finance writers): fin_hk_ensure_counterparties links or creates the counterparty
+ * of every payee with a rule or a bonus / other row, so import rules can name it. Idempotent; shows what was done per
+ * payee. `onClose(changed)`: the month is reloaded after a run (its NO_COUNTERPARTY warnings may be gone).
+ */
+function CounterpartiesDialog({ onClose }: { onClose: (changed: boolean) => void | Promise<void> }) {
+  const [rows, setRows] = useState<HkEnsureCounterpartyJson[] | null>(null);
+  const [error, setError] = useState<FinanceError | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      setRows(await finHkEnsureCounterparties());
+    } catch (err) {
+      setError(toFinanceError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="Hakediş carilerini hazırla" onClose={() => onClose(rows !== null)} busy={busy} wide>
+      <div className="space-y-4">
+        <p className="text-sm text-gray-700">
+          Hakediş kuralı ya da prim / diğer satırı olan her kişi için bir cari hazırlanır: hekime hekim carisi, yalnızca
+          maaş kuralı olan personele personel carisi bağlanır. Bağlı cari varsa o kullanılır; yoksa aynı adlı, kimseye
+          bağlı olmayan cari bağlanır, o da yoksa yeni cari açılır. İçe aktarma kurallarında “hakediş ayı gerekli”
+          kuralının kişi / kurumu olarak bu cariyi seçin: o cari ve hakediş ayıyla girilen kayıtların tutarı ay
+          kapatılınca hakedişten düşülür. Tekrar çalıştırmak güvenlidir.
+        </p>
+        {rows !== null &&
+          (rows.length === 0 ? (
+            <p className="text-sm text-gray-500">Hakediş kuralı ya da primi olan kişi yok.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-700 border-b">
+                    <th className="py-2 pr-3 font-semibold">Kişi</th>
+                    <th className="py-2 pr-3 font-semibold">Cari</th>
+                    <th className="py-2 font-semibold">Durum</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.payee_user_id} className="border-b last:border-b-0 align-top">
+                      <td className="py-2 pr-3">{r.payee_name}</td>
+                      <td className="py-2 pr-3">
+                        {r.counterparty_name ?? "—"}
+                        {r.kind && <span className="block text-xs text-gray-500">{COUNTERPARTY_KIND_LABELS[r.kind]}</span>}
+                      </td>
+                      <td className="py-2">
+                        <span className={r.status === "error" || r.status === "no_doctor" ? "text-red-700" : "text-gray-800"}>
+                          {COUNTERPARTY_STATUS_LABELS[r.status] ?? r.status}
+                        </span>
+                        {r.message && <span className="block text-xs text-red-700">{r.message}</span>}
+                        {r.is_active === false && (
+                          <span className="block text-xs text-amber-700">
+                            Cari pasif; ay kapatılmadan önce Cariler ekranından aktifleştirin.
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        <ErrorBox error={error} />
+        <div className="flex gap-2">
+          <button type="button" className={buttonPrimary} onClick={run} disabled={busy}>
+            {busy ? "Hazırlanıyor..." : rows === null ? "Carileri hazırla" : "Tekrar çalıştır"}
+          </button>
+          <button type="button" className={buttonSecondary} onClick={() => onClose(rows !== null)} disabled={busy}>
+            Kapat
+          </button>
+        </div>
+      </div>
     </Modal>
   );
 }

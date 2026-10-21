@@ -4,7 +4,8 @@ import { detectTebSheet, parseTebSheet } from "../bank-xlsx";
 import { bankBalance } from "../balances";
 import { intakePdf, intakeSpreadsheet } from "../detect";
 import type { PdfCell } from "../types";
-import { LAYOUT, seedRules } from "./fixtures";
+import { compileRules } from "../classify";
+import { LAYOUT, rule, SEED_RULES, seedRules } from "./fixtures";
 
 const rules = seedRules();
 
@@ -22,6 +23,44 @@ describe("known-bank text reader (FI:26-44, TFI:25-27)", () => {
     expect(p.rows[1].selected).toBe(true);
     expect(p.rows[1].kind).toBe("bank_fee_split");
     expect(p.rows[1].key).toBe("bank:Garanti:123:2026-09-01:-50:1.950,00:fee");
+  });
+  it("0038: a hakediş-month rule's suggestion fills the month and selects the outflow", () => {
+    const withRules = compileRules([
+      ...SEED_RULES,
+      rule(60, "bank", "contains", "örnek personel", "personnel", {
+        counterparty_id: "cp-staff",
+        requires_entitlement_month: true,
+        entitlement_month_default: "from_text",
+      }),
+      rule(61, "bank", "contains", "örnek hekim", "doctor", { requires_entitlement_month: true, entitlement_month_default: "same" }),
+    ]);
+    const text = [
+      "T. Garanti Bankası",
+      "Hesap Numarası : 7",
+      "05.10.2026",
+      "ÖRNEK PERSONEL EYLÜL MAAŞ",
+      "-15.000,00",
+      "80.000,00 TL",
+      "06.10.2026",
+      "ÖRNEK HEKİM AVANS",
+      "-2.000,00",
+      "78.000,00 TL",
+    ].join("\n");
+    const p = parseBankText(text, "g.pdf", withRules);
+    expect(p.rows.map((r) => [r.bucket, r.entitlementMonth, r.ruleEntitlementMonth, r.selected, r.counterpartyId])).toEqual([
+      ["personnel", "2026-09", "2026-09", true, "cp-staff"],
+      ["doctor", "2026-10", "2026-10", true, null],
+    ]);
+    expect(p.rows[0].meta).toEqual({ line: 3 });
+  });
+  it("0038: the rule's own text (a made-up payee named like a month) is not read as the hakediş month", () => {
+    const withRules = compileRules([
+      ...SEED_RULES,
+      rule(60, "bank", "contains", "örnek kasım", "doctor", { requires_entitlement_month: true, entitlement_month_default: "from_text" }),
+    ]);
+    const text = ["T. Garanti Bankası", "Hesap Numarası : 7", "05.11.2026", "ÖRNEK KASIM EKİM HAKEDİŞİ", "-15.000,00", "80.000,00 TL"].join("\n");
+    const p = parseBankText(text, "g.pdf", withRules);
+    expect(p.rows.map((r) => [r.bucket, r.entitlementMonth, r.selected])).toEqual([["doctor", "2026-10", true]]);
   });
   it("TEB needs value-date and time lines; description skips them", () => {
     const text = [

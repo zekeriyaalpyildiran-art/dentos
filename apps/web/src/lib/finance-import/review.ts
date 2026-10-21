@@ -3,7 +3,7 @@
 // (already saved, possible duplicates, manual receipts) come from fin_import_check.
 
 import type { ReportBucket } from "../finance";
-import { importCounterparty, importedEntryId, importFingerprint, importSubcategory } from "./keys";
+import { importCounterparty, importedEntryId, importFingerprint, importSubcategory, takesEntitlementMonth } from "./keys";
 import { financeDayOk, trMoney } from "./primitives";
 import type { ParsedRow } from "./types";
 
@@ -177,14 +177,15 @@ export function acknowledgements(row: ReviewRow): CheckWarningCode[] {
 export const OVERRIDE_TEXT = (n: number) =>
   `Uyarılı ${n} satırı (olası tekrar / elle girilmiş tahsilat) bilerek aktarıyorum.`;
 export const FINAL_CONFIRM_TEXT = "Seçtiğim kayıtların kategori, tutar ve tekrar kontrollerini yaptım.";
-export const ENTITLEMENT_MONTH_REQUIRED = "Hekim hakediş ödemelerinde hakediş ayını seçin.";
+export const ENTITLEMENT_MONTH_REQUIRED = "Hekim hakedişi ve personel ödemelerinde hakediş / maaş ayını seçin.";
 
 /** Batch-level problems before the save call (1..500 rows, entitlement months). */
 export function saveProblems(chosen: readonly ReviewRow[]): string[] {
   const out: string[] = [];
   if (!chosen.length) out.push("Aktarılacak satır seçin.");
   if (chosen.length > 500) out.push("En fazla 500 kayıt aktarılabilir.");
-  if (chosen.some((r) => r.requiresEntitlementMonth && r.bucket === "doctor" && !r.entitlementMonth)) out.push(ENTITLEMENT_MONTH_REQUIRED);
+  if (chosen.some((r) => r.requiresEntitlementMonth && takesEntitlementMonth(r.bucket) && !r.entitlementMonth))
+    out.push(ENTITLEMENT_MONTH_REQUIRED);
   return out;
 }
 
@@ -218,10 +219,11 @@ const direction = (r: ParsedRow): "in" | "out" => (r.signedCents > 0 ? "in" : "o
 
 /**
  * A configured counterparty applies only to entitlement rows of the doctor bucket (legacy IP:54 used a fixed name
- * only for the entitlement physician); every other row's counterparty is its narration (critique 16).
+ * only for the entitlement physician) and, from 0038, of the personnel bucket (the payee's cari, so the hakediş close
+ * nets the payment); every other row's counterparty is its narration (critique 16).
  */
 export const usesCounterparty = (row: Pick<ParsedRow, "requiresEntitlementMonth">, bucket: ReportBucket): boolean =>
-  row.requiresEntitlementMonth && bucket === "doctor";
+  row.requiresEntitlementMonth && takesEntitlementMonth(bucket);
 
 /** Fingerprint of the row as it will be saved (after review edits). */
 export async function rowFingerprint(row: ParsedRow, ctx: Pick<RowSaveContext, "category" | "counterparty" | "receiptsCounterpartyText">) {
@@ -232,7 +234,8 @@ export async function rowFingerprint(row: ParsedRow, ctx: Pick<RowSaveContext, "
     counterpartyName: master?.name ?? null,
     receiptsCounterpartyText: ctx.receiptsCounterpartyText,
   });
-  const entitlementMonth = ctx.category.bucket === "doctor" ? row.entitlementMonth : null;
+  // 0038: Personel rows carry the salary month too; a row without a month hashes as before.
+  const entitlementMonth = takesEntitlementMonth(ctx.category.bucket) ? row.entitlementMonth : null;
   const subcategory = importSubcategory(ctx.category.bucket, row.description, row.date, entitlementMonth, row.subcategory);
   const fingerprint = await importFingerprint({
     bucket: ctx.category.bucket,

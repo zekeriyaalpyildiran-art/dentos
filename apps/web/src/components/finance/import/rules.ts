@@ -16,6 +16,7 @@ export function toLibRules(rules: ClassificationRuleJson[]): ClassificationRule[
     subcategory: r.subcategory,
     counterparty_id: r.counterparty_id,
     requires_entitlement_month: r.requires_entitlement_month,
+    entitlement_month_default: r.entitlement_month_default ?? "none",
     auto_select: r.auto_select,
     warning: r.warning,
     is_active: r.is_active,

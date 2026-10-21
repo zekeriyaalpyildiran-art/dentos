@@ -1110,6 +1110,11 @@ export function bucketOf(ref: ReferenceData | null, categoryId: string): Categor
   return ref?.categories.find((c) => c.id === categoryId);
 }
 
+/** Label of an entry's month: "Hakediş ayı", on Personel entries (0038, the salary month) "Hakediş / maaş ayı". */
+export function entitlementMonthLabel(bucket: ReportBucket | null | undefined): string {
+  return bucket === "personnel" ? "Hakediş / maaş ayı" : "Hakediş ayı";
+}
+
 /** Subcategory choices for a bucket (p1 §1.4). */
 export function subcategoryOptions(bucket: ReportBucket | undefined): { value: Subcategory | ""; label: string }[] {
   if (bucket === "doctor") {
@@ -1203,6 +1208,21 @@ export interface ImportSettingsJson extends SettingsJson {
 
 export type RuleScope = "any" | "bank" | "clinic";
 export type RuleMatchKind = "contains" | "starts_with" | "exact" | "regex" | "always";
+/**
+ * 0038: the month a rule suggests for its matched rows in the review table (rules with requires_entitlement_month
+ * only): the row's month, the month before the row date, or a Turkish month name in the row text (else the previous
+ * month). Applied in the browser (lib/finance-import/classify suggestEntitlementMonth).
+ */
+export type EntitlementMonthDefault = "none" | "same" | "previous" | "from_text";
+
+export const ENTITLEMENT_MONTH_DEFAULTS: readonly EntitlementMonthDefault[] = ["none", "same", "previous", "from_text"];
+
+export const ENTITLEMENT_MONTH_DEFAULT_LABELS: Record<EntitlementMonthDefault, string> = {
+  none: "Yok",
+  same: "Ödeme ayı",
+  previous: "Önceki ay",
+  from_text: "Açıklamadaki ay (yoksa önceki ay)",
+};
 
 export interface ClassificationRuleJson {
   id: string;
@@ -1219,6 +1239,8 @@ export interface ClassificationRuleJson {
   counterparty_id: string | null;
   counterparty_name: string | null;
   requires_entitlement_month: boolean;
+  /** 0038: the review table's month suggestion; absent before 0038 (= 'none') */
+  entitlement_month_default?: EntitlementMonthDefault;
   auto_select: boolean;
   warning: string;
   is_active: boolean;
@@ -1308,6 +1330,8 @@ export function finSaveClassificationRule(args: {
   p_auto_select: boolean;
   p_warning: string;
   p_is_active: boolean;
+  /** 0038: 'none' unless p_requires_entitlement_month */
+  p_entitlement_month_default: EntitlementMonthDefault;
 }) {
   return rpc<MasterWriteResult<ClassificationRuleJson>>("fin_save_classification_rule", args);
 }

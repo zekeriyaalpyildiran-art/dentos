@@ -3,7 +3,9 @@
 import { memo, useEffect, useState } from "react";
 import {
   centsToInput,
+  entitlementMonthLabel,
   formatDay,
+  formatMonth,
   formatTL,
   parseTL,
   sortByOrder,
@@ -12,6 +14,7 @@ import {
   type ReferenceData,
   type Subcategory,
 } from "@/lib/finance";
+import { takesEntitlementMonth } from "@/lib/finance-import/keys";
 import { isMatchEligible } from "@/lib/finance-import/matching";
 import { keyDay, type Blocker } from "@/lib/finance-import/review";
 import { DebtMatchSelect } from "./DebtMatchSelect";
@@ -94,8 +97,10 @@ const ReviewLine = memo(function ReviewLine({
   const category = rowCategory(refData, row);
   const categories = sortByOrder(refData.categories.filter((c) => c.direction === dir && (c.is_active || c.id === category?.id)));
   // A configured counterparty is used only on entitlement rows (lib usesCounterparty); others show the narration.
+  // 0038: Personel rows carry the salary month and the rule's counterparty too.
+  const monthBucket = takesEntitlementMonth(category?.report_bucket);
   const cpName =
-    row.counterpartyId && row.requiresEntitlementMonth && category?.report_bucket === "doctor"
+    row.counterpartyId && row.requiresEntitlementMonth && monthBucket
       ? refData.counterparties.find((c) => c.id === row.counterpartyId)?.name
       : null;
   // Workbook and known-bank keys embed the day (fin_import_rows refuses a different date).
@@ -192,8 +197,8 @@ const ReviewLine = memo(function ReviewLine({
                   categoryId: c.id,
                   bucket: c.report_bucket,
                   subcategory: c.report_bucket === "other_expense" && row.subcategory === "official_fee" ? "official_fee" : null,
-                  entitlementMonth: c.report_bucket === "doctor" ? row.entitlementMonth : null,
-                  counterpartyId: c.report_bucket === "doctor" ? row.counterpartyId : null,
+                  entitlementMonth: takesEntitlementMonth(c.report_bucket) ? row.entitlementMonth : null,
+                  counterpartyId: takesEntitlementMonth(c.report_bucket) ? row.counterpartyId : null,
                 });
               }}
             >
@@ -216,9 +221,10 @@ const ReviewLine = memo(function ReviewLine({
                 <option value="official_fee">Resmi harç</option>
               </select>
             )}
-            {category?.report_bucket === "doctor" && (
+            {monthBucket && (
               <label className="block text-xs">
-                Hakediş ayı{row.requiresEntitlementMonth ? " (gerekli)" : ""}
+                {entitlementMonthLabel(category?.report_bucket)}
+                {row.requiresEntitlementMonth ? " (gerekli)" : ""}
                 <input
                   type="month"
                   className="w-full px-1 py-0.5 border rounded text-xs"
@@ -227,6 +233,11 @@ const ReviewLine = memo(function ReviewLine({
                   onChange={(e) => set({ entitlementMonth: e.target.value || null })}
                 />
               </label>
+            )}
+            {monthBucket && row.ruleEntitlementMonth && row.entitlementMonth === row.ruleEntitlementMonth && (
+              <div className="text-xs text-gray-600">
+                {entitlementMonthLabel(category?.report_bucket)}: {formatMonth(row.entitlementMonth)} (kuraldan)
+              </div>
             )}
             {cpName && (
               <div className="text-xs text-gray-600">

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { headerSignature, MAPPING_ERRORS, parseBankTable, pasteTable, pdfTable, suggestMapping, type BankTable } from "../bank-table";
 import type { PdfCell } from "../types";
-import { seedRules } from "./fixtures";
+import { compileRules } from "../classify";
+import { rule, SEED_RULES, seedRules } from "./fixtures";
 
 const rules = seedRules();
 const table: BankTable = {
@@ -32,6 +33,21 @@ describe("generic table mapper (TBT:6-14)", () => {
     expect(p.rows[0].key).toBe("bank-table:fd241e64fa5f4ff04cf29fd700b8fe2c3c778c89b8d7e0f5936f3af5be1f8f55");
     expect(p.rows[1].key).toBe("bank-table:b075cd87096cca31c9836368cf7d4c3a968be0fc70806bda48b40e2a0f51cb9f");
     expect(p.rows[0].warnings[0].text.startsWith("Banka çıkışı · Hareketler, satır 3.")).toBe(true);
+  });
+  it("0038: a rule's month suggestion is kept, the row still arrives unselected (mapper rows)", async () => {
+    // Any hakediş-month rule on the fixture's outflow will do.
+    const withRule = compileRules([
+      ...SEED_RULES,
+      rule(60, "any", "contains", "kira", "personnel", { requires_entitlement_month: true, entitlement_month_default: "previous" }),
+    ]);
+    const p = await parseBankTable(table, mapping, "banka.xlsx", withRule);
+    expect([p.rows[0].bucket, p.rows[0].entitlementMonth, p.rows[0].ruleEntitlementMonth, p.rows[0].selected]).toEqual([
+      "personnel",
+      "2026-09",
+      "2026-09",
+      false,
+    ]);
+    expect(p.rows[0].key).toBe((await parseBankTable(table, mapping, "banka.xlsx", rules)).rows[0].key);
   });
   it("stable keys across file names and overlapping exports", async () => {
     const a = (await parseBankTable(table, mapping, "first.xlsx", rules)).rows;

@@ -4,9 +4,10 @@
 // The legacy regex list (FI:8-22) and name lists (FC:7-10) are data now: fin_classification_rules.
 // Rules are tried in ascending priority (ties: created_at, id); the first rule whose category
 // direction equals the row's direction and whose scope covers the row wins. No clinic names here.
+// 0038: a rule that needs a hakediş month may suggest one (suggestEntitlementMonth); the parsers fill it in.
 
-import type { Direction, ReportBucket, Subcategory } from "../finance";
-import { normTr } from "./primitives";
+import type { Direction, EntitlementMonthDefault, ReportBucket, Subcategory } from "../finance";
+import { financeDayOk, normB, normTr } from "./primitives";
 import { warningFromText, type RowWarning } from "./types";
 
 export type RuleScope = "any" | "bank" | "clinic";
@@ -27,6 +28,8 @@ export type ClassificationRule = {
   subcategory: Subcategory | null;
   counterparty_id: string | null;
   requires_entitlement_month: boolean;
+  /** 0038: month suggestion of a requires_entitlement_month rule (absent = 'none') */
+  entitlement_month_default?: EntitlementMonthDefault;
   auto_select: boolean;
   warning: string;
   is_active: boolean;
@@ -48,6 +51,13 @@ export type Classification = {
   subcategory: Subcategory | null;
   counterpartyId: string | null;
   requiresEntitlementMonth: boolean;
+  /** 0038: 'none' unless the rule requires the month and suggests one */
+  entitlementMonthDefault: EntitlementMonthDefault;
+  /**
+   * 0038: the rule's own text for contains / starts_with / exact (usually the person's name), null for regex / always;
+   * the month suggestion ignores it (a name such as 'Kasım' or 'Eylül' is not the month)
+   */
+  pattern: string | null;
   autoSelect: boolean;
   warning: RowWarning | null;
   scope: RuleScope;
@@ -203,10 +213,84 @@ export function classify(
       subcategory: rule.subcategory,
       counterpartyId: rule.counterparty_id,
       requiresEntitlementMonth: rule.requires_entitlement_month,
+      entitlementMonthDefault: rule.requires_entitlement_month ? (rule.entitlement_month_default ?? "none") : "none",
+      pattern: rule.match_kind === "regex" || rule.match_kind === "always" ? null : rule.pattern,
       autoSelect: rule.auto_select,
       warning: warningFromText(rule.warning),
       scope: rule.scope,
     };
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Hakediş month suggestion (0038)
+// ---------------------------------------------------------------------------
+
+/** Turkish month names as normB folds them (lower case, no diacritics, ı → i), January first. */
+export const TR_MONTH_NAMES: readonly string[] = [
+  "ocak",
+  "subat",
+  "mart",
+  "nisan",
+  "mayis",
+  "haziran",
+  "temmuz",
+  "agustos",
+  "eylul",
+  "ekim",
+  "kasim",
+  "aralik",
+];
+
+/**
+ * A whole month name ('ekim', 'ekim'in'; not 'ekimde', 'martı'), optionally followed by a 4-digit year ('Ekim 2026',
+ * 'EKİM-2026'). A number that goes on as an amount ('ekim 2500,00') is not a year.
+ */
+const MONTH_IN_TEXT = new RegExp(`(?:^|[^a-z])(${TR_MONTH_NAMES.join("|")})(?![a-z])(?:[\\s'’.,/-]*(\\d{4})(?![\\d.,]?\\d))?`, "g");
+
+/** 'YYYY-MM' shifted by n months. */
+export function shiftMonth(month: string, n: number): string {
+  const i = Number(month.slice(0, 4)) * 12 + Number(month.slice(5, 7)) - 1 + n;
+  return `${String(Math.floor(i / 12)).padStart(4, "0")}-${String((i % 12) + 1).padStart(2, "0")}`;
+}
+
+/**
+ * A Turkish month name in the text ('YYYY-MM'), case- and diacritic-insensitive: the first one with a year next to it
+ * (only from two years before to one year after the row date; anything else is read as no year), else the first one,
+ * in the most recent such month not after the row date. Every occurrence of `ignore` (the rule's own text: a payee
+ * named 'Kasım Demir' or 'Eylül Yılmaz' is not a month) is left out first. null without a month name or a valid row
+ * date.
+ */
+export function monthFromText(text: string, date: string, ignore?: string | null): string | null {
+  if (!financeDayOk(date)) return null;
+  let folded = normB(text.slice(0, CLASSIFY_TEXT_MAX));
+  const skip = ignore ? normB(ignore).trim() : "";
+  if (skip) folded = folded.split(skip).join(" ");
+  const rowYear = Number(date.slice(0, 4));
+  const validYear = (y: number) => y >= rowYear - 2 && y <= rowYear + 1;
+  const found = Array.from(folded.matchAll(MONTH_IN_TEXT));
+  const m = found.find((x) => x[2] && validYear(Number(x[2]))) ?? found[0];
+  if (!m) return null;
+  const month = TR_MONTH_NAMES.indexOf(m[1]) + 1;
+  let year = m[2] ? Number(m[2]) : NaN;
+  if (!validYear(year)) year = month <= Number(date.slice(5, 7)) ? rowYear : rowYear - 1;
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+/**
+ * The hakediş month a rule suggests for a row dated `date` ('YYYY-MM-DD'): 'same' → the row's month, 'previous' → the
+ * month before it, 'from_text' → a month named in the row text outside the rule's own text `ignore` (monthFromText),
+ * else the previous month. null for 'none' (the reviewer types it) or an invalid date.
+ */
+export function suggestEntitlementMonth(
+  mode: EntitlementMonthDefault | null | undefined,
+  text: string,
+  date: string,
+  ignore?: string | null,
+): string | null {
+  if (!mode || mode === "none" || !financeDayOk(date)) return null;
+  const month = date.slice(0, 7);
+  if (mode === "same") return month;
+  return (mode === "from_text" ? monthFromText(text, date, ignore) : null) ?? shiftMonth(month, -1);
 }

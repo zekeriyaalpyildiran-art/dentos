@@ -102,6 +102,13 @@ export function legacySubcategory(bucket: ReportBucket | null, description: stri
 }
 
 /**
+ * Buckets whose rows carry a hakediş month (fin__trg_entry_guard): Hekim hakedişi, and from 0038 Personel (the salary
+ * month the hakediş close nets against). Only these send entitlementMonth and a rule's counterparty.
+ */
+export const takesEntitlementMonth = (bucket: ReportBucket | null | undefined): boolean =>
+  bucket === "doctor" || bucket === "personnel";
+
+/**
  * Subcategory as legacy sent it (IP:54), after review edits:
  * doctor → past when the entitlement month is before the row month, else current;
  * other_expense → official fee for 'teftiş defteri', or when the user picked 'Resmi harç' in the review table

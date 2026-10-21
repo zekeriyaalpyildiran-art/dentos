@@ -4,7 +4,7 @@ import { validateWorkbookLayout, WORKBOOK_LAYOUT_TEMPLATE, layoutTerms } from ".
 import { isClinicWorkbook, parseWorkbook } from "../workbook";
 import { workbookCashBalance } from "../balances";
 import type { SheetBook } from "../types";
-import { entitlementRule, LAYOUT, SEED_RULES, seedRules } from "./fixtures";
+import { entitlementRule, LAYOUT, rule, SEED_RULES, seedRules } from "./fixtures";
 
 const book = (sheets: Record<string, unknown[][]>): SheetBook => ({ names: Object.keys(sheets), sheets });
 const row = (cells: Record<number, unknown>) => {
@@ -49,6 +49,40 @@ describe("workbook parser (TFI:19-24)", () => {
     expect(p.rows[1].selected).toBe(false);
     expect(p.rows[1].warnings[0].code).toBe("W_FX_EXCHANGE");
     expect(p.rows[1].amount).toBe(1000); // 2*55 - 100 = 10 TL
+  });
+  it("0038: a rule's month suggestion fills the month and selects the row (doctor and Personel)", () => {
+    const sheet = [["header"], row({ 11: "ÖRNEK SAHİP ADI", 16: 1000 }), row({ 11: "Örnek Personel Ağustos avans", 16: 500 })];
+    const rules = compileRules([
+      ...SEED_RULES,
+      { ...entitlementRule("örnek sahip"), entitlement_month_default: "previous" },
+      rule(61, "clinic", "contains", "örnek personel", "personnel", {
+        counterparty_id: "cp-staff",
+        requires_entitlement_month: true,
+        entitlement_month_default: "from_text",
+      }),
+    ]);
+    const p = parseWorkbook(book({ "03": sheet, TOPLAM: [] }), opts("2026-09", rules));
+    expect(p.rows.map((r) => [r.bucket, r.entitlementMonth, r.ruleEntitlementMonth, r.selected, r.counterpartyId])).toEqual([
+      ["doctor", "2026-08", "2026-08", true, "cp-owner"],
+      ["personnel", "2026-08", "2026-08", true, "cp-staff"],
+    ]);
+    // The month warning stays: the reviewer still checks the suggested month.
+    expect(p.rows[0].warnings[0].code).toBe("W_ENTITLEMENT_MONTH");
+    // Without a suggestion the row arrives unselected and without a month, as before.
+    const plain = parseWorkbook(book({ "03": sheet, TOPLAM: [] }), opts("2026-09", compileRules([...SEED_RULES, entitlementRule("örnek sahip")])));
+    expect([plain.rows[0].entitlementMonth, plain.rows[0].selected, "ruleEntitlementMonth" in plain.rows[0]]).toEqual([null, false, false]);
+  });
+  it("0038: the rule's own text (a made-up payee named like a month) is not read as the hakediş month", () => {
+    const sheet = [["header"], row({ 11: "Örnek Eylül Ağustos avansı", 16: 500 })];
+    const rules = compileRules([
+      ...SEED_RULES,
+      rule(61, "clinic", "contains", "örnek eylül", "personnel", {
+        requires_entitlement_month: true,
+        entitlement_month_default: "from_text",
+      }),
+    ]);
+    const p = parseWorkbook(book({ "03": sheet, TOPLAM: [] }), opts("2026-09", rules));
+    expect(p.rows.map((r) => [r.bucket, r.entitlementMonth, r.selected])).toEqual([["personnel", "2026-08", true]]);
   });
   it("receipts are summed per row then per day and rounded once (C11)", () => {
     const t = [

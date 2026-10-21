@@ -2,7 +2,7 @@
 // (spec p2i_parsers_rules §5; legacy FI:23-44). Ported verbatim except bank detection (D5),
 // which uses format markers in the statement's header/footer zone instead of a clinic branch label.
 
-import { classify, type CompiledRules } from "./classify";
+import { classify, suggestEntitlementMonth, type CompiledRules } from "./classify";
 import { knownBankKey, legacySubcategory } from "./keys";
 import { trNumber, isoDate } from "./primitives";
 import { ImportParseError, warning, type ParseResult, type ParsedRow, type PdfCell, type RowKind, type SourceKind } from "./types";
@@ -74,6 +74,11 @@ export function bankRow(input: BankRowInput): ParsedRow {
   const signedCents = amountTl > 0 ? amount : -amount;
   const cls = classify(input.rules, input.description, amountTl, "bank");
   const warnings = cls ? (cls.warning ? [cls.warning] : []) : [warning("W_CHECK")];
+  // 0038: the month a hakediş-month rule suggests (its own text, the person's name, is not read as a month); a row
+  // that gets one arrives selected (outflows, C8).
+  const ruleMonth = cls?.requiresEntitlementMonth
+    ? suggestEntitlementMonth(cls.entitlementMonthDefault, input.description, input.date, cls.pattern)
+    : null;
   return {
     key: knownBankKey(input.bankAccount, input.date, amountTl, input.balance, input.reference ?? ""),
     kind: input.kind ?? (amountTl > 0 ? "bank_in" : "bank_out"),
@@ -93,9 +98,10 @@ export function bankRow(input: BankRowInput): ParsedRow {
     legacyAccount: "Banka",
     accountImportKey: input.bankAccount,
     // C8: bank inflows never start selected, whatever the rule says.
-    selected: amountTl < 0 && !!cls?.autoSelect,
+    selected: amountTl < 0 && (!!cls?.autoSelect || ruleMonth !== null),
     warnings,
-    entitlementMonth: null,
+    entitlementMonth: ruleMonth,
+    ...(ruleMonth ? { ruleEntitlementMonth: ruleMonth } : {}),
     meta: {},
   };
 }

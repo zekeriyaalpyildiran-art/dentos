@@ -4,7 +4,7 @@
 // evaluation order and the rounding units are legacy's (C11): receipts are summed row by row in
 // array order and rounded once per day; each expense row is rounded once.
 
-import { classify, workbookFirstPass, type CompiledRules } from "./classify";
+import { classify, suggestEntitlementMonth, workbookFirstPass, type CompiledRules } from "./classify";
 import { layoutTerms, type FxCode, type Term, type WorkbookLayout } from "./layout";
 import { financeDayOk, hasOwn, monthOk, optionalPattern } from "./primitives";
 import { legacySubcategory, workbookExpenseKey, workbookReceiptsKey } from "./keys";
@@ -152,6 +152,10 @@ export function parseWorkbook(book: SheetBook, opts: WorkbookParseOptions): Pars
       const signedCents = -amount; // legacy classify(desc, -val)
       const cls = classify(rules, desc, -val, "clinic", { firstPass: workbookFirstPass });
       const isEntitlement = !!cls?.requiresEntitlementMonth;
+      // 0038: the rule's month suggestion (its own text is not read as a month); a row that gets one arrives selected.
+      const ruleMonth = isEntitlement
+        ? suggestEntitlementMonth(cls?.entitlementMonthDefault, desc, date, cls?.pattern)
+        : null;
       // Workbook selection ignores the generic rules (FI:64); only workbook-scoped rules
       // (e.g. the currency-exchange rule) and entitlement rules can unselect a row.
       const flagRule = !!cls && (cls.scope === "clinic" || isEntitlement);
@@ -179,9 +183,10 @@ export function parseWorkbook(book: SheetBook, opts: WorkbookParseOptions): Pars
         ruleId: cls?.ruleId ?? null,
         legacyAccount: bankCols.some((c) => num(r[c]) !== 0) ? "Banka" : "Nakit",
         accountImportKey: null,
-        selected: !isEntitlement && !(flagRule && !cls?.autoSelect),
+        selected: isEntitlement ? ruleMonth !== null : !(flagRule && !cls?.autoSelect),
         warnings,
-        entitlementMonth: null,
+        entitlementMonth: ruleMonth,
+        ...(ruleMonth ? { ruleEntitlementMonth: ruleMonth } : {}),
         meta: { sheet: name, line: i + 1, fxApplied: fxRow, formulaCellEmpty },
       });
       if (formulaCellEmpty)

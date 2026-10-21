@@ -2,6 +2,7 @@
 
 import {
   ACCOUNT_KIND_LABELS,
+  entitlementMonthLabel,
   matchCounterparty,
   parseTL,
   pickable,
@@ -13,6 +14,7 @@ import {
   type ReferenceData,
   type Subcategory,
 } from "@/lib/finance";
+import { takesEntitlementMonth } from "@/lib/finance-import/keys";
 import { Field, inputClass } from "./ui";
 
 export interface EntryFormState {
@@ -72,7 +74,7 @@ export function buildEntryInput(
   if (bucket === "doctor" && !subcategory) subcategory = "current_physician";
 
   let month: string | null = null;
-  if (bucket === "doctor" && s.entitlement_month) {
+  if (takesEntitlementMonth(bucket) && s.entitlement_month) {
     if (!isMonth(s.entitlement_month)) return { ok: false, error: "Geçersiz hakediş ayı." };
     month = s.entitlement_month;
   }
@@ -138,8 +140,8 @@ export function EntryFields({
         : nextBucket === "doctor"
           ? "current_physician"
           : "",
-      // Hakediş ayı is only valid in the physician bucket (p1 §1.4).
-      entitlement_month: nextBucket === "doctor" ? state.entitlement_month : "",
+      // Hakediş ayı is only valid in the physician bucket (p1 §1.4) and, from 0038, Personel (the salary month).
+      entitlement_month: takesEntitlementMonth(nextBucket) ? state.entitlement_month : "",
     });
   };
 
@@ -216,10 +218,14 @@ export function EntryFields({
         </Field>
       )}
 
-      {bucket === "doctor" && (
+      {takesEntitlementMonth(bucket) && (
         <Field
-          label="Hakediş ayı (isteğe bağlı)"
-          hint="Ödeme bu aydan sonraki bir ayda yapılırsa geçmiş dönem borç ödemesi sayılır."
+          label={`${entitlementMonthLabel(bucket)} (isteğe bağlı)`}
+          hint={
+            bucket === "doctor"
+              ? "Ödeme bu aydan sonraki bir ayda yapılırsa geçmiş dönem borç ödemesi sayılır. Kişinin hakediş carisiyle girilen ödeme, ay kapatılınca o ayın hakedişinden düşülür."
+              : "Maaş / avans ödemesinin ait olduğu ay. Kişinin hakediş carisiyle girilen ödeme, ay kapatılınca o ayın hakedişinden düşülür."
+          }
         >
           <input
             type="month"

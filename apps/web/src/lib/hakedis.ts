@@ -24,7 +24,12 @@
 // and v2.3 (0035_hakedis_burgan_net.sql): an imported transfer line carries its payment day (paid_on) and the part of
 // it paid with a Burgan patient loan (fin_patient_financing, matched at compute time: financingLinksOf) counts in the
 // 'financing' bucket NET of the bank's fee share (ciro_share rules only; by_method.financing.fee), then the rule's
-// financing deduction applies; the clinic total stays gross (FINANCING_MATCHED / FINANCING_UNMATCHED warnings).
+// financing deduction applies; the clinic total stays gross (FINANCING_MATCHED / FINANCING_UNMATCHED warnings), and
+// v2.4 (0038_hakedis_paid_netting.sql): the month close deducts what was already booked for the payee and the month on
+// other entries (Hekim hakedişi / Personel entries under the payee's counterparty, or typed with its name, with that
+// hakediş month) and writes only the remainder; statements and hk_my_* report Ödenen / Kalan with those payments (read
+// live, OVERPAID warning), open months what was paid / booked so far, and fin_hk_ensure_counterparties prepares every
+// payee's counterparty.
 // Every rate and amount is data entered by the owner (basis points and integer cents); nothing here is hard-coded.
 // Month arguments are sent as 'YYYY-MM-01' dates; month values read back may be 'YYYY-MM' or 'YYYY-MM-DD', so every
 // helper compares them through monthKey().
@@ -1278,6 +1283,18 @@ export interface HkPayeeJson {
    * total_cents is the final total (after a minimum_topup).
    */
   cash_cents?: number | null;
+  /**
+   * 0038 (fin_hk_month, open months, finance readers only): paid for the month so far: the payee's hakediş / payroll
+   * entry of the month, when one exists, and the payee's other entries under their counterparty with that month.
+   * Absent for the preparer, in closed months and before 0038.
+   */
+  paid_so_far?: number;
+  /**
+   * 0038 (same conditions as paid_so_far): what the close would deduct: the booked amount of the payee's other entries
+   * of the month (unpaid planned entries included; a cancelled one counts what was paid on it) + what was paid on the
+   * hakediş / payroll entry. At least paid_so_far.
+   */
+  booked_so_far?: number;
 }
 
 export type HkWarningJson =
@@ -1373,6 +1390,17 @@ export type HkWarningJson =
       count: number;
       /** by day, patient, id */
       financings: HkFinancingUnmatchedJson[];
+    }
+  | {
+      /**
+       * 0038 (closed months, finance readers only; live): what was paid on the payee's hakediş entry plus what was
+       * booked on their other entries of the month exceeds the statement total. Nothing is moved and the close is not
+       * blocked; the owner decides the offset.
+       */
+      code: "OVERPAID";
+      payee_user_id: string;
+      payee_name: string;
+      overpaid_cents: number;
     };
 
 /** A Burgan financing of the FINANCING_UNMATCHED warning (0035). */
@@ -1436,10 +1464,14 @@ export interface HkStatementJson {
   total_cents: number;
   /** the payee object frozen at close */
   breakdown: HkPayeeJson;
+  /**
+   * the hakediş / payroll entry the close (or a later netting) linked; null when none was needed (0 total, or 0038:
+   * other entries covered the month), and always null for callers without a finance permission (0038)
+   */
   fin_entry_id: string | null;
   /**
    * the linked ledger entry now: the doctor's entitlement entry, or the staff payroll entry (0031, personnel bucket).
-   * Null when the total was 0, and always null for callers without a finance permission ('hakedis_prepare' only).
+   * Null without fin_entry_id, and always null for callers without a finance permission ('hakedis_prepare' only).
    */
   entry: {
     id: string;
@@ -1452,6 +1484,24 @@ export interface HkStatementJson {
   created_at: string;
   created_by_name: string | null;
   superseded_at: string | null;
+  // 0038 (live ledger figures; absent for callers without a finance permission and before 0038). The close netted the
+  // payee's other entries of the month (Hekim hakedişi / Personel, under the payee's counterparty, with this month) and
+  // wrote only the rest to `entry` (fin_entry_id null when nothing was left).
+  /** Σ booked on the other entries (amount; for a cancelled one what was paid on it) */
+  other_booked_cents?: number;
+  /** Σ paid on the other entries */
+  other_paid_cents?: number;
+  /**
+   * number of other entries; null when the counterparty was linked to another person after the close (the figures are
+   * then the ones stored at the statement's last sync, not read live)
+   */
+  other_count?: number | null;
+  /** Ödenen: paid on `entry` + other_paid_cents */
+  paid_cents?: number;
+  /** Kalan: total_cents − paid_cents (negative: paid above the total) */
+  remaining_cents?: number;
+  /** max(0, paid on `entry` + other_booked_cents − total_cents) (OVERPAID) */
+  overpaid_cents?: number;
 }
 
 /** fin_hk_month / fin_hk_close_month / fin_hk_reopen_month: live compute + month state + the month's records. */
@@ -1464,7 +1514,8 @@ export interface HkMonthPayload extends HkComputeResult {
   can_prepare: boolean;
   /**
    * 'finance' or 'finance_readonly' (0031). False ('hakedis_prepare' only): no counterparty ids, no NO_COUNTERPARTY
-   * warnings, statement entries null (fin_entry_id stays).
+   * warnings, statement entries null; 0038: fin_entry_id null too (a positive total without a keyed entry would tell
+   * that other entries paid the month), no payment figures, no paid_so_far / booked_so_far, no OVERPAID.
    */
   ledger_visible: boolean;
   is_owner: boolean;
@@ -1510,10 +1561,17 @@ export interface HkMyMonthRowJson {
   is_estimate: boolean;
   /** statement total when closed, live compute otherwise */
   total_cents: number;
-  /** paid on the month's entitlement entry (0 without one) */
+  /**
+   * paid on the month's entitlement entry (0 without one); from 0038 Ödenen: plus what was paid on the caller's other
+   * entries of the month (open months: paid so far)
+   */
   paid_cents: number;
-  /** closed months only; null while open */
+  /** closed months only; null while open. 0038: total_cents − paid_cents, negative when paid above the total */
   remaining_cents: number | null;
+  /** 0038: the part of paid_cents paid on the caller's other entries of the month */
+  other_paid_cents?: number;
+  /** 0038: closed months, see HkStatementJson.overpaid_cents; null while open */
+  overpaid_cents?: number | null;
   /** 0032: the caller's bank part of the month (statement breakdown when closed), null without one */
   bank_cents?: number | null;
   /** 0032: total_cents − bank_cents, null without a bank part */
@@ -1624,8 +1682,21 @@ export interface HkMyMonthData {
    * own payee object, the frozen statement in a closed month). Absent before 0032.
    */
   lab_summary?: HkLabSummaryRowJson[];
-  /** closed months: the caller's active statement */
-  statement: { total_cents: number; closed_at: string } | null;
+  /**
+   * closed months: the caller's active statement; 0038 adds the live Ödenen / Kalan (see HkStatementJson; Kalan may be
+   * negative)
+   */
+  statement: {
+    total_cents: number;
+    closed_at: string;
+    paid_cents?: number;
+    remaining_cents?: number;
+    other_booked_cents?: number;
+    other_paid_cents?: number;
+    overpaid_cents?: number;
+  } | null;
+  /** 0038: open months: what was paid for the month so far (hakediş entry + the caller's other entries); null closed */
+  paid_so_far?: number | null;
   /**
    * the caller's ledger entry of the month, when one exists: the entitlement entry, or for a payee without a doctors
    * row the payroll entry (0031)
@@ -2129,6 +2200,40 @@ export function finHkCloseMonth(args: { p_month: string; p_version: number; p_ac
 /** Owner only. Statements are superseded, ledger entries stay (the next close updates the amount). */
 export function finHkReopenMonth(args: { p_month: string; p_version: number }) {
   return rpc<HkMonthPayload>("fin_hk_reopen_month", { ...args, p_month: monthStart(args.p_month) });
+}
+
+/** 0038: what fin_hk_ensure_counterparties did for one payee. */
+export type HkCounterpartyStatus = "existing" | "linked" | "created" | "no_doctor" | "error";
+
+export const COUNTERPARTY_STATUS_LABELS: Record<HkCounterpartyStatus, string> = {
+  existing: "Zaten bağlı",
+  linked: "Aynı adlı cari bağlandı",
+  created: "Yeni cari açıldı",
+  no_doctor: "Hekim kaydı yok",
+  error: "Hazırlanamadı",
+};
+
+export interface HkEnsureCounterpartyJson {
+  payee_user_id: string;
+  payee_name: string;
+  /** 'physician' (a doctors row), 'staff' (payroll rules only), null (no_doctor) */
+  kind: "physician" | "staff" | null;
+  counterparty_id: string | null;
+  counterparty_name: string | null;
+  /** null without a counterparty */
+  is_active: boolean | null;
+  status: HkCounterpartyStatus;
+  /** the Turkish refusal for no_doctor / error, else null */
+  message: string | null;
+}
+
+/**
+ * 0038 (finance writers): links or creates the hakediş counterparty (cari) of every payee with a rule or a live
+ * adjustment, so import rules can name it. Idempotent; one payee's refusal is reported, the others go on. By name.
+ */
+export async function finHkEnsureCounterparties(): Promise<HkEnsureCounterpartyJson[]> {
+  const data = await rpc<HkEnsureCounterpartyJson[] | null>("fin_hk_ensure_counterparties");
+  return Array.isArray(data) ? data : [];
 }
 
 // Self-service (any active app user; only the caller's own figures).
@@ -2639,6 +2744,53 @@ export function hkLedgerVisible(x: { ledger_visible?: boolean | null }): boolean
   return x.ledger_visible ?? true;
 }
 
+/** Ödenen / Kalan of a closing statement (0038), as the views show them. */
+export interface HkStatementPaid {
+  /** Ödenen: on the hakediş / payroll entry and on the payee's other entries of the month */
+  paid_cents: number;
+  /** the part of paid_cents paid on the other entries */
+  other_paid_cents: number;
+  /** Kalan: total − Ödenen; negative when paid above the total */
+  remaining_cents: number;
+  /** what the close could not net: paid on the entry + booked on the others − total, at least 0 */
+  overpaid_cents: number;
+}
+
+/**
+ * The statement's live Ödenen / Kalan (0038 keys). A statement payload from before 0038 falls back to its entry (0 for
+ * a cancelled one's remainder). null without ledger data (the preparer) or an entry to read.
+ */
+export function statementPaidOf(st: HkStatementJson): HkStatementPaid | null {
+  if (typeof st.paid_cents === "number" && typeof st.remaining_cents === "number") {
+    return {
+      paid_cents: st.paid_cents,
+      other_paid_cents: st.other_paid_cents ?? 0,
+      remaining_cents: st.remaining_cents,
+      overpaid_cents: st.overpaid_cents ?? 0,
+    };
+  }
+  if (!st.entry) return null;
+  return {
+    paid_cents: st.entry.paid_cents,
+    other_paid_cents: 0,
+    remaining_cents: st.entry.is_cancelled ? 0 : st.entry.outstanding_cents,
+    overpaid_cents: 0,
+  };
+}
+
+/**
+ * 0038: the close dialog's line for a payee of an open month (finance readers). The close deducts what is BOOKED for
+ * the month on the payee's other entries, unpaid planned ones included (e.g. next month's bank salary entered ahead):
+ * "Kapanışta düşülecek ₺X (ödenen ₺Y)" when that is more than what was paid, else "Bu ay ödenen ₺Y"; null when nothing
+ * is booked (or the keys are absent: preparer, before 0038).
+ */
+export function closeDeductionText(p: Pick<HkPayeeJson, "paid_so_far" | "booked_so_far">): string | null {
+  const paid = p.paid_so_far ?? 0;
+  const booked = Math.max(p.booked_so_far ?? paid, paid);
+  if (booked > paid) return `Kapanışta düşülecek ${formatTL(booked)} (ödenen ${formatTL(paid)})`;
+  return paid > 0 ? `Bu ay ödenen ${formatTL(paid)}` : null;
+}
+
 /**
  * "Ciro payı · Çocuk hasta · Hekim A"; "İşlem başı ücret · Grup X · Hekim A"; "Sabit aylık maaş"; "Prim ve diğer";
  * "Taban maaş tamamlaması"
@@ -2701,6 +2853,8 @@ export function warningText(w: HkWarningJson): string {
       if (list.length > FINANCING_UNMATCHED_SHOWN) shown.push(`${list.length - FINANCING_UNMATCHED_SHOWN} kayıt daha`);
       return `${w.count} Burgan finansmanı hiçbir havale satırıyla eşleşmedi${shown.length ? ` (${shown.join(", ")})` : ""}; hasta adını ve ödeme gününü Macro'daki havaleyle karşılaştırın.`;
     }
+    case "OVERPAID":
+      return `${w.payee_name || "Hakediş sahibi"}: bu ay için hakediş / maaş kaydına ödenen ve ayrı kayıtlarla girilen tutar, hakedişi ${formatTL(w.overpaid_cents)} aşıyor.`;
     default:
       return "Bilinmeyen uyarı.";
   }

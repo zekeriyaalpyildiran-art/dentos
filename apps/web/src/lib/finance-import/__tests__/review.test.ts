@@ -5,6 +5,7 @@ import {
   acknowledgements,
   appendToReview,
   chosenRows,
+  ENTITLEMENT_MONTH_REQUIRED,
   rowBlockers,
   saveProblems,
   selectedReceiptsCents,
@@ -13,6 +14,7 @@ import {
   toImportRowPayload,
   checkableRow,
   keyDay,
+  usesCounterparty,
   type RowCheck,
 } from "../review";
 import { fingerprintPayload, importFingerprint } from "../keys";
@@ -88,7 +90,7 @@ describe("review list (§3.4, §11)", () => {
   });
   it("save problems, receipts total, sort order", () => {
     const list = appendToReview([], [mk({ key: "b", date: "2026-10-09", bucket: "patient_receipts", amount: 10 }), mk({ key: "a", date: "2026-10-01", bucket: "doctor", requiresEntitlementMonth: true })], "workbook", () => undefined);
-    expect(saveProblems(list)).toEqual(["Hekim hakediş ödemelerinde hakediş ayını seçin."]);
+    expect(saveProblems(list)).toEqual(["Hekim hakedişi ve personel ödemelerinde hakediş / maaş ayını seçin."]);
     expect(saveProblems([])).toEqual(["Aktarılacak satır seçin."]);
     expect(selectedReceiptsCents(list)).toBe(10);
     expect(sortReview(list).map((r) => r.key)).toEqual(["a", "b"]);
@@ -168,6 +170,78 @@ describe("counterparty, key dates and the preflight scope", () => {
     expect(checkableRow({ date: "2026-09-30", amount: 1 }, "2026-10")).toBe(false);
     expect(checkableRow({ date: "2026-10-32", amount: 1 }, "2026-10")).toBe(false);
     expect(checkableRow({ date: "2026-10-05", amount: 0 }, "2026-10")).toBe(false);
+  });
+});
+
+describe("the salary month on Personel rows (0038)", () => {
+  const personnel = { id: "cat-personnel", bucket: "personnel" as const, name: "Personel", is_system: true };
+  const salary = mk({
+    key: "bank:TEB:1:2026-10-05:-15000:80.000,00:",
+    date: "2026-10-05",
+    description: "ÖRNEK PERSONEL EYLÜL MAAŞ",
+    amount: 1500000,
+    signedCents: -1500000,
+    bucket: "personnel",
+    categoryId: "cat-personnel",
+  });
+
+  it("a rule-flagged Personel row needs the month, like a doctor row; unflagged rows do not", () => {
+    const flagged = appendToReview([], [{ ...salary, requiresEntitlementMonth: true }], "bank", () => undefined);
+    expect(saveProblems(flagged)).toEqual([ENTITLEMENT_MONTH_REQUIRED]);
+    expect(saveProblems([{ ...flagged[0], entitlementMonth: "2026-09" }])).toEqual([]);
+    expect(saveProblems(appendToReview([], [salary], "bank", () => undefined))).toEqual([]);
+    // Other buckets never carry the month.
+    expect(saveProblems(appendToReview([], [mk({ requiresEntitlementMonth: true })], "bank", () => undefined))).toEqual([]);
+    expect(usesCounterparty({ requiresEntitlementMonth: true }, "personnel")).toBe(true);
+    expect(usesCounterparty({ requiresEntitlementMonth: true }, "doctor")).toBe(true);
+    expect(usesCounterparty({ requiresEntitlementMonth: true }, "rent")).toBe(false);
+    expect(usesCounterparty({ requiresEntitlementMonth: false }, "personnel")).toBe(false);
+  });
+
+  it("the rule's counterparty and the month are saved and hashed; rows without them hash as before", async () => {
+    const ctxBase = { rowNo: 1, clinicId: "c1", accountId: "acc", category: personnel, receiptsCounterpartyText: "G" };
+    const cp = { id: "cp-staff", name: "Örnek Personel" };
+    const row = { ...salary, requiresEntitlementMonth: true, counterpartyId: cp.id, entitlementMonth: "2026-09" };
+    const p = await toImportRowPayload(row, { ...ctxBase, counterparty: cp });
+    if (p.match !== null) throw new Error("expected a new-entry row");
+    expect([p.counterparty_id, p.counterparty_text, p.entitlement_month, p.subcategory]).toEqual(["cp-staff", null, "2026-09", null]);
+    expect(p.fingerprint).toBe(
+      await importFingerprint({
+        bucket: "personnel",
+        categoryName: "x",
+        isSystem: true,
+        subcategory: null,
+        counterparty: "Örnek Personel",
+        description: row.description,
+        date: row.date,
+        amount: row.amount,
+        entitlementMonth: "2026-09",
+        legacyAccount: "Banka",
+      }),
+    );
+    // An ordinary Personel row (no rule month, no month typed): narration counterparty, no month, the old hash.
+    const plain = await toImportRowPayload(salary, { ...ctxBase, counterparty: cp });
+    if (plain.match !== null) throw new Error("expected a new-entry row");
+    expect([plain.counterparty_id, plain.counterparty_text, plain.entitlement_month]).toEqual([null, salary.description, null]);
+    expect(plain.fingerprint).toBe(
+      await importFingerprint({
+        bucket: "personnel",
+        categoryName: "x",
+        isSystem: true,
+        subcategory: null,
+        counterparty: salary.description,
+        description: salary.description,
+        date: salary.date,
+        amount: salary.amount,
+        entitlementMonth: null,
+        legacyAccount: "Banka",
+      }),
+    );
+    // A month on a row moved to another bucket is not sent.
+    const rent = { id: "cat-rent", bucket: "rent" as const, name: "Kira", is_system: true };
+    const moved = await toImportRowPayload({ ...row, bucket: "rent", categoryId: "cat-rent" }, { ...ctxBase, category: rent, counterparty: cp });
+    if (moved.match !== null) throw new Error("expected a new-entry row");
+    expect([moved.counterparty_id, moved.entitlement_month]).toEqual([null, null]);
   });
 });
 

@@ -97,8 +97,10 @@ export type ParsedRow = {
   /** Default selection (§10.4). */
   selected: boolean;
   warnings: RowWarning[];
-  /** 'YYYY-MM', set in review for entitlement-physician rows. */
+  /** 'YYYY-MM', set in review for entitlement rows (Hekim hakedişi; from 0038 also Personel, the salary month). */
   entitlementMonth: string | null;
+  /** 0038: the month the matched rule suggested ('YYYY-MM'); shown as "(kuraldan)" while entitlementMonth equals it. */
+  ruleEntitlementMonth?: string;
   meta: {
     line?: number;
     sheet?: string;

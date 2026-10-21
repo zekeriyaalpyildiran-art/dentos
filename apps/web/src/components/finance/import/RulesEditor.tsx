@@ -17,6 +17,8 @@ import {
 import {
   BUCKET_LABELS,
   DIRECTION_LABELS,
+  ENTITLEMENT_MONTH_DEFAULTS,
+  ENTITLEMENT_MONTH_DEFAULT_LABELS,
   SUBCATEGORY_LABELS,
   finSaveClassificationRule,
   newId,
@@ -26,6 +28,7 @@ import {
   toFinanceError,
   type ClassificationRuleJson,
   type Direction,
+  type EntitlementMonthDefault,
   type FinanceError,
   type ReferenceData,
   type RuleMatchKind,
@@ -33,6 +36,7 @@ import {
   type Subcategory,
 } from "@/lib/finance";
 import { classify, regexSafetyProblem, workbookFirstPass } from "@/lib/finance-import/classify";
+import { takesEntitlementMonth } from "@/lib/finance-import/keys";
 import { compileSetupRules, orderedRules } from "./rules";
 import { useImportSetup } from "./useImportSetup";
 
@@ -88,7 +92,8 @@ export function RulesEditor() {
           Dosyadan okunan her satıra, yönüne (giriş / çıkış) uyan ilk etkin kural uygulanır; küçük sıra numarası önce
           denenir. Kurallar yalnızca önerilen kategoriyi ve ilk seçimi belirler, kaynak anahtarlarını değiştirmez. Hekim,
           tedarikçi ve laboratuvar adlarını burada kural olarak ekleyin (hekim kuralları için sıra 60 önerilir). Banka
-          girişleri hiçbir kuralla otomatik seçilmez.
+          girişleri hiçbir kuralla otomatik seçilmez. Hekime ve personele ay içinde yapılan ödemeler için “hakediş ayı
+          gerekli” kuralında kişinin hakediş carisini seçin: ay kapatılınca bu ödemeler o ayın hakedişinden düşülür.
         </p>
         <label className="flex items-center gap-2 text-sm mb-3">
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
@@ -124,6 +129,10 @@ export function RulesEditor() {
                       {r.subcategory && ` · ${SUBCATEGORY_LABELS[r.subcategory]}`}
                       {r.counterparty_name && ` · ${r.counterparty_name}`}
                       {r.requires_entitlement_month && " · hakediş ayı gerekli"}
+                      {r.requires_entitlement_month &&
+                        r.entitlement_month_default &&
+                        r.entitlement_month_default !== "none" &&
+                        ` (öneri: ${ENTITLEMENT_MONTH_DEFAULT_LABELS[r.entitlement_month_default].toLocaleLowerCase("tr")})`}
                     </div>
                   </td>
                   <td className="px-3 py-2">{r.auto_select ? "Evet" : "Hayır"}</td>
@@ -234,6 +243,7 @@ function RuleDialog({
   const [subcategory, setSubcategory] = useState<Subcategory | "">(rule?.subcategory ?? "");
   const [counterpartyId, setCounterpartyId] = useState(rule?.counterparty_id ?? "");
   const [needsMonth, setNeedsMonth] = useState(rule?.requires_entitlement_month ?? false);
+  const [monthDefault, setMonthDefault] = useState<EntitlementMonthDefault>(rule?.entitlement_month_default ?? "none");
   const [autoSelect, setAutoSelect] = useState(rule?.auto_select ?? false);
   const [warning, setWarning] = useState(rule?.warning ?? "");
   const [active, setActive] = useState(rule?.is_active ?? true);
@@ -245,6 +255,8 @@ function RuleDialog({
   const category = refData.categories.find((c) => c.id === categoryId);
   const subOptions = subcategoryOptions(category?.report_bucket);
   const counterparties = pickable(refData.counterparties, counterpartyId).sort((a, b) => a.name.localeCompare(b.name, "tr-TR"));
+  // Hekim hakedişi and, from 0038, Personel (the salary month) carry the month and the rule's counterparty.
+  const monthBucket = takesEntitlementMonth(category?.report_bucket);
 
   const submit = async (ev: React.FormEvent) => {
     ev.preventDefault();
@@ -266,9 +278,11 @@ function RuleDialog({
       const unsafe = regexSafetyProblem(pat);
       if (unsafe) return setFormError(unsafe);
     }
-    const entitlement = category.report_bucket === "doctor" && needsMonth;
+    const entitlement = takesEntitlementMonth(category.report_bucket) && needsMonth;
     if (counterpartyId && !entitlement) {
-      return setFormError("Kişi / kurum yalnızca hakediş ayı gerekli hekim kurallarında seçilebilir; diğer satırlarda açıklama kullanılır.");
+      return setFormError(
+        "Kişi / kurum yalnızca hakediş ayı gerekli hekim ve personel kurallarında seçilebilir; diğer satırlarda açıklama kullanılır."
+      );
     }
     if (warning.length > 300) return setFormError("Uyarı metni en fazla 300 karakter olabilir.");
     const sub = subOptions.some((o) => o.value === subcategory) && subcategory ? subcategory : null;
@@ -288,6 +302,7 @@ function RuleDialog({
         p_auto_select: autoSelect,
         p_warning: warning.trim(),
         p_is_active: active,
+        p_entitlement_month_default: entitlement ? monthDefault : "none",
       });
       await onSaved(res.already_saved ? "Kural zaten bu değerlerle kayıtlı." : "Kural kaydedildi.");
     } catch (err) {
@@ -364,12 +379,12 @@ function RuleDialog({
           )}
           <Field
             label="Kişi / kurum (isteğe bağlı)"
-            hint="Yalnızca hakediş ayı gerekli hekim kurallarında: eşleşen satır bu kayda bağlanır. Diğer satırlarda kişi / kurum, satır açıklamasıdır."
+            hint="Yalnızca hakediş ayı gerekli hekim ve personel kurallarında: eşleşen satır bu kayda bağlanır (hakediş carisi seçilirse ay kapatılınca ödeme hakedişten düşülür). Diğer satırlarda kişi / kurum, satır açıklamasıdır."
           >
             <select
               className={inputClass}
               value={counterpartyId}
-              disabled={!(category?.report_bucket === "doctor" && needsMonth) && !counterpartyId}
+              disabled={!(monthBucket && needsMonth) && !counterpartyId}
               onChange={(e) => setCounterpartyId(e.target.value)}
             >
               <option value="">—</option>
@@ -381,11 +396,30 @@ function RuleDialog({
             </select>
           </Field>
         </div>
-        {category?.report_bucket === "doctor" && (
+        {monthBucket && (
           <label className="flex items-start gap-2 text-sm">
             <input type="checkbox" className="mt-1" checked={needsMonth} onChange={(e) => setNeedsMonth(e.target.checked)} />
-            Hakediş ayı gerekli (eşleşen satır seçimsiz gelir; kaydetmeden önce hakediş ayı seçilmelidir).
+            Hakediş ayı gerekli (personelde maaş ayı; ay önerilmeyen satır seçimsiz gelir; kaydetmeden önce ay
+            seçilmelidir).
           </label>
+        )}
+        {monthBucket && needsMonth && (
+          <Field
+            label="Hakediş ayı önerisi"
+            hint="Önerilen ay satırda “(kuraldan)” diye görünür ve satır seçili gelir; gerekirse değiştirin. Açıklamadaki ay: Ocak … Aralık (yanında 4 haneli yıl olabilir); yıl yoksa ödeme tarihine kadarki en yakın o ay. Ay aranırken kuralın kendi metni (genellikle kişinin adı; Kasım, Eylül gibi adlar ay sayılmasın diye) atlanır; düzenli ifade kurallarında açıklamanın tamamı taranır."
+          >
+            <select
+              className={inputClass}
+              value={monthDefault}
+              onChange={(e) => setMonthDefault(e.target.value as EntitlementMonthDefault)}
+            >
+              {ENTITLEMENT_MONTH_DEFAULTS.map((d) => (
+                <option key={d} value={d}>
+                  {ENTITLEMENT_MONTH_DEFAULT_LABELS[d]}
+                </option>
+              ))}
+            </select>
+          </Field>
         )}
         <label className="flex items-start gap-2 text-sm">
           <input type="checkbox" className="mt-1" checked={autoSelect} onChange={(e) => setAutoSelect(e.target.checked)} />

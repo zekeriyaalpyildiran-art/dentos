@@ -43,7 +43,10 @@ import { formatMoney } from "@/lib/payments";
  * the procedure piece fees (pieces by group) and the Macro operation / tooth of imported lines. v2.1 (0034): a piece
  * whose performing doctor was chosen in DentOS (moved to the caller from another Macro doctor) shows "Macro: X". v2.3
  * (0035): the part of a line paid with a Burgan patient loan shows "Finansman (Burgan)" with the bank's fee share, and
- * the month's fee share taken off the caller's ciro has its own tile.
+ * the month's fee share taken off the caller's ciro has its own tile. v2.4 (0038): Ödenen / Kalan include what was paid
+ * for the month on the caller's other entries (the month close nets them; Kalan may be negative: paid above the
+ * total), and an open month shows "Bu ay ödenen". A cancelled hakediş entry is explained on the Kalan tile (covered by
+ * other entries, or cancelled by a person).
  */
 export default function HakedisimPage() {
   return (
@@ -230,7 +233,15 @@ function MyHakedis() {
                       </>
                     )}
                     <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap">{m.paid_cents ? formatTL(m.paid_cents) : "—"}</td>
-                    <td className="py-2 text-right tabular-nums whitespace-nowrap">{m.remaining_cents === null ? "—" : formatTL(m.remaining_cents)}</td>
+                    <td
+                      className={`py-2 text-right tabular-nums whitespace-nowrap ${
+                        m.remaining_cents !== null && m.remaining_cents < 0 ? "text-amber-700" : ""
+                      }`}
+                    >
+                      {m.remaining_cents === null ? "—" : formatTL(m.remaining_cents)}
+                      {/* 0038: Kalan below zero = paid above the month's total. */}
+                      {m.remaining_cents !== null && m.remaining_cents < 0 && <span className="block text-xs">fazla ödeme</span>}
+                    </td>
                   </tr>
                 );
               })}
@@ -286,6 +297,20 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
   const labPatients: HkLabPatientJson[] = ortho.flatMap((c) => c.lab_patients ?? []);
   const closed = data.status === "closed";
   const ent = data.entitlement;
+  // 0038: Ödenen / Kalan with the caller's other payments of the month (closed: the statement's live figures; before
+  // 0038 the entitlement entry's), and the payments so far of an open month.
+  const st = data.statement;
+  const paid = typeof st?.paid_cents === "number" ? st.paid_cents : (ent?.paid_cents ?? null);
+  const otherPaid = st?.other_paid_cents ?? 0;
+  const remaining = typeof st?.remaining_cents === "number" ? st.remaining_cents : null;
+  const paidSoFar = typeof data.paid_so_far === "number" ? data.paid_so_far : (ent?.paid_cents ?? null);
+  // A cancelled hakediş entry: the netting cancels it only when other entries booked the whole total and nothing was
+  // paid on it (and keeps that state); otherwise a person cancelled it, so the Kalan below may not be owed any more.
+  const cancelCaption = ent?.is_cancelled
+    ? (st?.other_booked_cents ?? 0) >= (st?.total_cents ?? total) && ent.paid_cents === 0
+      ? "Hakediş ayrı kayıtlarla karşılandı"
+      : "Hakediş kaydı iptal edilmiş"
+    : undefined;
   // 0032: the caller's bank part of the month and the rest in cash (part of the total, never on top of it).
   const sums = sumPayeeSummaries(data.payees.map(summarizePayee));
   const split = bankSplitOf({ total_cents: total, bank_cents: sums.bank_cents, cash_cents: sums.cash_cents });
@@ -398,9 +423,40 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
               />
             </>
           )}
-          {ent && <SummaryTile label="Ödenen" cents={ent.paid_cents} tone="green" />}
+          {!closed && paidSoFar !== null && (
+            <SummaryTile
+              label="Bu ay ödenen"
+              cents={paidSoFar}
+              tone="green"
+              caption="Ay kapatılınca bu ay için girilen kayıtlar toplamdan düşülür"
+            />
+          )}
+          {closed && paid !== null && (
+            <SummaryTile
+              label="Ödenen"
+              cents={paid}
+              tone="green"
+              caption={otherPaid ? `Ayrı ödemeler ${formatTL(otherPaid)} dahil` : undefined}
+            />
+          )}
           {closed &&
-            (ent ? (
+            (remaining !== null ? (
+              remaining < 0 ? (
+                <SummaryTile
+                  label="Fazla ödenen"
+                  cents={-remaining}
+                  tone="amber"
+                  caption={cancelCaption ?? "Bu ayın toplamından fazla ödendi"}
+                />
+              ) : (
+                <SummaryTile
+                  label="Kalan"
+                  cents={remaining}
+                  tone={remaining > 0 ? "amber" : undefined}
+                  caption={cancelCaption}
+                />
+              )
+            ) : ent ? (
               <SummaryTile
                 label="Kalan"
                 cents={ent.remaining_cents}
