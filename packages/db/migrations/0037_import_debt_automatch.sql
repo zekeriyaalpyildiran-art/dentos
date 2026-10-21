@@ -2085,9 +2085,9 @@ BEGIN
       EXCEPTION WHEN OTHERS THEN
         GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
       END;
-      IF v_err IS DISTINCT FROM CASE WHEN v_i IN (1, 2, 9)
-                                     THEN 'Borç önerisi için en az 1, en fazla 500 satır gönderilebilir.'
-                                     ELSE 'Filtre değerleri geçersiz.' END THEN
+      IF v_err IS DISTINCT FROM (CASE WHEN v_i IN (1, 2, 9)
+                                      THEN 'Borç önerisi için en az 1, en fazla 500 satır gönderilebilir.'
+                                      ELSE 'Filtre değerleri geçersiz.' END) THEN
         v_fail := array_append(v_fail, format('öneri doğrulama %s: %s', v_i, coalesce(v_err, 'reddedilmedi')));
       END IF;
     END LOOP;
@@ -2463,9 +2463,9 @@ BEGIN
       v_x := (SELECT w.v -> 'debts' FROM jsonb_array_elements(v_j #> '{rows,1,warnings}') AS w(v)
               WHERE w.v ->> 'code' = 'open_debt');
       IF v_x #>> '{0,entry_id}' IS DISTINCT FROM v_e_x::text
-         OR (v_x #>> '{0,outstanding_cents}')::bigint IS DISTINCT FROM CASE WHEN v_i = 1 THEN 4970000 ELSE 7000000 END
-         OR (v_x #>> '{0,amount_cents}')::bigint IS DISTINCT FROM CASE WHEN v_i = 1 THEN 5000000 ELSE 8000000 END
-         OR v_x #>> '{0,kind}' IS DISTINCT FROM CASE WHEN v_i = 1 THEN 'near' ELSE 'exact' END
+         OR (v_x #>> '{0,outstanding_cents}')::bigint IS DISTINCT FROM (CASE WHEN v_i = 1 THEN 4970000 ELSE 7000000 END)
+         OR (v_x #>> '{0,amount_cents}')::bigint IS DISTINCT FROM (CASE WHEN v_i = 1 THEN 5000000 ELSE 8000000 END)
+         OR v_x #>> '{0,kind}' IS DISTINCT FROM (CASE WHEN v_i = 1 THEN 'near' ELSE 'exact' END)
          OR jsonb_array_length(v_x) IS DISTINCT FROM 1
          OR strpos((v_j #> '{rows,0}')::text, 'open_debt') > 0 THEN
         v_fail := array_append(v_fail, format('kısmi eşleşme kontrolü %s: %s', v_i, left(v_j::text, 700)));
