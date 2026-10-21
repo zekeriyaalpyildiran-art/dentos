@@ -10,7 +10,10 @@
 // already booked for the month on the payee's other entries; statements show Ödenen / Kalan / Fazla kayıt with those
 // entries, open months "Bu ay ödenen" per payee and, in the close dialog, what the close will deduct (finance readers
 // only), the OVERPAID warning, and "Hakediş carilerini hazırla" (finance writers) links or creates every payee's
-// counterparty. The preparer sees no keyed entry id (only "Finans'a yazıldı" for a positive total).
+// counterparty. The preparer sees no keyed entry id (only "Finans'a yazıldı" for a positive total). 0038 (owner
+// decision 2026-10-21): the bank / cash split (Bankadan / Elden columns, the totals row, a statement's split, the
+// payment line of the breakdown, BANK_OVER_TOTAL) only for 'finance' / 'finance_readonly' holders (hkSplitVisible; the
+// server leaves the keys out for the preparer, who keeps every other figure).
 
 import Link from "next/link";
 import { Fragment, useMemo, useState } from "react";
@@ -58,6 +61,8 @@ import {
   formatBp,
   hkCanPrepare,
   hkLedgerVisible,
+  hkSplitVisible,
+  hkVisibleWarnings,
   isLabWarning,
   lineMethodText,
   monthKey,
@@ -105,6 +110,8 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
   // 0035: the month's range can still be imported again (open, no later month closed; fin_hk_import_macro refuses
   // the rest), so the FINANCING_UNMATCHED help points to the Macro import only then.
   const reimportable = !!current && current.status === "open" && !hkMonthLock(ref.data, current.status, month);
+  // 0038: BANK_OVER_TOTAL names a bank amount: finance readers only (the server leaves it out for the preparer).
+  const warnings = current ? hkVisibleWarnings(current) : [];
 
   const toggle = (id: string) =>
     setOpen((prev) => {
@@ -165,15 +172,15 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
             onReopen={() => setDialog("reopen")}
             onCounterparties={() => setDialog("counterparties")}
           />
-          {current.warnings.length > 0 && (
+          {warnings.length > 0 && (
             <div className="p-4 rounded bg-amber-50 text-amber-900 text-sm space-y-1">
               <div className="font-semibold">Uyarılar</div>
               <ul className="list-disc pl-5 space-y-1">
-                {current.warnings.map((w, i) => (
+                {warnings.map((w, i) => (
                   <li key={`${w.code}:${i}`}>{warningText(w)}</li>
                 ))}
               </ul>
-              {current.warnings.some((w) => w.code === "UNRULED_LINES" || w.code === "UNRULED_PIECES") &&
+              {warnings.some((w) => w.code === "UNRULED_LINES" || w.code === "UNRULED_PIECES") &&
                 (mode === "finance" ? (
                   <p className="pt-1">
                     <Link href={`${base}/rules`} className="underline">
@@ -184,7 +191,7 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                 ) : (
                   <p className="pt-1">Satırın hekimini kontrol edin; kural eksikse klinik sahibine bildirin.</p>
                 ))}
-              {current.warnings.some((w) => w.code === "BANK_OVER_TOTAL") && (
+              {warnings.some((w) => w.code === "BANK_OVER_TOTAL") && (
                 <p className="pt-1">
                   {current.status === "open" ? "Tutarlar değişmez ve ay kapatılabilir; " : "Tutarlar değişmez; "}
                   bankadan ödenen sabit tutar{" "}
@@ -202,7 +209,7 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                   )}
                 </p>
               )}
-              {current.warnings.some((w) => w.code === "UNASSIGNED_PIECES") && (
+              {warnings.some((w) => w.code === "UNASSIGNED_PIECES") && (
                 <p className="pt-1">
                   Atanmamış işlemler ayın kapatılmasını engellemez. İşlemi yapan hekimi{" "}
                   <Link href={`${base}/lines?month=${month}&tab=pieces`} className="underline">
@@ -211,7 +218,7 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                   sekmesinden seçin.
                 </p>
               )}
-              {current.warnings.some((w) => w.code === "UNMARKED_AS_CHILD") && (
+              {warnings.some((w) => w.code === "UNMARKED_AS_CHILD") && (
                 <p className="pt-1">
                   Bilgi amaçlıdır, ayın kapatılmasını engellemez. Hekimin çocuk kuralı işaretsiz hastaları çocuk sayar;
                   yetişkin hastayı{" "}
@@ -222,7 +229,7 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                   varsayılanı” olan satırlar).
                 </p>
               )}
-              {current.warnings.some((w) => w.code === "FINANCING_UNMATCHED") && (
+              {warnings.some((w) => w.code === "FINANCING_UNMATCHED") && (
                 <p className="pt-1">
                   Bilgi amaçlıdır, ayın kapatılmasını engellemez. Eşleşmeyen Burgan kaydının hastası bu ay Macro&apos;dan
                   havaleyle ödemiş görünmüyor: hasta adının Macro&apos;dakiyle aynı yazıldığını ve havalenin ödeme gününün
@@ -251,21 +258,21 @@ export function HakedisMonthView({ mode }: { mode: HkMode }) {
                   )}
                 </p>
               )}
-              {current.warnings.some((w) => w.code === "OVERPAID") && (
+              {warnings.some((w) => w.code === "OVERPAID") && (
                 <p className="pt-1">
                   Fazla ödeme: kişinin bu ayki hakediş / maaş kaydına ödenen ve aynı ay için ayrı kayıtlarla (kişinin
                   hakediş carisi ve hakediş ayıyla) girilen tutar, kapanış toplamından fazla. Kayıtlar ve tutarlar
                   değiştirilmedi; mahsubu siz belirleyin (örneğin sonraki ayda eksi tutarlı bir “Prim ve diğer” satırı).
                 </p>
               )}
-              {current.warnings.some(isLabWarning) && (
+              {warnings.some(isLabWarning) && (
                 <p className="pt-1">
                   Lab uyarıları ayın kapatılmasını engellemez. Hekim ve laboratuvar ayrıntısı{" "}
                   <Link href={`${base}/lab?month=${month}`} className="underline">
                     {LAB_LABELS.tab}
                   </Link>{" "}
                   sayfasındadır
-                  {current.warnings.some((w) => w.code === "UNRULED_LAB")
+                  {warnings.some((w) => w.code === "UNRULED_LAB")
                     ? mode === "finance"
                       ? "; lab gideri düşülmeyen hekim için ciro payı kuralını Kurallar sayfasından ekleyin ya da lab giderinin hekimini düzeltin."
                       : "; lab giderinin hekimini kontrol edin, kural eksikse klinik sahibine bildirin."
@@ -452,19 +459,22 @@ function implantText(components: HkComponentJson[], qty: number): string {
 
 /**
  * One row per payee; 'Ayrıntı' opens the component breakdown under the row. The salary, bonus and bank / cash columns
- * appear only in months that have them, so a month of hakediş alone looks as before.
+ * appear only in months that have them, so a month of hakediş alone looks as before; the bank / cash columns (0038)
+ * only for finance readers (hkSplitVisible).
  */
 function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<string>; onToggle: (id: string) => void }) {
   const rows = useMemo(() => data.payees.map((p) => ({ payee: p, s: summarizePayee(p) })), [data.payees]);
   const totals = useMemo(() => sumPayeeSummaries(rows.map((r) => r.s)), [rows]);
   const statements = new Map(data.statements.map((st) => [st.payee_user_id, st]));
   const ledger = hkLedgerVisible(data);
+  // 0038: the bank / cash split is finance data (absent from the preparer's payload).
+  const split = hkSplitVisible(data);
   const showSalary = data.payees.some((p) => p.components.some((c) => c.kind === "fixed_monthly"));
   const showAdjustments = data.payees.some((p) => p.components.some((c) => c.kind === "adjustments"));
   // 0032 (v1.4): the minimum top-up column when a payee's floor applies this month.
   const showTopup = rows.some((r) => r.s.minimum_topup_cents !== 0);
   // 0032: Bankadan / Elden when a payee has a bank part this month (part of the total, never on top of it).
-  const showBank = rows.some((r) => r.s.bank_cents !== null);
+  const showBank = split && rows.some((r) => r.s.bank_cents !== null);
   // 0033: the 'Ödenmemiş' column when a payee has unpaid (Macro) ciro, the procedure fee column with procedure_piece.
   const methods: readonly HkLineMethod[] = rows.some((r) => r.s.gross_by_method.unpaid !== 0) ? HK_LINE_METHODS : HK_METHODS;
   const showProcedure = data.payees.some((p) => p.components.some((c) => c.kind === "procedure_piece"));
@@ -616,7 +626,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
                             Bu ay hakediş ya da maaş çıkmadı; yalnızca bankadan ödenen sabit tutar kuralı var.
                           </p>
                         )}
-                        {s.bank_cents !== null && (
+                        {split && s.bank_cents !== null && (
                           <p className="text-sm text-gray-700 mb-2 tabular-nums">Ödeme: {bankSplitText(payee)}</p>
                         )}
                         <div className="grid gap-3 lg:grid-cols-2">
@@ -770,8 +780,12 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
   const live = new Map(data.payees.map((p) => [p.payee_user_id, p.total_cents]));
   const moved = data.statements.some((st) => (live.get(st.payee_user_id) ?? 0) !== st.total_cents);
   const ledger = hkLedgerVisible(data);
-  // 0032: the bank / cash split frozen in the statement (statements of closes before 0032 have none).
-  const splits = new Map(data.statements.map((st) => [st.id, st.breakdown ? bankSplitOf(st.breakdown) : null]));
+  // 0032: the bank / cash split frozen in the statement (statements of closes before 0032 have none); 0038: finance
+  // readers only (the preparer's statements have no split keys).
+  const showSplit = hkSplitVisible(data);
+  const splits = new Map(
+    data.statements.map((st) => [st.id, showSplit && st.breakdown ? bankSplitOf(st.breakdown) : null])
+  );
   const showBank = Array.from(splits.values()).some((x) => x !== null);
   // 0038: Ödenen / Kalan with the payee's other payments of the month (live), and what the close could not net.
   const paid = new Map(data.statements.map((st) => [st.id, ledger ? statementPaidOf(st) : null]));

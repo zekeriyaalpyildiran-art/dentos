@@ -9,7 +9,9 @@
 // its month) and kind procedure_piece, a doctor's fixed amount per piece of one procedure group (İşlem grupları). v2.2
 // (0034): "İşaretsiz hastalar bu gruba girer" on a child ciro_share rule (unmarked patients of the doctor count as
 // children; only adults are then marked). v2.3 (0035): the financing deduction applies after the Burgan bank's fee
-// share (ciro_share; none under ortho_lab_first).
+// share (ciro_share; none under ortho_lab_first). 0038 (owner decision 2026-10-21): a bank_portion rule's amount and
+// note are finance data; a caller without 'finance' / 'finance_readonly' (the preparer) gets the rule, its payee and
+// months without them (piece_cents null, note ''): the amount shows as "—" (ruleAmountHidden).
 
 import Link from "next/link";
 import { useState } from "react";
@@ -61,12 +63,14 @@ import {
   finHkSaveRule,
   finHkSaveSettings,
   formatBp,
+  hkSplitVisible,
   kindAllowsAnyUser,
   monthKey,
   parsePercent,
   pieceFieldLabel,
   ruleActiveIn,
   ruleAllowsUnmarkedDefault,
+  ruleAmountHidden,
   ruleDeductBp,
   validateChildAgeLimit,
   validateRule,
@@ -100,6 +104,8 @@ export function HakedisRulesView({ mode }: { mode: HkMode }) {
   if (!ref.data) return ref.loading ? <Loading /> : <ErrorBox error={ref.error} onReload={ref.reload} />;
   const data = ref.data;
   const canWrite = mode === "finance" && data.can_write;
+  // 0038: bank amounts and the bank / cash split only for finance readers (the server sends no amount otherwise).
+  const split = hkSplitVisible(data);
 
   const groups = new Map<string, { name: string; active: boolean; rules: HkRuleJson[] }>();
   for (const r of data.rules) {
@@ -146,8 +152,11 @@ export function HakedisRulesView({ mode }: { mode: HkMode }) {
         </p>
         <p>
           Bankadan ödenen sabit tutar, kişinin o ayki hakedişinin ya da maaşının bankadan (resmi maaş olarak) ödenen
-          kısmıdır. Toplamı değiştirmez; ay özetinde ödeme “Bankadan” ve “Elden” (toplamdan kalan) diye bölünür. Aynı
-          kişi için ayları çakışan iki bankadan ödenen tutar kuralı olamaz.
+          kısmıdır.{" "}
+          {split
+            ? "Toplamı değiştirmez; ay özetinde ödeme “Bankadan” ve “Elden” (toplamdan kalan) diye bölünür."
+            : "Toplamı değiştirmez; tutarı ve ödemenin bankadan / elden bölünmesi yalnızca Finans yetkililerine gösterilir."}{" "}
+          Aynı kişi için ayları çakışan iki bankadan ödenen tutar kuralı olamaz.
         </p>
         <p>
           Taban maaş (hangisi yüksekse): kişinin o ayki toplamı (hakediş, maaş, prim ve diğer dahil) bu tutarın altında
@@ -197,6 +206,7 @@ export function HakedisRulesView({ mode }: { mode: HkMode }) {
               rules={g.rules}
               groups={data.proc_groups ?? []}
               currentMonth={data.current_month}
+              split={split}
               canWrite={canWrite}
               onEdit={(r) => setDialog({ record: r })}
             />
@@ -358,12 +368,15 @@ function RuleTable({
   rules,
   groups,
   currentMonth,
+  split,
   canWrite,
   onEdit,
 }: {
   rules: HkRuleJson[];
   groups: HkReferenceJson["proc_groups"];
   currentMonth: string;
+  /** 0038: bank amounts are shown (hkSplitVisible) */
+  split: boolean;
   canWrite: boolean;
   onEdit: (r: HkRuleJson) => void;
 }) {
@@ -383,34 +396,41 @@ function RuleTable({
           </tr>
         </thead>
         <tbody>
-          {rules.map((r) => (
-            <tr key={r.id} className="border-b last:border-b-0 align-top">
-              <td className="py-2 pr-3">
-                <div className="font-medium whitespace-nowrap">{KIND_LABELS[r.kind]}</div>
-                {r.note && <div className="text-xs text-gray-500 max-w-xs">{r.note}</div>}
-              </td>
-              <td className="py-2 pr-3 whitespace-nowrap">{r.doctor_name ?? (r.kind === "clinic_ciro_share" ? "Tüm klinik" : "—")}</td>
-              <td className="py-2 pr-3 whitespace-nowrap">
-                {r.segment ? SEGMENT_LABELS[r.segment] : groupName(r, groups) ?? "—"}
-                {r.unmarked_default && <div className="text-xs text-gray-500">işaretsiz hastalar dahil</div>}
-              </td>
-              <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap font-medium">{rateText(r)}</td>
-              <td className="py-2 pr-3 text-xs text-gray-700">{deductionsText(r)}</td>
-              <td className="py-2 pr-3 whitespace-nowrap capitalize">
-                {formatMonth(monthKey(r.from_month))} – {r.to_month ? formatMonth(monthKey(r.to_month)) : "süresiz"}
-              </td>
-              <td className="py-2 pr-3">
-                <RuleStatus rule={r} currentMonth={currentMonth} />
-              </td>
-              <td className="py-2 text-right">
-                {canWrite && (
-                  <button type="button" className="text-blue-600 hover:underline" onClick={() => onEdit(r)}>
-                    Düzenle
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
+          {rules.map((r) => {
+            // 0038: a bank amount (and its note) for finance readers only.
+            const hidden = ruleAmountHidden(r, split);
+            return (
+              <tr key={r.id} className="border-b last:border-b-0 align-top">
+                <td className="py-2 pr-3">
+                  <div className="font-medium whitespace-nowrap">{KIND_LABELS[r.kind]}</div>
+                  {r.note && !hidden && <div className="text-xs text-gray-500 max-w-xs">{r.note}</div>}
+                </td>
+                <td className="py-2 pr-3 whitespace-nowrap">{r.doctor_name ?? (r.kind === "clinic_ciro_share" ? "Tüm klinik" : "—")}</td>
+                <td className="py-2 pr-3 whitespace-nowrap">
+                  {r.segment ? SEGMENT_LABELS[r.segment] : groupName(r, groups) ?? "—"}
+                  {r.unmarked_default && <div className="text-xs text-gray-500">işaretsiz hastalar dahil</div>}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap font-medium">
+                  {hidden ? "—" : rateText(r)}
+                  {hidden && <div className="text-xs text-gray-500 font-normal">Finans yetkilisi görür</div>}
+                </td>
+                <td className="py-2 pr-3 text-xs text-gray-700">{deductionsText(r)}</td>
+                <td className="py-2 pr-3 whitespace-nowrap capitalize">
+                  {formatMonth(monthKey(r.from_month))} – {r.to_month ? formatMonth(monthKey(r.to_month)) : "süresiz"}
+                </td>
+                <td className="py-2 pr-3">
+                  <RuleStatus rule={r} currentMonth={currentMonth} />
+                </td>
+                <td className="py-2 text-right">
+                  {canWrite && !hidden && (
+                    <button type="button" className="text-blue-600 hover:underline" onClick={() => onEdit(r)}>
+                      Düzenle
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

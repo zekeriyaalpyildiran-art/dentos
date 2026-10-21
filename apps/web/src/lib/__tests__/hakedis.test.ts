@@ -3,8 +3,8 @@
 // the ciro, minimum_monthly floors and the doctor × lab summary; v2 Macro import: unpaid lines, lines without a
 // doctor, procedure groups and procedure_piece rules; v2.1 the performing doctor of any imported piece; v2.2 unmarked
 // patients counted as children for a flagged doctor and the adult mark; v2.4 the paid netting of the month close:
-// Ödenen / Kalan with the payee's other payments, OVERPAID and the payee counterparties). Made-up doctors, staff,
-// patients, labs, groups, rates and amounts only.
+// Ödenen / Kalan with the payee's other payments, OVERPAID and the payee counterparties; 0038 who sees the bank / cash
+// split). Made-up doctors, staff, patients, labs, groups, rates and amounts only.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -53,6 +53,10 @@ import {
   groupLabCosts,
   hkCanPrepare,
   hkLedgerVisible,
+  hkMyMonth,
+  hkMyMonths,
+  hkSplitVisible,
+  hkVisibleWarnings,
   HK_ADJUSTMENT_DESCRIPTION_MAX,
   HK_DEFAULT_CHILD_AGE_LIMIT,
   HK_FINANCING_WINDOW_DAYS,
@@ -103,6 +107,7 @@ import {
   RULE_FIELDS,
   ruleActiveIn,
   ruleAllowsUnmarkedDefault,
+  ruleAmountHidden,
   ruleDeductBp,
   ruleOverlapKey,
   salaryRuleOf,
@@ -4203,5 +4208,124 @@ describe("paid netting of the month close (v2.4)", () => {
     rpcMock.mockResolvedValueOnce({ data: null, error: { message: forbidden, code: "42501" } });
     await expect(finHkEnsureCounterparties()).rejects.toMatchObject({ message: forbidden, isForbidden: true });
     expect(Object.keys(COUNTERPARTY_STATUS_LABELS).sort()).toEqual(["created", "error", "existing", "linked", "no_doctor"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0038 (owner decision 2026-10-21): the bank / cash split is finance data. 'finance' / 'finance_readonly' holders see
+// it; the preparer's payloads leave it out (fin__hk_strip_ledger, fin__hk_rule_json) and Hakedişim never gets it
+// (hk_my_months, fin__hk_self_payee).
+// ---------------------------------------------------------------------------
+
+describe("who sees the bank / cash split (0038)", () => {
+  beforeEach(() => {
+    rpcMock.mockReset();
+  });
+
+  const bank = (payee: string, cents: number) => rule({ kind: "bank_portion", payee_user_id: payee, piece_cents: cents });
+  const salary = (payee: string, cents: number) => rule({ kind: "fixed_monthly", payee_user_id: payee, piece_cents: cents });
+  /** A payee object as the preparer / the payee's own view gets it: without bank_cents / cash_cents. */
+  const withoutSplit = <T extends object>(p: T): T => {
+    const copy: Record<string, unknown> = { ...(p as Record<string, unknown>) };
+    delete copy.bank_cents;
+    delete copy.cash_cents;
+    return copy as T;
+  };
+
+  it("finance readers see it, the preparer does not; a payload without the flag (before 0031) is a finance one", () => {
+    expect(hkSplitVisible({ ledger_visible: true })).toBe(true);
+    expect(hkSplitVisible({ ledger_visible: false })).toBe(false);
+    expect(hkSplitVisible({})).toBe(true);
+  });
+
+  it("shows BANK_OVER_TOTAL to finance readers only; every other warning stays", () => {
+    const out = run({
+      month: "2026-11",
+      rules: [aStd(), bank("u-a", TL(5_000))],
+      lines: [line({ doctor_id: "doc-a", try_cents: TL(8_000) }), line({ doctor_id: "doc-b", try_cents: TL(1_000) })],
+    });
+    expect(out.warnings.map((w) => w.code)).toEqual(["UNRULED_LINES", "BANK_OVER_TOTAL"]);
+    expect(hkVisibleWarnings({ ledger_visible: true, warnings: out.warnings })).toEqual(out.warnings);
+    expect(hkVisibleWarnings({ warnings: out.warnings })).toEqual(out.warnings);
+    expect(hkVisibleWarnings({ ledger_visible: false, warnings: out.warnings })).toEqual([out.warnings[0]]);
+    expect(hkVisibleWarnings({ ledger_visible: false, warnings: [] })).toEqual([]);
+  });
+
+  it("summarizes a payee object without the split keys with every other figure unchanged", () => {
+    const out = run({
+      month: "2026-11",
+      rules: [aStd(), bank("u-a", TL(1_000)), salary("u-p1", TL(20_000)), bank("u-p1", TL(18_000))],
+      lines: [line({ doctor_id: "doc-a", try_cents: TL(10_000) })],
+    });
+    const finance = out.payees.map(summarizePayee);
+    expect(finance.map((r) => [r.total_cents, r.bank_cents, r.cash_cents])).toEqual([
+      [TL(2_500), TL(1_000), TL(1_500)],
+      [TL(20_000), TL(18_000), TL(2_000)],
+    ]);
+    const stripped = out.payees.map(withoutSplit);
+    const prep = stripped.map(summarizePayee);
+    expect(prep).toEqual(finance.map((r) => ({ ...r, bank_cents: null, cash_cents: null })));
+    expect(sumPayeeSummaries(prep)).toMatchObject({ total_cents: TL(22_500), bank_cents: null, cash_cents: null });
+    expect(stripped.map(bankSplitOf)).toEqual([null, null]);
+    expect(stripped.map(bankSplitText)).toEqual(["", ""]);
+    // A payee whose only rule is a bank amount is still listed (total 0, no components), without the amount.
+    const only = run({ month: "2026-11", rules: [bank("u-p2", TL(9_000))], lines: [] });
+    expect(only.payees.map(withoutSplit)).toEqual([
+      { payee_user_id: "u-p2", payee_name: "Personel İki", total_cents: 0, components: [] },
+    ]);
+  });
+
+  it("hides a bank_portion rule's amount from the preparer (or when the server left it out); other kinds keep theirs", () => {
+    expect(ruleAmountHidden({ kind: "bank_portion", piece_cents: null })).toBe(true);
+    expect(ruleAmountHidden({ kind: "bank_portion", piece_cents: null }, true)).toBe(true);
+    expect(ruleAmountHidden({ kind: "bank_portion", piece_cents: TL(18_000) })).toBe(false);
+    expect(ruleAmountHidden({ kind: "bank_portion", piece_cents: TL(18_000) }, true)).toBe(false);
+    // A payload of an older server still carrying the amount: not shown to the preparer either.
+    expect(ruleAmountHidden({ kind: "bank_portion", piece_cents: TL(18_000) }, false)).toBe(true);
+    expect(ruleAmountHidden({ kind: "fixed_monthly", piece_cents: TL(20_000) }, false)).toBe(false);
+    expect(ruleAmountHidden({ kind: "minimum_monthly", piece_cents: TL(30_000) }, false)).toBe(false);
+    expect(ruleAmountHidden({ kind: "ciro_share", piece_cents: null }, false)).toBe(false);
+  });
+
+  it("Hakedişim reads hk_my_months without the split keys; reception, assistants and admins are refused", async () => {
+    const months = {
+      has_rules: true,
+      today: "2026-11-05",
+      current_month: "2026-11-01",
+      months: [
+        {
+          month: "2026-11-01",
+          status: "open",
+          is_estimate: true,
+          total_cents: TL(4_000),
+          paid_cents: TL(1_000),
+          remaining_cents: null,
+          other_paid_cents: TL(1_000),
+          overpaid_cents: null,
+        },
+        {
+          month: "2026-10-01",
+          status: "closed",
+          is_estimate: false,
+          total_cents: TL(9_000),
+          paid_cents: TL(9_500),
+          remaining_cents: TL(-500),
+          other_paid_cents: TL(2_000),
+          overpaid_cents: TL(500),
+        },
+      ],
+    };
+    rpcMock.mockResolvedValueOnce({ data: months, error: null });
+    const got = await hkMyMonths();
+    expect(rpcMock).toHaveBeenLastCalledWith("hk_my_months");
+    expect(got).toEqual(months);
+    expect(got.months.some((m) => "bank_cents" in m || "cash_cents" in m)).toBe(false);
+
+    const refused = "Hakedişim yalnızca hekimlere ve klinik sahibine açıktır.";
+    rpcMock.mockResolvedValueOnce({ data: null, error: { message: refused, code: "42501" } });
+    await expect(hkMyMonths()).rejects.toMatchObject({ message: refused, isForbidden: true });
+    rpcMock.mockResolvedValueOnce({ data: null, error: { message: refused, code: "42501" } });
+    await expect(hkMyMonth("2026-10")).rejects.toMatchObject({ message: refused, isForbidden: true });
+    expect(rpcMock).toHaveBeenLastCalledWith("hk_my_month", { p_month: "2026-10-01" });
   });
 });

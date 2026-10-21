@@ -8,7 +8,9 @@
 // the live calculation only as a hint when a rule changed since. v1.3 (0032): the bank / cash split of each person's
 // month (bank_portion rule, part of the total) and the BANK_OVER_TOTAL warnings of the listed people (in a closed
 // month from the closing statements: a negative cash part). v1.4 (0032): the minimum top-up (minimum_monthly rule) is
-// part of the month's payroll; staff with a floor are listed like staff with a salary.
+// part of the month's payroll; staff with a floor are listed like staff with a salary. 0038 (owner decision
+// 2026-10-21): the bank / cash split and its warnings only for 'finance' / 'finance_readonly' holders (hkSplitVisible;
+// the server leaves them out for the preparer, who keeps the salaries, bonus / other rows and totals).
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
@@ -47,6 +49,7 @@ import {
   finHkSaveAdjustment,
   finHkVoidAdjustment,
   hkCanPrepare,
+  hkSplitVisible,
   monthKey,
   ruleActiveIn,
   salaryRuleOf,
@@ -250,17 +253,21 @@ export function HakedisPayrollView({ mode }: { mode: HkMode }) {
 
   // 0032: Bankadan / Elden columns when a listed person has a bank part. Warnings follow the shown figures: the live
   // BANK_OVER_TOTAL of the listed people in an open month, the closing statements' negative cash part in a closed one.
-  const showBank = rows.some((r) => r.bankCents !== null);
+  // 0038: finance readers only (the preparer's payload has no split).
+  const split = !!current && hkSplitVisible(current);
+  const showBank = split && rows.some((r) => r.bankCents !== null);
   // 0032 (v1.4): the minimum top-up column when a listed person's floor applies.
   const showTopup = rows.some((r) => r.topupCents !== 0);
   const listed = new Set(rows.map((r) => r.userId));
-  const bankWarnings: { key: string; text: string }[] = closed
-    ? rows
-        .filter((r) => !r.noStatement && r.cashCents !== null && r.cashCents < 0)
-        .map((r) => ({ key: r.userId, text: `${r.name}: ${bankOverText(-(r.cashCents as number))}` }))
-    : (current?.warnings ?? [])
-        .filter((w) => w.code === "BANK_OVER_TOTAL" && listed.has(w.payee_user_id))
-        .map((w, i) => ({ key: `${w.code}:${i}`, text: warningText(w) }));
+  const bankWarnings: { key: string; text: string }[] = !split
+    ? []
+    : closed
+      ? rows
+          .filter((r) => !r.noStatement && r.cashCents !== null && r.cashCents < 0)
+          .map((r) => ({ key: r.userId, text: `${r.name}: ${bankOverText(-(r.cashCents as number))}` }))
+      : (current?.warnings ?? [])
+          .filter((w) => w.code === "BANK_OVER_TOTAL" && listed.has(w.payee_user_id))
+          .map((w, i) => ({ key: `${w.code}:${i}`, text: warningText(w) }));
 
   const adjustments = current?.adjustments ?? [];
   const visible = adjustments.filter((a) => showVoided || !a.voided_at);

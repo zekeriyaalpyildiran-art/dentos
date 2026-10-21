@@ -29,7 +29,10 @@
 // other entries (Hekim hakedişi / Personel entries under the payee's counterparty, or typed with its name, with that
 // hakediş month) and writes only the remainder; statements and hk_my_* report Ödenen / Kalan with those payments (read
 // live, OVERPAID warning), open months what was paid / booked so far, and fin_hk_ensure_counterparties prepares every
-// payee's counterparty.
+// payee's counterparty. Visibility (same 0038, owner decision 2026-10-21): the bank / cash split (bank_cents /
+// cash_cents of a payee or a closing statement, BANK_OVER_TOTAL, a bank_portion rule's amount and note) is finance
+// data: only 'finance' / 'finance_readonly' holders get it (hkSplitVisible); the preparer's payloads leave it out and
+// hk_my_* (Hakedişim: total, Ödenen and Kalan only) never send it.
 // Every rate and amount is data entered by the owner (basis points and integer cents); nothing here is hard-coded.
 // Month arguments are sent as 'YYYY-MM-01' dates; month values read back may be 'YYYY-MM' or 'YYYY-MM-DD', so every
 // helper compares them through monthKey().
@@ -743,7 +746,8 @@ export interface HkRuleJson {
   share_bp: number | null;
   /**
    * implant_piece: amount per implant; procedure_piece: amount per piece of the group; fixed_monthly: monthly net
-   * salary; bank_portion: monthly bank amount; minimum_monthly: monthly floor
+   * salary; bank_portion: monthly bank amount (0038: null for a caller without 'finance' / 'finance_readonly', whose
+   * note is '' too); minimum_monthly: monthly floor
    */
   piece_cents: number | null;
   /** 0 unless ciro_share / ortho_lab_first */
@@ -1275,7 +1279,8 @@ export interface HkPayeeJson {
   components: HkComponentJson[];
   /**
    * 0032: the payee's bank_portion amount active in the month (paid by bank as part of total_cents), null without one.
-   * Absent in payloads and statements from before 0032.
+   * Absent in payloads and statements from before 0032, and (0038) for a caller without 'finance' / 'finance_readonly'
+   * (the preparer; cash_cents too).
    */
   bank_cents?: number | null;
   /**
@@ -1308,7 +1313,10 @@ export type HkWarningJson =
       reason?: "no_doctor" | "missing" | "inactive";
     }
   | {
-      /** 0032: the bank part is more than the month's total (the amounts are not changed; the close is not blocked) */
+      /**
+       * 0032: the bank part is more than the month's total (the amounts are not changed; the close is not blocked).
+       * 0038: 'finance' / 'finance_readonly' holders only.
+       */
       code: "BANK_OVER_TOTAL";
       payee_user_id: string;
       payee_name: string;
@@ -1572,9 +1580,11 @@ export interface HkMyMonthRowJson {
   other_paid_cents?: number;
   /** 0038: closed months, see HkStatementJson.overpaid_cents; null while open */
   overpaid_cents?: number | null;
-  /** 0032: the caller's bank part of the month (statement breakdown when closed), null without one */
+  /**
+   * 0032–0037: the caller's bank part of the month and total_cents − bank_cents. 0038 no longer sends them (owner
+   * decision 2026-10-21: Hakedişim shows the total, Ödenen and Kalan only); never shown.
+   */
   bank_cents?: number | null;
-  /** 0032: total_cents − bank_cents, null without a bank part */
   cash_cents?: number | null;
 }
 
@@ -1655,7 +1665,7 @@ export interface HkMyPayeeJson {
   payee_name: string;
   total_cents: number;
   components: HkMyComponentJson[];
-  /** 0032: see HkPayeeJson.bank_cents / cash_cents */
+  /** 0032–0037 only (see HkMyMonthRowJson.bank_cents): 0038 no longer sends the split; never shown */
   bank_cents?: number | null;
   cash_cents?: number | null;
 }
@@ -2236,7 +2246,8 @@ export async function finHkEnsureCounterparties(): Promise<HkEnsureCounterpartyJ
   return Array.isArray(data) ? data : [];
 }
 
-// Self-service (any active app user; only the caller's own figures).
+// Self-service (Hakedişim: doctors and the owner; only the caller's own figures, from 0038 without the bank / cash
+// split). 0038: reception, assistants and admins are refused (42501), as the page is closed to them.
 
 export async function hkMyMonths(): Promise<HkMyMonthsJson> {
   const data = await rpc<HkMyMonthsJson | HkMyMonthRowJson[] | null>("hk_my_months");
@@ -2742,6 +2753,33 @@ export function hkCanPrepare(x: { can_prepare?: boolean | null; can_write: boole
 /** Ledger data (statement entries, paid / remaining, finance entry links) is shown; true before 0031. */
 export function hkLedgerVisible(x: { ledger_visible?: boolean | null }): boolean {
   return x.ledger_visible ?? true;
+}
+
+/**
+ * 0038 (owner decision 2026-10-21): the bank / cash split (Bankadan / Elden of a payee, a totals row or a closing
+ * statement, BANK_OVER_TOTAL, a bank_portion rule's amount) is shown. Finance data, for the ledger's audience
+ * ('finance' / 'finance_readonly', fin_can_read): the server leaves it out for the preparer, and the views check this
+ * as well so a payload of an older server shows the preparer no split either. Hakedişim never shows it.
+ */
+export function hkSplitVisible(x: { ledger_visible?: boolean | null }): boolean {
+  return hkLedgerVisible(x);
+}
+
+/** The month's warnings as shown: without BANK_OVER_TOTAL when the split is not shown (hkSplitVisible). */
+export function hkVisibleWarnings(x: {
+  ledger_visible?: boolean | null;
+  warnings: readonly HkWarningJson[];
+}): HkWarningJson[] {
+  return hkSplitVisible(x) ? [...x.warnings] : x.warnings.filter((w) => w.code !== "BANK_OVER_TOTAL");
+}
+
+/**
+ * A rule's amount and note are not shown (0038): a bank_portion rule for a caller without 'finance' /
+ * 'finance_readonly' (splitVisible false, see hkSplitVisible), or whose amount the server left out. The rule, its
+ * payee and months are still listed.
+ */
+export function ruleAmountHidden(r: Pick<HkRuleJson, "kind" | "piece_cents">, splitVisible = true): boolean {
+  return r.kind === "bank_portion" && (!splitVisible || typeof r.piece_cents !== "number");
 }
 
 /** Ödenen / Kalan of a closing statement (0038), as the views show them. */

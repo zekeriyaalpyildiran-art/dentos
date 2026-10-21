@@ -11,9 +11,6 @@ import {
   METHOD_LABELS,
   MINIMUM_TOPUP_COMPONENT_LABEL,
   SEGMENT_LABELS,
-  SPLIT_LABELS,
-  bankOverText,
-  bankSplitOf,
   componentKey,
   formatBp,
   hkMyMonth,
@@ -23,7 +20,6 @@ import {
   monthKey,
   pickDefaultMonth,
   pieceMacroText,
-  sumPayeeSummaries,
   summarizePayee,
   type HkLabPatientJson,
   type HkLabSummaryRowJson,
@@ -37,16 +33,17 @@ import { formatMoney } from "@/lib/payments";
 
 /**
  * Hakedişim: the signed-in doctor's (or the owner's) own hakediş, read-only. hk_my_months / hk_my_month return only
- * the caller's figures and lines; no finance permission is needed. Doctors and the owner only (layout.tsx). v1.3
- * (0032): the part paid by bank and the rest in cash, when the caller has a bank amount in the month. v1.4 (0032): the
- * month's lab costs taken off the caller's ciro (total, per lab and the cost rows) and the minimum top-up. v2 (0033):
- * the procedure piece fees (pieces by group) and the Macro operation / tooth of imported lines. v2.1 (0034): a piece
- * whose performing doctor was chosen in DentOS (moved to the caller from another Macro doctor) shows "Macro: X". v2.3
- * (0035): the part of a line paid with a Burgan patient loan shows "Finansman (Burgan)" with the bank's fee share, and
- * the month's fee share taken off the caller's ciro has its own tile. v2.4 (0038): Ödenen / Kalan include what was paid
- * for the month on the caller's other entries (the month close nets them; Kalan may be negative: paid above the
- * total), and an open month shows "Bu ay ödenen". A cancelled hakediş entry is explained on the Kalan tile (covered by
- * other entries, or cancelled by a person).
+ * the caller's figures and lines; no finance permission is needed. Doctors and the owner only (layout.tsx; from 0038
+ * hk_my_* refuse reception, assistants and admins too). v1.4 (0032): the month's lab costs taken off the caller's ciro
+ * (total, per lab and the cost rows) and the minimum top-up. v2 (0033): the procedure piece fees (pieces by group) and
+ * the Macro operation / tooth of imported lines. v2.1 (0034): a piece whose performing doctor was chosen in DentOS
+ * (moved to the caller from another Macro doctor) shows "Macro: X". v2.3 (0035): the part of a line paid with a Burgan
+ * patient loan shows "Finansman (Burgan)" with the bank's fee share, and the month's fee share taken off the caller's
+ * ciro has its own tile. v2.4 (0038): Ödenen / Kalan include what was paid for the month on the caller's other entries
+ * (the month close nets them; Kalan may be negative: paid above the total), and an open month shows "Bu ay ödenen". A
+ * cancelled hakediş entry is explained on the Kalan tile (covered by other entries, or cancelled by a person). The
+ * bank / cash split of v1.3 (0032) is gone (owner decision 2026-10-21): only the total, Ödenen and Kalan are shown (no
+ * Bankadan / Elden columns or tiles, no bank-over warning), and from 0038 the server no longer sends it.
  */
 export default function HakedisimPage() {
   return (
@@ -126,8 +123,6 @@ function MyHakedis() {
   }
 
   const current = detail && detail.has_rules && month && monthKey(detail.month) === month ? detail : null;
-  // 0032: Bankadan / Elden columns when any listed month has a bank part.
-  const showBank = months.months.some((m) => typeof m.bank_cents === "number");
 
   return (
     <div className="space-y-6">
@@ -183,12 +178,6 @@ function MyHakedis() {
                 <th className="py-2 pr-3 font-semibold">Ay</th>
                 <th className="py-2 pr-3 font-semibold">Durum</th>
                 <th className="py-2 pr-3 font-semibold text-right">Hakediş</th>
-                {showBank && (
-                  <>
-                    <th className="py-2 pr-3 font-semibold text-right">{SPLIT_LABELS.bank}</th>
-                    <th className="py-2 pr-3 font-semibold text-right">{SPLIT_LABELS.cash}</th>
-                  </>
-                )}
                 <th className="py-2 pr-3 font-semibold text-right">Ödenen</th>
                 <th className="py-2 font-semibold text-right">Kalan</th>
               </tr>
@@ -197,7 +186,6 @@ function MyHakedis() {
               {months.months.map((m) => {
                 const key = monthKey(m.month);
                 const selected = key === month;
-                const split = bankSplitOf(m);
                 return (
                   <tr key={m.month} className={`border-b last:border-b-0 ${selected ? "bg-blue-50" : ""}`}>
                     <td className="py-2 pr-3">
@@ -218,20 +206,6 @@ function MyHakedis() {
                       )}
                     </td>
                     <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap">{formatTL(m.total_cents)}</td>
-                    {showBank && (
-                      <>
-                        <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap">
-                          {split ? formatTL(split.bank_cents) : "—"}
-                        </td>
-                        <td
-                          className={`py-2 pr-3 text-right tabular-nums whitespace-nowrap ${
-                            split && split.cash_cents < 0 ? "text-red-600" : ""
-                          }`}
-                        >
-                          {split ? formatTL(split.cash_cents) : "—"}
-                        </td>
-                      </>
-                    )}
                     <td className="py-2 pr-3 text-right tabular-nums whitespace-nowrap">{m.paid_cents ? formatTL(m.paid_cents) : "—"}</td>
                     <td
                       className={`py-2 text-right tabular-nums whitespace-nowrap ${
@@ -311,9 +285,6 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
       ? "Hakediş ayrı kayıtlarla karşılandı"
       : "Hakediş kaydı iptal edilmiş"
     : undefined;
-  // 0032: the caller's bank part of the month and the rest in cash (part of the total, never on top of it).
-  const sums = sumPayeeSummaries(data.payees.map(summarizePayee));
-  const split = bankSplitOf({ total_cents: total, bank_cents: sums.bank_cents, cash_cents: sums.cash_cents });
 
   // The doctor's ciro: gross collections without the implant part and the ortho lab part, so Ciro − Banka kesintisi
   // (0035, Burgan) − Kesintiler − Lab (the month's lab costs of the ciro_share rules, 0032) = Matrah on the tiles below.
@@ -352,7 +323,9 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
         )}
       </div>
 
-      {components.length === 0 && !split ? (
+      {/* No payee object: no rule this month. One without components (only a bank amount, whose split is not shown)
+          still gets the total and the Ödenen / Kalan tiles. */}
+      {data.payees.length === 0 ? (
         <Card>
           <p className="text-gray-700">Bu ay için geçerli hakediş kuralınız yok.</p>
         </Card>
@@ -412,17 +385,6 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
             />
           )}
           <SummaryTile label={closed ? "Toplam hakediş" : "Toplam (tahmini)"} cents={total} strong />
-          {split && (
-            <>
-              <SummaryTile label={SPLIT_LABELS.bank} cents={split.bank_cents} caption="Bankadan ödenen sabit tutar" />
-              <SummaryTile
-                label={SPLIT_LABELS.cash}
-                cents={split.cash_cents}
-                caption="Toplamdan kalan"
-                tone={split.cash_cents < 0 ? "amber" : undefined}
-              />
-            </>
-          )}
           {!closed && paidSoFar !== null && (
             <SummaryTile
               label="Bu ay ödenen"
@@ -467,10 +429,6 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
               <SummaryTile label="Kalan" cents={total} caption="Ödeme kaydı henüz açılmadı" tone={total > 0 ? "amber" : undefined} />
             ))}
         </div>
-      )}
-
-      {split && split.over_cents > 0 && (
-        <div className="p-4 rounded bg-amber-50 text-amber-900 text-sm">{bankOverText(split.over_cents)}</div>
       )}
 
       {data.is_estimate && components.length > 0 && (

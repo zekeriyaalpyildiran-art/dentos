@@ -2,11 +2,13 @@
 -- paid during the month, the bank salary imported early next month, ...) and writes only the remainder as the open
 -- hakediş / payroll entry, so a payment booked under the person and the hakediş month is no longer counted twice. The
 -- Personel bucket carries the salary month like Hekim hakedişi, every payee can get a counterparty (cari) linked to
--- them in one step, and import rules get a month suggestion. Safe to re-run.
+-- them in one step, and import rules get a month suggestion. The bank / cash split of a payee's amount is shown only to
+-- finance holders; Hakedişim is closed to reception, assistants and admins. Safe to re-run.
 --
--- Contract: spec_hakedis_netting (owner decision 2026-10-21) on top of 0036_doctor_scope.sql (0001 – 0036 are applied
--- and live; none is edited). The latest definition of every function replaced here (0020's, 0022's, 0030's, 0032's or
--- 0035's) is copied with only the changes below and keeps its signature, except fin_save_classification_rule (one
+-- Contract: spec_hakedis_netting + its visibility addendum (owner decisions 2026-10-21) on top of 0036_doctor_scope.sql
+-- (0001 – 0036 are applied and live; none is edited). The latest definition of every function replaced here (0020's,
+-- 0022's, 0030's, 0032's, 0034's or 0035's) is copied with only the changes below and keeps its signature, except
+-- fin_save_classification_rule (one
 -- trailing parameter; the 0022 signature is dropped first, as 0034 did for fin_hk_save_rule, since
 -- fin__harden_privileges refuses overloads). Independent of 0037 (fin_import_rows, fin_import_check and the debt
 -- candidates are not touched here).
@@ -81,6 +83,22 @@
 --    total without a keyed entry now means "paid by other entries"). hk_my_* read only the caller's own statement and
 --    entries; a statement whose counterparty was linked to another person since shows the figures of its last sync
 --    (fin__hk_statement_paid), never that person's entries.
+--  * Visibility (owner decision 2026-10-21; the computation is unchanged). The bank / cash split (bank_cents /
+--    cash_cents of a payee or a frozen statement breakdown, BANK_OVER_TOTAL, a bank_portion rule's amount and note)
+--    is finance data:
+--      'finance' / 'finance_readonly' holders: unchanged everywhere (fin_hk_month, fin_hk_close_month,
+--                   fin_hk_reopen_month, fin_hk_reference, fin_hk_save_rule).
+--      preparer ('hakedis_prepare' without them): fin__hk_strip_ledger also removes payees[].bank_cents / cash_cents,
+--                   statements[].breakdown.bank_cents / cash_cents and the BANK_OVER_TOTAL warnings; fin__hk_rule_json
+--                   (fin_hk_reference's rules) gives a bank_portion rule piece_cents NULL and note '' (the rule, its
+--                   payee and months stay). Lines, pieces, marks, lab costs, adjustments, totals, salaries
+--                   (fixed_monthly / minimum_monthly amounts) are unchanged.
+--      payee's own view: hk_my_months drops months[].bank_cents / cash_cents; hk_my_month's payees[]
+--                   (fin__hk_self_payee) drop bank_cents / cash_cents; total, Ödenen and Kalan stay.
+--    hk_my_months / hk_my_month refuse the roles the web closes Hakedişim to (SECTIONS_CLOSED_FOR['/hakedisim']:
+--    reception, assistant, admin) whatever their permissions, right after the session check (42501); doctors and the
+--    owner keep their own data. Nothing else (RLS, grants, tables) changes: the hakediş tables stay readable by
+--    finance holders only (0030 / 0031 / 0033 policies).
 --  * Limits: a counterparty created or renamed after a close changes which free-text entries count for it; the
 --    statement follows at the next sync of that payee and month (any change of one of its entries) or at a re-close.
 --    A counterparty relinked to another person leaves the earlier payee's statement at the figures of its last sync;
@@ -89,23 +107,29 @@
 -- Error contract (as 0020): RAISE '<Turkish text>' USING ERRCODE = 42501 (403), PT404 (404), PT409 (409) or the
 -- default P0001 (400). New texts (P0001): 'Hakediş / maaş ayı yalnızca hekim hakedişi ve personel kayıtlarında
 -- kullanılabilir.' (replaces 'Hakediş ayı yalnızca hekim hakedişi kayıtlarında kullanılabilir.'), 'Hakediş ayı önerisi
--- geçersiz.', 'Hakediş ayı önerisi yalnızca "hakediş ayı gerekli" kurallarında seçilebilir.'. Close: the refusals
--- "yeni hakediş / maaş tutarı (...) bundan az olamaz" and "... kaydı zaten var (...), yeni hesaplanan tutar ise 0" are
--- gone; every other text is unchanged.
+-- geçersiz.', 'Hakediş ayı önerisi yalnızca "hakediş ayı gerekli" kurallarında seçilebilir.'. New text (42501):
+-- 'Hakedişim yalnızca hekimlere ve klinik sahibine açıktır.' (hk_my_months / hk_my_month for reception, assistants and
+-- admins). Close: the refusals "yeni hakediş / maaş tutarı (...) bundan az olamaz" and "... kaydı zaten var (...), yeni
+-- hesaplanan tutar ise 0" are gone; every other text is unchanged.
 --
 -- JSON shapes (changes; amounts in kuruş):
 --   RuleJson            + {entitlement_month_default: 'none' | 'same' | 'previous' | 'from_text'}.
+--   HkRuleJson          (fin__hk_rule_json: fin_hk_reference rules[], fin_hk_save_rule record) kind 'bank_portion':
+--                       piece_cents null and note '' for a caller without 'finance' / 'finance_readonly'.
 --   fin_save_classification_rule(..., p_is_active, p_entitlement_month_default text DEFAULT 'none').
 --   StatementJson       + {other_booked_cents, other_paid_cents, other_count, paid_cents, remaining_cents,
 --                       overpaid_cents} (live; absent for a caller without ledger access; other_count null when the
 --                       counterparty is linked to another person since and the stored figures are shown).
 --   fin_hk_month        closed: warnings[] + {code: 'OVERPAID', payee_user_id, payee_name, overpaid_cents} (after the
 --                       computed warnings, by payee name; finance readers only). open: payees[] + {paid_so_far,
---                       booked_so_far} (finance readers only). Preparer: statements[].fin_entry_id null.
---   hk_my_months()      months[] + {other_paid_cents, overpaid_cents (null when open)}; paid_cents = Ödenen;
---                       remaining_cents = total − Ödenen when closed (may be negative), null when open.
+--                       booked_so_far} (finance readers only). Preparer: statements[].fin_entry_id null; − payees[]
+--                       bank_cents / cash_cents, − statements[].breakdown.bank_cents / cash_cents, − BANK_OVER_TOTAL.
+--   hk_my_months()      months[] + {other_paid_cents, overpaid_cents (null when open)} − {bank_cents, cash_cents};
+--                       paid_cents = Ödenen; remaining_cents = total − Ödenen when closed (may be negative), null when
+--                       open. Refused (42501) for reception, assistants and admins.
 --   hk_my_month(p)      statement (closed) + {paid_cents, remaining_cents, other_booked_cents, other_paid_cents,
---                       overpaid_cents}; + paid_so_far (open: what was paid for the month so far; null when closed).
+--                       overpaid_cents}; + paid_so_far (open: what was paid for the month so far; null when closed);
+--                       payees[] − {bank_cents, cash_cents}. Refused (42501) for reception, assistants and admins.
 --   fin_hk_ensure_counterparties() → [{payee_user_id, payee_name, kind: 'physician' | 'staff' | null, counterparty_id,
 --                       counterparty_name, is_active, status: 'existing' | 'linked' | 'created' | 'no_doctor' |
 --                       'error', message (no_doctor / error: the Turkish refusal, else null)}] by payee name.
@@ -119,7 +143,7 @@
 --      build keeps working, its rule saves write 'none').
 --   3. Hakediş → "Hakediş carilerini hazırla" (fin_hk_ensure_counterparties) before the import rules that name the
 --      payees' caris are set up. No month has been closed yet, so no statement needs a migration.
---   Re-running 0020, 0022, 0030, 0032 or 0035 later puts back older bodies: re-run this file afterwards.
+--   Re-running 0020, 0022, 0030, 0032, 0034 or 0035 later puts back older bodies: re-run this file afterwards.
 --   Rollback after COMMIT, in this order (SQL editor):
 --   (a) Data: UPDATE public.fin_classification_rules SET entitlement_month_default = 'none' (the 0022 rule save would
 --       otherwise hit the CHECK when it clears requires_entitlement_month); personnel rules with
@@ -131,8 +155,9 @@
 --   (b) DROP TRIGGER fin_hk_net_sync ON public.fin_entries; DROP TRIGGER fin_hk_net_sync_payment ON
 --       public.fin_payments; then re-run the 0020 definitions of fin__trg_entry_guard and fin__entry_input, the 0022
 --       ones of fin__trg_rule_guard and fin__rule_json, the 0030 ones of fin__trg_hk_statement_guard and
---       fin__hk_statement_json, the 0032 ones of fin_hk_close_month and hk_my_months and the 0035 ones of
---       fin__hk_strip_ledger, fin__hk_month_json and hk_my_month; DROP FUNCTION
+--       fin__hk_statement_json, the 0032 ones of fin_hk_close_month, hk_my_months and fin__hk_self_payee, the 0034 one
+--       of fin__hk_rule_json and the 0035 ones of fin__hk_strip_ledger, fin__hk_month_json and hk_my_month (this puts
+--       the bank / cash split back for the preparer and the payees' own views); DROP FUNCTION
 --       public.fin_save_classification_rule(uuid, integer, integer, text, text, text, uuid, text, uuid, boolean,
 --       boolean, text, boolean, text) and re-run the 0022 definition; then DROP FUNCTION
 --       public.fin_hk_ensure_counterparties(), public.fin__trg_hk_net_sync(), public.fin__trg_hk_net_sync_payment(),
@@ -190,6 +215,8 @@ BEGIN
     'public.fin__hk_statement_json(uuid,uuid)',
     'public.fin__hk_strip_ledger(jsonb)',
     'public.fin__hk_month_json(uuid,date,date)',
+    'public.fin__hk_rule_json(uuid,uuid)',
+    'public.fin__hk_self_payee(jsonb)',
     'public.fin_hk_close_month(date,integer,boolean)',
     'public.fin_hk_reopen_month(date,integer)',
     'public.hk_my_months()',
@@ -208,8 +235,8 @@ BEGIN
     RAISE EXCEPTION 'fin_save_classification_rule beklenen imzada değil (0022 uygulanmalı).';
   END IF;
 
-  -- The bodies replaced below are the latest ones (0020 / 0022 / 0030 / 0032 / 0035), or this file's, which keep
-  -- these texts.
+  -- The bodies replaced below are the latest ones (0020 / 0022 / 0030 / 0032 / 0034 / 0035), or this file's, which
+  -- keep these texts (hk_my_months below).
   SELECT string_agg(e.fn, ', ')
     INTO v_missing
   FROM (VALUES
@@ -223,7 +250,8 @@ BEGIN
     ('fin__hk_strip_ledger', '%FINANCING_UNMATCHED%'),
     ('fin__hk_month_json', '%financing_cents%'),
     ('fin_hk_close_month', '%minimum_topup%'),
-    ('hk_my_months', '%cash_cents%'),
+    ('fin__hk_rule_json', '%unmarked_default%'),
+    ('fin__hk_self_payee', '%clinic_ciro_share%'),
     ('hk_my_month', '%financing_cents%')
   ) AS e(fn, pat)
   WHERE NOT EXISTS (
@@ -232,6 +260,13 @@ BEGIN
   );
   IF v_missing IS NOT NULL THEN
     RAISE EXCEPTION 'Şu fonksiyonlar beklenen sürümde değil (0035 / 0036 uygulanmalı): %', v_missing;
+  END IF;
+  -- hk_my_months: the 0032 body (bank / cash split) or this file's (no split since the owner decision of 2026-10-21;
+  -- Ödenen with the other entries).
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                 WHERE n.nspname = 'public' AND p.proname = 'hk_my_months'
+                   AND (p.prosrc LIKE '%cash_cents%' OR p.prosrc LIKE '%other_paid_cents%')) THEN
+    RAISE EXCEPTION 'Şu fonksiyonlar beklenen sürümde değil (0035 / 0036 uygulanmalı): hk_my_months';
   END IF;
 
   SELECT string_agg(format('%s.%s', e.tbl, e.col), ', ')
@@ -1541,8 +1576,57 @@ $$;
 
 -- ---------------------------------------------------------------------------
 -- 6. Views (same signatures): Ödenen / Kalan with the payee's other entries, read live; payments stay ledger data
---    (fin__hk_strip_ledger); hk_my_* stay the caller's own.
+--    (fin__hk_strip_ledger); hk_my_* stay the caller's own. Visibility (owner decision 2026-10-21): the bank / cash
+--    split (bank_cents / cash_cents, BANK_OVER_TOTAL, a bank_portion rule's amount and note) reaches only
+--    'finance' / 'finance_readonly' holders; the payee's own view (hk_my_*) shows total, Ödenen and Kalan only;
+--    hk_my_* refuse reception, assistants and admins.
 -- ---------------------------------------------------------------------------
+
+-- RuleJson of fin_hk_reference and fin_hk_save_rule (0034 body, same signature) + 0038: no bank_portion amount or
+-- note for a caller without 'finance' / 'finance_readonly'.
+CREATE OR REPLACE FUNCTION public.fin__hk_rule_json(p_clinic uuid, p_id uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SET search_path = public
+AS $$
+  SELECT jsonb_build_object(
+           'id', r.id,
+           'version', r.version,
+           'payee_user_id', r.payee_user_id,
+           'payee_name', pu.full_name,
+           'payee_is_active', coalesce(pu.is_active, false),
+           'doctor_id', r.doctor_id,
+           'doctor_name', public.fin__hk_doctor_name(r.doctor_id),
+           'kind', r.kind,
+           'segment', r.segment,
+           'share_bp', r.share_bp,
+           -- 0038 (owner decision 2026-10-21): a bank_portion rule's amount and note are the bank / cash split, finance
+           -- data: NULL / '' for a caller without 'finance' / 'finance_readonly' (the preparer keeps the rule, its
+           -- payee and months). Every other kind as before.
+           'piece_cents', CASE WHEN r.kind = 'bank_portion' AND NOT coalesce(public.fin_can_read(), false) THEN NULL
+                               ELSE r.piece_cents END,
+           'deduct_cash_bp', r.deduct_cash_bp,
+           'deduct_card_bp', r.deduct_card_bp,
+           'deduct_transfer_bp', r.deduct_transfer_bp,
+           'deduct_financing_bp', r.deduct_financing_bp,
+           'deduct_unpaid_bp', r.deduct_unpaid_bp,
+           'unmarked_default', r.unmarked_default,
+           'proc_group_id', r.proc_group_id,
+           'proc_group_name', g.name,
+           'from_month', r.from_month,
+           'to_month', r.to_month,
+           'note', CASE WHEN r.kind = 'bank_portion' AND NOT coalesce(public.fin_can_read(), false) THEN ''
+                        ELSE r.note END,
+           'created_at', r.created_at,
+           'created_by_name', public.fin__user_name(r.created_by),
+           'updated_at', r.updated_at,
+           'updated_by_name', public.fin__user_name(r.updated_by))
+  FROM public.fin_hk_rules r
+  LEFT JOIN public.users pu ON pu.id = r.payee_user_id
+  LEFT JOIN public.fin_hk_proc_groups g ON g.clinic_id = r.clinic_id AND g.id = r.proc_group_id
+  WHERE r.clinic_id = p_clinic AND r.id = p_id
+$$;
 
 -- StatementJson (0030 body, same signature) + the live payment figures (0038).
 CREATE OR REPLACE FUNCTION public.fin__hk_statement_json(p_clinic uuid, p_id uuid)
@@ -1589,7 +1673,8 @@ AS $$
 $$;
 
 -- The payload of a caller without ledger access (0035 body, same signature) + 0038: no payment figure (statement
--- keys, fin_entry_id, payees[].paid_so_far, booked_so_far, OVERPAID).
+-- keys, fin_entry_id, payees[].paid_so_far, booked_so_far, OVERPAID) and no bank / cash split
+-- (payees[] and statements[].breakdown bank_cents / cash_cents, BANK_OVER_TOTAL).
 CREATE OR REPLACE FUNCTION public.fin__hk_strip_ledger(p jsonb)
 RETURNS jsonb
 LANGUAGE sql
@@ -1598,8 +1683,10 @@ SET search_path = public
 AS $$
   SELECT p || jsonb_build_object(
     'payees', coalesce((
-      -- 0038: what was paid / booked so far in an open month is ledger data.
-      SELECT jsonb_agg(x.e - 'counterparty_id' - 'paid_so_far' - 'booked_so_far' ORDER BY x.o)
+      -- 0038: what was paid / booked so far in an open month is ledger data; the bank / cash split (bank_cents /
+      -- cash_cents) is finance data (owner decision 2026-10-21: the preparer sees the totals, not the split).
+      SELECT jsonb_agg(x.e - ARRAY['counterparty_id', 'paid_so_far', 'booked_so_far', 'bank_cents', 'cash_cents']
+                       ORDER BY x.o)
       FROM jsonb_array_elements(
              CASE WHEN jsonb_typeof(p -> 'payees') = 'array' THEN p -> 'payees' ELSE '[]'::jsonb END)
              WITH ORDINALITY AS x(e, o)), '[]'::jsonb),
@@ -1619,8 +1706,10 @@ AS $$
       FROM jsonb_array_elements(
              CASE WHEN jsonb_typeof(p -> 'warnings') = 'array' THEN p -> 'warnings' ELSE '[]'::jsonb END)
              WITH ORDINALITY AS w(e, o)
+      -- 0038: OVERPAID is ledger data; BANK_OVER_TOTAL carries a payee's bank amount (finance data).
       WHERE (w.e ->> 'code') IS DISTINCT FROM 'NO_COUNTERPARTY'
-        AND (w.e ->> 'code') IS DISTINCT FROM 'OVERPAID'), '[]'::jsonb),
+        AND (w.e ->> 'code') IS DISTINCT FROM 'OVERPAID'
+        AND (w.e ->> 'code') IS DISTINCT FROM 'BANK_OVER_TOTAL'), '[]'::jsonb),
     'statements', coalesce((
       -- 0038: and so are a statement's payment figures, and its keyed entry's id: since the netting a positive total
       -- without one means "paid by other entries", and the id appears when the sync creates the entry later.
@@ -1630,7 +1719,9 @@ AS $$
                          'entry', NULL::jsonb,
                          'fin_entry_id', NULL::jsonb,
                          'breakdown', CASE WHEN jsonb_typeof(s.e -> 'breakdown') = 'object'
-                                           THEN (s.e -> 'breakdown') - 'counterparty_id'
+                                           -- 0038: and the frozen bank / cash split (finance data).
+                                           THEN (s.e -> 'breakdown') - ARRAY['counterparty_id', 'bank_cents',
+                                                                              'cash_cents']
                                            ELSE s.e -> 'breakdown' END)
                        ORDER BY s.o)
       FROM jsonb_array_elements(
@@ -1781,7 +1872,8 @@ END;
 $$;
 
 -- The caller's months (0032 body, same signature) + 0038: paid_cents = Ödenen with the caller's other entries,
--- remaining_cents = Kalan (closed months), other_paid_cents, overpaid_cents.
+-- remaining_cents = Kalan (closed months), other_paid_cents, overpaid_cents; no bank_cents / cash_cents (owner
+-- decision 2026-10-21); reception, assistants and admins refused.
 CREATE OR REPLACE FUNCTION public.hk_my_months()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -1806,12 +1898,16 @@ DECLARE
   v_overpaid bigint;
   v_paid bigint;
   v_remaining bigint;
-  v_bank bigint;
-  v_cash bigint;
   v_months jsonb := '[]'::jsonb;
 BEGIN
   IF v_clinic IS NULL OR v_user IS NULL THEN
     RAISE EXCEPTION 'Oturum bulunamadı. Lütfen yeniden giriş yapın.' USING ERRCODE = '42501';
+  END IF;
+  -- 0038: Hakedişim is for the payees (doctors and the owner), as the web menu (SECTIONS_CLOSED_FOR['/hakedisim']):
+  -- reception, assistants and admins are refused whatever permissions they hold (finance holders use the finance
+  -- views).
+  IF coalesce(public.current_app_role() IN ('reception', 'assistant', 'admin'), false) THEN
+    RAISE EXCEPTION 'Hakedişim yalnızca hekimlere ve klinik sahibine açıktır.' USING ERRCODE = '42501';
   END IF;
 
   SELECT min(r.from_month) INTO v_first
@@ -1833,16 +1929,12 @@ BEGIN
     v_overpaid := NULL;
     v_paid := 0;
     v_remaining := NULL;
-    v_bank := NULL;
-    v_cash := NULL;
 
     SELECT m.status INTO v_status FROM public.fin_hk_months m WHERE m.clinic_id = v_clinic AND m.month = v_m;
     v_status := coalesce(v_status, 'open');
 
     IF v_status = 'closed' THEN
-      SELECT s.id, s.total_cents, s.fin_entry_id, (s.breakdown ->> 'bank_cents')::bigint,
-             (s.breakdown ->> 'cash_cents')::bigint
-        INTO v_stmt, v_total, v_entry, v_bank, v_cash
+      SELECT s.id, s.total_cents, s.fin_entry_id INTO v_stmt, v_total, v_entry
       FROM public.fin_hk_statements s
       WHERE s.clinic_id = v_clinic AND s.month = v_m AND s.payee_user_id = v_user AND s.superseded_at IS NULL;
     ELSE
@@ -1854,8 +1946,7 @@ BEGIN
         SELECT 1 FROM public.fin_hk_adjustments a
         WHERE a.clinic_id = v_clinic AND a.payee_user_id = v_user AND a.month = v_m AND a.voided_at IS NULL
       ) THEN
-        SELECT (p ->> 'total_cents')::bigint, (p ->> 'bank_cents')::bigint, (p ->> 'cash_cents')::bigint
-          INTO v_total, v_bank, v_cash
+        SELECT (p ->> 'total_cents')::bigint INTO v_total
         FROM jsonb_array_elements(public.fin__hk_compute(v_clinic, v_m) -> 'payees') p
         WHERE (p ->> 'payee_user_id') = v_user::text;
       END IF;
@@ -1881,6 +1972,8 @@ BEGIN
       v_overpaid := greatest(0, v_entry_paid + v_other_booked - v_total);
     END IF;
 
+    -- 0038 (owner decision 2026-10-21): total, Ödenen and Kalan only; the bank / cash split stays in the finance
+    -- views (the total is computed as before).
     v_months := v_months || jsonb_build_array(jsonb_build_object(
       'month', v_m,
       'status', v_status,
@@ -1889,17 +1982,45 @@ BEGIN
       'paid_cents', v_paid,
       'remaining_cents', v_remaining,
       'other_paid_cents', v_other_paid,
-      'overpaid_cents', v_overpaid,
-      'bank_cents', v_bank,
-      'cash_cents', CASE WHEN v_bank IS NOT NULL THEN coalesce(v_cash, v_total - v_bank) END));
+      'overpaid_cents', v_overpaid));
   END LOOP;
 
   RETURN jsonb_build_object('has_rules', true, 'today', v_today, 'current_month', v_current, 'months', v_months);
 END;
 $$;
 
+-- The caller's own payee object of hk_my_month (0032 body, same signature) + 0038: without bank_cents / cash_cents.
+CREATE OR REPLACE FUNCTION public.fin__hk_self_payee(p_payee jsonb)
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+SET search_path = public
+AS $$
+  SELECT jsonb_build_object(
+           'payee_user_id', p_payee -> 'payee_user_id',
+           'payee_name', p_payee -> 'payee_name',
+           'total_cents', p_payee -> 'total_cents',
+           -- 0038 (owner decision 2026-10-21): no bank / cash split in the payee's own view; it stays in the finance
+           -- views.
+           'components', coalesce((
+             SELECT jsonb_agg(
+                      CASE WHEN (o.c ->> 'kind') = 'clinic_ciro_share'
+                           THEN jsonb_build_object(
+                                  'rule_id', o.c -> 'rule_id',
+                                  'kind', o.c -> 'kind',
+                                  'share_bp', o.c -> 'share_bp',
+                                  'base_cents', o.c -> 'base_cents',
+                                  'amount_cents', o.c -> 'amount_cents')
+                           ELSE o.c END
+                      ORDER BY o.ord)
+             FROM jsonb_array_elements(
+                    CASE WHEN jsonb_typeof(p_payee -> 'components') = 'array' THEN p_payee -> 'components'
+                         ELSE '[]'::jsonb END) WITH ORDINALITY AS o(c, ord)), '[]'::jsonb))
+$$;
+
 -- The caller's own month (0035 body, same signature) + 0038: statement.{paid_cents, remaining_cents,
--- other_booked_cents, other_paid_cents, overpaid_cents} (closed), paid_so_far (open).
+-- other_booked_cents, other_paid_cents, overpaid_cents} (closed), paid_so_far (open); payees[] without the
+-- bank / cash split (fin__hk_self_payee); reception, assistants and admins refused.
 CREATE OR REPLACE FUNCTION public.hk_my_month(p_month date)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -1934,6 +2055,12 @@ DECLARE
 BEGIN
   IF v_clinic IS NULL OR v_user IS NULL THEN
     RAISE EXCEPTION 'Oturum bulunamadı. Lütfen yeniden giriş yapın.' USING ERRCODE = '42501';
+  END IF;
+  -- 0038: Hakedişim is for the payees (doctors and the owner), as the web menu (SECTIONS_CLOSED_FOR['/hakedisim']):
+  -- reception, assistants and admins are refused whatever permissions they hold (finance holders use the finance
+  -- views).
+  IF coalesce(public.current_app_role() IN ('reception', 'assistant', 'admin'), false) THEN
+    RAISE EXCEPTION 'Hakedişim yalnızca hekimlere ve klinik sahibine açıktır.' USING ERRCODE = '42501';
   END IF;
   IF NOT EXISTS (SELECT 1 FROM public.fin_hk_rules r WHERE r.clinic_id = v_clinic AND r.payee_user_id = v_user) THEN
     RETURN jsonb_build_object('has_rules', false);
@@ -2189,6 +2316,8 @@ BEGIN
     'public.fin__hk_statement_json(uuid,uuid)',
     'public.fin__hk_strip_ledger(jsonb)',
     'public.fin__hk_month_json(uuid,date,date)',
+    'public.fin__hk_rule_json(uuid,uuid)',
+    'public.fin__hk_self_payee(jsonb)',
     'public.hk_my_months()',
     'public.hk_my_month(date)']) AS f(sig)
   WHERE to_regprocedure(f.sig) IS NULL;
@@ -2200,8 +2329,8 @@ BEGIN
                              'fin__hk_payee_paid', 'fin__hk_ensure_counterparty', 'fin__hk_net_entry',
                              'fin__trg_hk_statement_guard', 'fin_hk_close_month', 'fin__hk_net_sync',
                              'fin__trg_hk_net_sync', 'fin__trg_hk_net_sync_payment', 'fin_hk_ensure_counterparties',
-                             'fin__hk_statement_json', 'fin__hk_strip_ledger', 'fin__hk_month_json', 'hk_my_months',
-                             'hk_my_month')) <> 21 THEN
+                             'fin__hk_statement_json', 'fin__hk_strip_ledger', 'fin__hk_month_json',
+                             'fin__hk_rule_json', 'fin__hk_self_payee', 'hk_my_months', 'hk_my_month')) <> 23 THEN
     RAISE EXCEPTION 'Hakediş v2.4 fonksiyon imzaları beklenen gibi değil: %', coalesce(v_bad, 'aşırı yükleme var');
   END IF;
 
@@ -2213,7 +2342,8 @@ BEGIN
   WHERE n.nspname = 'public'
     AND p.proname IN ('fin__entry_input', 'fin__rule_json', 'fin__hk_other_sums', 'fin__hk_statement_paid',
                       'fin__hk_payee_paid', 'fin__hk_ensure_counterparty', 'fin__hk_net_entry', 'fin__hk_net_sync',
-                      'fin__hk_statement_json', 'fin__hk_strip_ledger', 'fin__hk_month_json')
+                      'fin__hk_statement_json', 'fin__hk_strip_ledger', 'fin__hk_month_json', 'fin__hk_rule_json',
+                      'fin__hk_self_payee')
     AND (p.prosecdef
          OR has_function_privilege('anon', p.oid, 'EXECUTE')
          OR has_function_privilege('authenticated', p.oid, 'EXECUTE'));
@@ -2304,21 +2434,26 @@ BEGIN
   END IF;
 
   -- 4. A caller without ledger access: no payment figure of a statement, no keyed entry id, no paid_so_far /
-  --    booked_so_far, no OVERPAID; everything else as 0035.
+  --    booked_so_far, no OVERPAID; and (owner decision 2026-10-21) no bank / cash split: payees' and frozen
+  --    breakdowns' bank_cents / cash_cents and BANK_OVER_TOTAL left out; everything else as 0035.
   v_j := public.fin__hk_strip_ledger(jsonb_build_object(
            'payees', jsonb_build_array(jsonb_build_object('payee_user_id', 1, 'total_cents', 5, 'counterparty_id', 2,
-                                                          'paid_so_far', 3, 'booked_so_far', 4)),
+                                                          'paid_so_far', 3, 'booked_so_far', 4, 'bank_cents', 6,
+                                                          'cash_cents', -1)),
            'warnings', jsonb_build_array(
              jsonb_build_object('code', 'OVERPAID', 'payee_user_id', 1, 'payee_name', 'X', 'overpaid_cents', 4),
-             jsonb_build_object('code', 'BANK_OVER_TOTAL', 'payee_user_id', 1)),
+             jsonb_build_object('code', 'BANK_OVER_TOTAL', 'payee_user_id', 1, 'payee_name', 'X', 'bank_cents', 6,
+                                'total_cents', 5),
+             jsonb_build_object('code', 'UNRULED_LAB', 'doctor_id', 3, 'lab_cents', 9)),
            'statements', jsonb_build_array(jsonb_build_object(
              'id', 7, 'total_cents', 5, 'fin_entry_id', 8, 'entry', jsonb_build_object('paid_cents', 1),
-             'breakdown', jsonb_build_object('counterparty_id', 2, 'total_cents', 5),
+             'breakdown', jsonb_build_object('counterparty_id', 2, 'total_cents', 5, 'bank_cents', 6,
+                                             'cash_cents', -1),
              'other_booked_cents', 1, 'other_paid_cents', 1, 'other_count', 1, 'paid_cents', 1,
              'remaining_cents', 4, 'overpaid_cents', 0))));
   IF v_j IS DISTINCT FROM jsonb_build_object(
        'payees', jsonb_build_array(jsonb_build_object('payee_user_id', 1, 'total_cents', 5)),
-       'warnings', jsonb_build_array(jsonb_build_object('code', 'BANK_OVER_TOTAL', 'payee_user_id', 1)),
+       'warnings', jsonb_build_array(jsonb_build_object('code', 'UNRULED_LAB', 'doctor_id', 3, 'lab_cents', 9)),
        'statements', jsonb_build_array(jsonb_build_object(
          'id', 7, 'total_cents', 5, 'fin_entry_id', NULL, 'entry', NULL,
          'breakdown', jsonb_build_object('total_cents', 5)))) THEN
@@ -2332,6 +2467,18 @@ BEGIN
   FROM public.fin__hk_other_sums(gen_random_uuid(), gen_random_uuid(), DATE '2024-01-15', NULL) o;
   IF v_bad IS DISTINCT FROM '1:0:0:0' THEN
     v_fail := array_append(v_fail, 'boş netleştirme toplamı: ' || coalesce(v_bad, '-'));
+  END IF;
+
+  -- 6. The payee's own payee object (hk_my_month): total and components, no bank / cash split (owner decision
+  --    2026-10-21).
+  v_j := public.fin__hk_self_payee(jsonb_build_object(
+           'payee_user_id', 1, 'payee_name', 'X', 'doctor_id', 3, 'counterparty_id', 2, 'total_cents', 5,
+           'bank_cents', 6, 'cash_cents', -1,
+           'components', jsonb_build_array(jsonb_build_object('kind', 'fixed_monthly', 'amount_cents', 5))));
+  IF v_j IS DISTINCT FROM jsonb_build_object(
+       'payee_user_id', 1, 'payee_name', 'X', 'total_cents', 5,
+       'components', jsonb_build_array(jsonb_build_object('kind', 'fixed_monthly', 'amount_cents', 5))) THEN
+    v_fail := array_append(v_fail, 'kendi hakediş nesnesi: ' || left(v_j::text, 500));
   END IF;
 
   IF cardinality(v_fail) > 0 THEN
@@ -2356,8 +2503,12 @@ END $$;
 --     keyed entry (target 0) and one created by the sync; a payment on a cancelled February entry corrected and voided
 --     (re-netted); the views of the owner, R (no payment figure, no keyed entry id) and the doctors (own figures only);
 --     a keyed entry cancelled by a person left as it is by the sync; A's counterparty relinked to D (no re-net of A's
---     statement, D's statement not bound, stored figures shown), then unlinked (re-nets A's statement again). Nothing
---     survives.
+--     statement, D's statement not bound, stored figures shown), then unlinked (re-nets A's statement again).
+--     Visibility (owner decision 2026-10-21): with a January bank amount for A above A's total, the owner (finance)
+--     sees the split in payees, BANK_OVER_TOTAL, the frozen statement breakdown and the bank_portion rules; R
+--     ('hakedis_prepare' without finance) sees no bank_cents / cash_cents, no BANK_OVER_TOTAL and bank_portion rules
+--     without amount or note (the salary rule keeps its amount); A's own views carry no split; hk_my_months /
+--     hk_my_month refuse S (assistant), R (reception) and an admin M, not the owner. Nothing survives.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -2375,8 +2526,13 @@ DECLARE
   v_d uuid := gen_random_uuid();
   v_d_doc uuid := gen_random_uuid();
   v_s uuid := gen_random_uuid();
+  v_s_auth uuid := gen_random_uuid();
   v_r uuid := gen_random_uuid();
   v_r_auth uuid := gen_random_uuid();
+  v_m uuid := gen_random_uuid();
+  v_m_auth uuid := gen_random_uuid();
+  v_rule_ab uuid := gen_random_uuid();
+  v_auths uuid[];
   v_cp_b uuid := gen_random_uuid();
   v_cp_x uuid := gen_random_uuid();
   v_cp_a uuid;
@@ -2432,9 +2588,10 @@ BEGIN
       (v_b, v_clinic, v_b_auth, 'doctor', 'Öz denetim Hekim B', 'p38-sc-b-' || v_tag || '@example.invalid', true),
       (v_d, v_clinic, gen_random_uuid(), 'doctor', 'Öz denetim Hekim D', 'p38-sc-d-' || v_tag || '@example.invalid',
        true),
-      (v_s, v_clinic, gen_random_uuid(), 'assistant', 'Öz denetim Asistan S',
+      (v_s, v_clinic, v_s_auth, 'assistant', 'Öz denetim Asistan S',
        'p38-sc-s-' || v_tag || '@example.invalid', true),
-      (v_r, v_clinic, v_r_auth, 'reception', 'Öz denetim Banko', 'p38-sc-r-' || v_tag || '@example.invalid', true);
+      (v_r, v_clinic, v_r_auth, 'reception', 'Öz denetim Banko', 'p38-sc-r-' || v_tag || '@example.invalid', true),
+      (v_m, v_clinic, v_m_auth, 'admin', 'Öz denetim Yönetici M', 'p38-sc-m-' || v_tag || '@example.invalid', true);
     INSERT INTO public.doctors (id, clinic_id, user_id) VALUES
       (v_a_doc, v_clinic, v_a), (v_b_doc, v_clinic, v_b), (v_d_doc, v_clinic, v_d);
     INSERT INTO public.staff_permissions (clinic_id, user_id, permission, granted_by) VALUES
@@ -2630,6 +2787,21 @@ BEGIN
       v_fail := array_append(v_fail, 'kural ay önerisi (eski istemci): ' || left(v_j::text, 300));
     END IF;
 
+    -- Visibility (owner decision 2026-10-21). Owner: A gets a bank amount of 1.200.000 for January only, above A's
+    -- January total (BANK_OVER_TOTAL; a bank_portion rule is no component: totals unchanged). The owner's rules carry
+    -- the bank amounts and the note.
+    PERFORM public.fin_hk_save_rule(v_rule_ab, 0, v_a, NULL, 'bank_portion', NULL, NULL, 1200000, 0, 0, 0, 0,
+                                    DATE '2024-01-01', DATE '2024-01-01', 'Öz denetim banka notu');
+    v_j := public.fin_hk_reference();
+    IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'rules') r
+                   WHERE (r ->> 'id') = v_rule_ab::text AND (r ->> 'piece_cents')::bigint = 1200000
+                     AND (r ->> 'note') = 'Öz denetim banka notu')
+       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'rules') r
+                      WHERE (r ->> 'payee_user_id') = v_s::text AND (r ->> 'kind') = 'bank_portion'
+                        AND (r ->> 'piece_cents')::bigint = 2000000) THEN
+      v_fail := array_append(v_fail, 'banka tutarlı kurallar (finans): ' || left((v_j -> 'rules')::text, 2000));
+    END IF;
+
     -- January, open. Owner: paid / booked so far per payee (A's typed advance counted; A's excluded entry and February
     -- advance not). A: the same in the own view. R: none.
     v_j := public.fin_hk_month(DATE '2024-01-01');
@@ -2641,19 +2813,56 @@ BEGIN
                            || 'Öz denetim Hekim B:500000:100000:100000,Öz denetim Hekim D:0:0:0' THEN
       v_fail := array_append(v_fail, 'açık ocak (finans): ' || left((v_j -> 'payees')::text, 1500));
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'payees') p
+                   WHERE (p ->> 'payee_user_id') = v_a::text AND (p ->> 'bank_cents')::bigint = 1200000
+                     AND (p ->> 'cash_cents')::bigint = -200000)
+       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'payees') p
+                      WHERE (p ->> 'payee_user_id') = v_s::text AND (p ->> 'bank_cents')::bigint = 2000000
+                        AND (p ->> 'cash_cents')::bigint = 1000000)
+       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'warnings') w
+                      WHERE (w ->> 'code') = 'BANK_OVER_TOTAL' AND (w ->> 'payee_user_id') = v_a::text
+                        AND (w ->> 'bank_cents')::bigint = 1200000 AND (w ->> 'total_cents')::bigint = 1000000) THEN
+      v_fail := array_append(v_fail, 'açık ocak banka / elden ayrımı (finans): ' || left(v_j::text, 2000));
+    END IF;
     PERFORM set_config('request.jwt.claims', json_build_object('sub', v_a_auth, 'role', 'authenticated')::text, true);
     PERFORM set_config('request.jwt.claim.sub', v_a_auth::text, true);
     v_j := public.hk_my_month(DATE '2024-01-01');
-    IF (v_j ->> 'paid_so_far')::bigint IS DISTINCT FROM 360000 THEN
+    IF (v_j ->> 'paid_so_far')::bigint IS DISTINCT FROM 360000
+       OR (v_j #>> '{payees,0,total_cents}')::bigint IS DISTINCT FROM 1000000
+       OR position('"bank_cents"' IN v_j::text) > 0 OR position('"cash_cents"' IN v_j::text) > 0 THEN
       v_fail := array_append(v_fail, 'açık ocak (hekim A): ' || left(v_j::text, 800));
+    END IF;
+    v_j := public.hk_my_months();
+    IF NOT coalesce((v_j ->> 'has_rules')::boolean, false)
+       OR position('"bank_cents"' IN v_j::text) > 0 OR position('"cash_cents"' IN v_j::text) > 0 THEN
+      v_fail := array_append(v_fail, 'açık aylar (hekim A): ' || left(v_j::text, 800));
     END IF;
     PERFORM set_config('request.jwt.claims', json_build_object('sub', v_r_auth, 'role', 'authenticated')::text, true);
     PERFORM set_config('request.jwt.claim.sub', v_r_auth::text, true);
     v_j := public.fin_hk_month(DATE '2024-01-01');
     IF coalesce((v_j ->> 'ledger_visible')::boolean, true)
        OR position('paid_so_far' IN v_j::text) > 0 OR position('booked_so_far' IN v_j::text) > 0
-       OR jsonb_array_length(v_j -> 'payees') <> 4 THEN
+       OR position('"bank_cents"' IN v_j::text) > 0 OR position('"cash_cents"' IN v_j::text) > 0
+       OR position('BANK_OVER_TOTAL' IN v_j::text) > 0
+       OR jsonb_array_length(v_j -> 'payees') <> 4
+       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'payees') p
+                      WHERE (p ->> 'payee_user_id') = v_a::text AND (p ->> 'total_cents')::bigint = 1000000) THEN
       v_fail := array_append(v_fail, 'açık ocak (hazırlayıcı): ' || left(v_j::text, 800));
+    END IF;
+    v_j := public.fin_hk_reference();
+    IF coalesce((v_j ->> 'ledger_visible')::boolean, true)
+       OR (SELECT count(*) FROM jsonb_array_elements(v_j -> 'rules') r
+           WHERE (r ->> 'kind') = 'bank_portion' AND (r -> 'piece_cents') = 'null'::jsonb AND (r ->> 'note') = ''
+             AND (r ->> 'from_month') = '2024-01-01') <> 2
+       OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'rules') r
+                  WHERE (r ->> 'kind') = 'bank_portion' AND (r -> 'piece_cents') IS DISTINCT FROM 'null'::jsonb)
+       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'rules') r
+                      WHERE (r ->> 'id') = v_rule_ab::text AND (r ->> 'to_month') = '2024-01-01')
+       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'rules') r
+                      WHERE (r ->> 'payee_user_id') = v_s::text AND (r ->> 'kind') = 'fixed_monthly'
+                        AND (r ->> 'piece_cents')::bigint = 3000000)
+       OR position('Öz denetim banka notu' IN v_j::text) > 0 THEN
+      v_fail := array_append(v_fail, 'kurallar (hazırlayıcı): ' || left((v_j -> 'rules')::text, 2000));
     END IF;
 
     -- January close (owner): A 1.000.000 − 300.000 − 60.000 (typed) → 640.000; B 500.000 − 100.000 → 400.000; S
@@ -2702,6 +2911,12 @@ BEGIN
        OR (v_x #>> '{entry,amount_cents}')::bigint IS DISTINCT FROM 640000
        OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'warnings') w WHERE (w ->> 'code') = 'OVERPAID') THEN
       v_fail := array_append(v_fail, 'ocak kapatma: ' || left(v_j::text, 2500));
+    END IF;
+    IF (v_x #>> '{breakdown,bank_cents}')::bigint IS DISTINCT FROM 1200000
+       OR (v_x #>> '{breakdown,cash_cents}')::bigint IS DISTINCT FROM -200000
+       OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'warnings') w
+                      WHERE (w ->> 'code') = 'BANK_OVER_TOTAL' AND (w ->> 'payee_user_id') = v_a::text) THEN
+      v_fail := array_append(v_fail, 'ocak kapatma banka / elden ayrımı (finans): ' || left(v_x::text, 1500));
     END IF;
 
     -- After the close (A): the typed advance's name changed to someone else's: no longer A's, re-netted (700.000).
@@ -2932,6 +3147,8 @@ BEGIN
        OR position('paid_cents' IN v_j::text) > 0 OR position('other_booked' IN v_j::text) > 0
        OR position('overpaid' IN v_j::text) > 0 OR position('OVERPAID' IN v_j::text) > 0
        OR position('paid_so_far' IN v_j::text) > 0
+       OR position('"bank_cents"' IN v_j::text) > 0 OR position('"cash_cents"' IN v_j::text) > 0
+       OR position('BANK_OVER_TOTAL' IN v_j::text) > 0
        OR position(v_k_a::text IN v_j::text) > 0
        OR NOT EXISTS (SELECT 1 FROM jsonb_array_elements(v_j -> 'statements') st
                       WHERE (st ->> 'payee_user_id') = v_a::text AND (st -> 'entry') = 'null'::jsonb
@@ -2954,7 +3171,9 @@ BEGIN
        OR (v_j #>> '{entitlement,paid_cents}')::bigint IS DISTINCT FROM 500000
        OR (v_j -> 'paid_so_far') IS DISTINCT FROM 'null'::jsonb
        OR position(v_b::text IN v_j::text) > 0 OR position(v_s::text IN v_j::text) > 0
-       OR position(v_cp_b::text IN v_j::text) > 0 OR position(v_cp_s::text IN v_j::text) > 0 THEN
+       OR position(v_cp_b::text IN v_j::text) > 0 OR position(v_cp_s::text IN v_j::text) > 0
+       OR (v_j #>> '{payees,0,total_cents}')::bigint IS DISTINCT FROM 1000000
+       OR position('"bank_cents"' IN v_j::text) > 0 OR position('"cash_cents"' IN v_j::text) > 0 THEN
       v_fail := array_append(v_fail, 'hekim A ocak: ' || left(v_j::text, 1500));
     END IF;
     v_j := public.hk_my_month(DATE '2024-03-01');
@@ -2979,6 +3198,9 @@ BEGIN
               IS DISTINCT FROM 'open:10000:-:-') THEN
       v_fail := array_append(v_fail, 'hekim A aylar: ' || left(v_j::text, 1500));
     END IF;
+    IF position('"bank_cents"' IN v_j::text) > 0 OR position('"cash_cents"' IN v_j::text) > 0 THEN
+      v_fail := array_append(v_fail, 'hekim A aylar (banka / elden): ' || left(v_j::text, 1500));
+    END IF;
 
     -- B: own January (100.000 paid on another entry, the excluded one not counted).
     PERFORM set_config('request.jwt.claims', json_build_object('sub', v_b_auth, 'role', 'authenticated')::text, true);
@@ -2989,6 +3211,54 @@ BEGIN
        OR (v_j #>> '{statement,overpaid_cents}')::bigint IS DISTINCT FROM 0
        OR position(v_a::text IN v_j::text) > 0 OR position(v_cp_a::text IN v_j::text) > 0 THEN
       v_fail := array_append(v_fail, 'hekim B ocak: ' || left(v_j::text, 1500));
+    END IF;
+
+    -- Hakedişim (owner decision 2026-10-21): S (assistant, a payee with rules), R (reception) and M (admin) are
+    -- refused by hk_my_months / hk_my_month (42501, one message, before any figure is read); the owner is not (no
+    -- rules of the owner's own here: has_rules false).
+    v_auths := ARRAY[v_s_auth, v_r_auth, v_m_auth];
+    FOR v_i IN 1 .. cardinality(v_auths)
+    LOOP
+      PERFORM set_config('request.jwt.claims', json_build_object('sub', v_auths[v_i], 'role', 'authenticated')::text,
+                         true);
+      PERFORM set_config('request.jwt.claim.sub', v_auths[v_i]::text, true);
+      v_state := NULL;
+      v_err := NULL;
+      BEGIN
+        PERFORM public.hk_my_months();
+      EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_state = RETURNED_SQLSTATE, v_err = MESSAGE_TEXT;
+      END;
+      IF v_state IS DISTINCT FROM '42501'
+         OR v_err IS DISTINCT FROM 'Hakedişim yalnızca hekimlere ve klinik sahibine açıktır.' THEN
+        v_fail := array_append(v_fail, 'hakedişim aylar reddi ' || v_i || ': ' || coalesce(v_state, '-') || ' '
+                                       || coalesce(v_err, '-'));
+      END IF;
+      v_state := NULL;
+      v_err := NULL;
+      BEGIN
+        PERFORM public.hk_my_month(DATE '2024-01-01');
+      EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_state = RETURNED_SQLSTATE, v_err = MESSAGE_TEXT;
+      END;
+      IF v_state IS DISTINCT FROM '42501'
+         OR v_err IS DISTINCT FROM 'Hakedişim yalnızca hekimlere ve klinik sahibine açıktır.' THEN
+        v_fail := array_append(v_fail, 'hakedişim ay reddi ' || v_i || ': ' || coalesce(v_state, '-') || ' '
+                                       || coalesce(v_err, '-'));
+      END IF;
+    END LOOP;
+    PERFORM set_config('request.jwt.claims', json_build_object('sub', v_own_auth, 'role', 'authenticated')::text, true);
+    PERFORM set_config('request.jwt.claim.sub', v_own_auth::text, true);
+    v_err := NULL;
+    BEGIN
+      v_j := public.hk_my_months();
+      v_x := public.hk_my_month(DATE '2024-01-01');
+    EXCEPTION WHEN OTHERS THEN
+      GET STACKED DIAGNOSTICS v_err = MESSAGE_TEXT;
+    END;
+    IF v_err IS NOT NULL
+       OR coalesce((v_j ->> 'has_rules')::boolean, true) OR coalesce((v_x ->> 'has_rules')::boolean, true) THEN
+      v_fail := array_append(v_fail, 'hakedişim (sahip): ' || coalesce(v_err, left(v_j::text, 300)));
     END IF;
 
     -- Owner: S's January payroll entry cancelled by hand; an entry excluded afterwards (more to pay) is saved, the
