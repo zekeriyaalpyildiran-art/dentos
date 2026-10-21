@@ -3042,7 +3042,8 @@ BEGIN
                                         md5(e.description)), ',' ORDER BY e.id)
             FROM public.fin_entries e
             WHERE e.clinic_id = v_clinic AND (e.source_key LIKE 'entitlement:%' OR e.source_key LIKE 'payroll:%'))
-       OR (SELECT string_agg(concat_ws(':', u.full_name, s.fin_entry_id IN (v_k_a, v_k_b, v_k_s),
+       -- (bool)::text: concat_ws / format('%s') print a boolean as 't' / 'f'; only the text cast gives 'true'.
+       OR (SELECT string_agg(concat_ws(':', u.full_name, (s.fin_entry_id IN (v_k_a, v_k_b, v_k_s))::text,
                                        s.other_booked_cents, s.other_paid_cents, s.overpaid_cents), ','
                              ORDER BY u.full_name COLLATE "C")
            FROM public.fin_hk_statements s
@@ -3102,11 +3103,12 @@ BEGIN
                                     40000, '2024-02', false, NULL);
     SELECT e.version INTO v_ver FROM public.fin_entries e WHERE e.id = v_e_ap;
     PERFORM public.fin_record_payment(v_e_ap, v_ver, v_pay_ap, DATE '2024-02-21', 10000, v_cash);
-    SELECT concat_ws(':', e.amount_cents, e.cancelled_at IS NULL) INTO v_snap
+    -- (bool)::text: concat_ws prints a boolean as 't' / 'f'; the expected text below reads 'true'.
+    SELECT concat_ws(':', e.amount_cents, (e.cancelled_at IS NULL)::text) INTO v_snap
     FROM public.fin_entries e WHERE e.id = v_k_a2;
     SELECT e.version INTO v_ver FROM public.fin_entries e WHERE e.id = v_e_ap;
     PERFORM public.fin_cancel_entry(v_e_ap, v_ver, 'Öz denetim: kalan iptal');
-    v_snap := v_snap || ',' || (SELECT concat_ws(':', e.amount_cents, e.cancelled_at IS NULL)
+    v_snap := v_snap || ',' || (SELECT concat_ws(':', e.amount_cents, (e.cancelled_at IS NULL)::text)
                                 FROM public.fin_entries e WHERE e.id = v_k_a2);
     SELECT e.version INTO v_ver FROM public.fin_entries e WHERE e.id = v_e_ap;
     PERFORM public.fin_correct_payment(v_e_ap, v_ver, v_pay_ap, DATE '2024-02-21', 4000, v_cash);
