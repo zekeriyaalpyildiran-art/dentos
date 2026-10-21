@@ -9,13 +9,15 @@ import type { ParsedRow } from "./types";
 
 export type CheckStatus = "new" | "saved_same" | "saved_changed" | "matched_same" | "matched_changed" | "match_voided" | "id_taken";
 export type CheckWarningCode = "possible_duplicate" | "batch_duplicate" | "manual_receipt_overlap";
+/** 0037: confirmed per row with ack_open_debt (matching.ts rowOpenDebts), never through `acknowledged`. */
+export type OpenDebtCode = "open_debt";
 export type CheckErrorCode = "outside_month" | "future_date" | "financing_line" | "receipts_day_taken" | "invalid_key";
 
 /** The part of a fin_import_check row answer the review list uses. */
 export type RowCheck = {
   status: CheckStatus;
   existing?: { amount_cents: number } | null;
-  warnings?: { code: CheckWarningCode }[];
+  warnings?: { code: CheckWarningCode | OpenDebtCode }[];
   errors?: CheckErrorCode[];
 };
 
@@ -179,12 +181,17 @@ export const OVERRIDE_TEXT = (n: number) =>
 export const FINAL_CONFIRM_TEXT = "Seçtiğim kayıtların kategori, tutar ve tekrar kontrollerini yaptım.";
 export const ENTITLEMENT_MONTH_REQUIRED = "Hekim hakediş ödemelerinde hakediş ayını seçin.";
 
-/** Batch-level problems before the save call (1..500 rows, entitlement months). */
-export function saveProblems(chosen: readonly ReviewRow[]): string[] {
+/**
+ * Batch-level problems before the save call (1..500 rows, entitlement months). A row matched to a debt (0037) needs
+ * no entitlement month: the debt keeps its own period and the match sends none.
+ */
+export function saveProblems(chosen: readonly (ReviewRow & { match?: object | null })[]): string[] {
   const out: string[] = [];
   if (!chosen.length) out.push("Aktarılacak satır seçin.");
   if (chosen.length > 500) out.push("En fazla 500 kayıt aktarılabilir.");
-  if (chosen.some((r) => r.requiresEntitlementMonth && r.bucket === "doctor" && !r.entitlementMonth)) out.push(ENTITLEMENT_MONTH_REQUIRED);
+  if (chosen.some((r) => !r.match && r.requiresEntitlementMonth && r.bucket === "doctor" && !r.entitlementMonth)) {
+    out.push(ENTITLEMENT_MONTH_REQUIRED);
+  }
   return out;
 }
 
@@ -211,6 +218,10 @@ export type RowSaveContext = {
   receiptsCounterpartyText: string;
   /** Settle an existing debt instead of creating an entry (§12). */
   match?: { entry_id: string; version: number; payment_id: string } | null;
+  /** Matched rows (0037): cancel the rest of the debt in the same save (matching.ts closesRemainder). */
+  closeRemainder?: boolean;
+  /** New entries (0037): saved although an open debt of the same or a near amount exists. */
+  ackOpenDebt?: boolean;
   acknowledged?: CheckWarningCode[];
 };
 
@@ -249,7 +260,10 @@ export async function rowFingerprint(row: ParsedRow, ctx: Pick<RowSaveContext, "
   return { fingerprint, counterparty: counterparty.trim(), subcategory, entitlementMonth, master };
 }
 
-/** fin_import_rows p_rows item (p2i_db_contract §4.7, strict keys). */
+/**
+ * fin_import_rows p_rows item (p2i_db_contract §4.7, strict keys). The 0037 flags close_remainder / ack_open_debt are
+ * sent only when set (absent = false), each only on the kind of row it applies to.
+ */
 export async function toImportRowPayload(row: ParsedRow, ctx: RowSaveContext) {
   const base = {
     row_no: ctx.rowNo,
@@ -264,7 +278,7 @@ export async function toImportRowPayload(row: ParsedRow, ctx: RowSaveContext) {
     acknowledged: ctx.acknowledged ?? [],
     description: row.description.trim().slice(0, 1000),
   };
-  if (ctx.match) return { ...base, match: ctx.match };
+  if (ctx.match) return { ...base, match: ctx.match, ...(ctx.closeRemainder ? { close_remainder: true } : {}) };
   const fp = await rowFingerprint(row, ctx);
   return {
     ...base,
@@ -276,6 +290,7 @@ export async function toImportRowPayload(row: ParsedRow, ctx: RowSaveContext) {
     counterparty_id: fp.master?.id ?? null,
     counterparty_text: fp.master ? null : fp.counterparty.slice(0, 200),
     match: null,
+    ...(ctx.ackOpenDebt ? { ack_open_debt: true } : {}),
   };
 }
 
@@ -283,7 +298,9 @@ export async function toImportRowPayload(row: ParsedRow, ctx: RowSaveContext) {
  * fin_import_check p_rows item (p2i_db_contract §4.5). `category` null → no fingerprint yet. The narration is sent
  * only for rows the user has selected (`withDescription`); unselected rows get their saved / duplicate status from
  * key, date, amount and fingerprint alone, so third-party narrations never leave the browser unless chosen.
- * Callers send only checkableRow() rows.
+ * `matchEntryId` (0037): the debt the row settles; the check then reports no open debt for it and compares the other
+ * rows with what stays open of that debt, as the save does (nothing when `closeRemainder`: matching.ts
+ * closesRemainder). Callers send only checkableRow() rows.
  */
 export async function toCheckPayload(
   row: ParsedRow,
@@ -294,6 +311,8 @@ export async function toCheckPayload(
     counterparty?: { id: string; name: string } | null;
     receiptsCounterpartyText: string;
     withDescription: boolean;
+    matchEntryId?: string | null;
+    closeRemainder?: boolean;
   },
 ) {
   const base = {
@@ -305,6 +324,7 @@ export async function toCheckPayload(
     amount_cents: row.amount,
     direction: direction(row),
     fingerprint: ctx.category ? (await rowFingerprint(row, { ...ctx, category: ctx.category })).fingerprint : null,
+    ...(ctx.matchEntryId ? { match_entry_id: ctx.matchEntryId, ...(ctx.closeRemainder ? { close_remainder: true } : {}) } : {}),
   };
   return ctx.withDescription ? { ...base, description: row.description.trim().slice(0, 1000) } : base;
 }

@@ -1333,6 +1333,11 @@ export function finSaveImportLayout(args: {
 
 export type ImportSourceKind = "clinic_excel" | "bank_known" | "bank_table";
 export type ImportWarningCode = "possible_duplicate" | "batch_duplicate" | "manual_receipt_overlap";
+/**
+ * Warning codes of a fin_import_check row: the acknowledgeable ones plus 'open_debt' (0037), which a row confirms with
+ * its own ack_open_debt flag and never through `acknowledged`.
+ */
+export type ImportCheckWarningCode = ImportWarningCode | "open_debt";
 export type ImportRowError = "outside_month" | "future_date" | "financing_line" | "receipts_day_taken" | "invalid_key";
 export type ImportCheckStatus =
   | "new"
@@ -1354,6 +1359,13 @@ export interface ImportCheckRowInput {
   /** sent only for rows the user selected (narrations of unselected rows never leave the browser) */
   description?: string;
   fingerprint: string | null;
+  /**
+   * 0037: the debt the review settles with this row; the row counts as matched, and the other rows are compared with
+   * what stays open of that debt (nothing once it is paid in full or close_remainder closes the rest)
+   */
+  match_entry_id?: string;
+  /** 0037, with match_entry_id: the row closes the rest of the debt (as the save's close_remainder) */
+  close_remainder?: boolean;
 }
 
 export interface DuplicateExampleJson {
@@ -1364,10 +1376,26 @@ export interface DuplicateExampleJson {
   account_name: string;
 }
 
+/** An open debt a row saved as a new entry would count twice (0037 'open_debt': exact or near, ≤ 45 days). */
+export interface OpenDebtJson {
+  entry_id: string;
+  version: number;
+  counterparty_name: string;
+  category_name: string;
+  due_date: string;
+  amount_cents: number;
+  outstanding_cents: number;
+  kind: "exact" | "near";
+  /** |row date − due date| */
+  days: number;
+}
+
 export interface ImportCheckWarningJson {
-  code: ImportWarningCode;
+  code: ImportCheckWarningCode;
   examples?: DuplicateExampleJson[];
   row_no?: number;
+  /** 'open_debt' only: 1..3 debts, the closest due date first */
+  debts?: OpenDebtJson[];
 }
 
 export interface ReceiptReconciliationCoreJson {
@@ -1436,6 +1464,56 @@ export function finDebtCandidates(amountCents: number, date: string, text: strin
   });
 }
 
+// --- Automatic debt suggestions (0037) -----------------------------------------
+
+/** fin__debt_kind: the payment against the debt's outstanding; near / higher stay within min(2 %, 1.000,00 TL). */
+export type DebtMatchKind = "exact" | "near" | "partial" | "higher";
+
+export interface DebtSuggestionJson extends DebtCandidateJson {
+  kind: DebtMatchKind;
+  /** exact or near, ≤ 45 days from the due date, counted in totals, and the name, counterparty or category agrees */
+  strong: boolean;
+  /** |row date − due date| */
+  days: number;
+  /** outstanding − payment (≥ 0) */
+  remainder_cents: number;
+  /** payment − outstanding (≥ 0; 'higher' only) */
+  excess_cents: number;
+  entry: DebtCandidateJson["entry"] & { excluded_from_totals: boolean };
+}
+
+export interface DebtSuggestionRowJson {
+  row_no: number;
+  /**
+   * the row's only strong candidate, unless a closer row of the same call claims it; the review applies the rule
+   * again over the answers of every call (matching.ts preselections) and reads strong_count / candidates instead
+   */
+  preselect_entry_id: string | null;
+  strong_count: number;
+  /** matchable candidates before the limit of 5 */
+  total_count: number;
+  candidates: DebtSuggestionJson[];
+  /** the closest debt the payment exceeds by a small amount, within 45 days (never matchable) */
+  higher: DebtSuggestionJson | null;
+}
+
+export interface DebtSuggestionInput {
+  row_no: number;
+  amount_cents: number;
+  date: string;
+  /** the narration; null for rows the user has not selected */
+  text: string | null;
+  category_id: string | null;
+  counterparty_id: string | null;
+}
+
+export const DEBT_SUGGESTION_MAX = 500;
+
+/** Write permission; reads only. 1..500 rows with unique row_no; the answer follows the request order. */
+export function finDebtCandidatesBatch(rows: DebtSuggestionInput[]) {
+  return rpc<{ rows: DebtSuggestionRowJson[] }>("fin_debt_candidates_batch", { p_rows: rows });
+}
+
 // --- Commit (§4.7) ----------------------------------------------------------------
 
 export interface ImportRowPayload {
@@ -1458,6 +1536,10 @@ export interface ImportRowPayload {
   counterparty_id?: string | null;
   counterparty_text?: string | null;
   match: { entry_id: string; version: number; payment_id: string } | null;
+  /** 0037, matched rows: the payment is below the outstanding; cancel the rest of the debt in the same save */
+  close_remainder?: boolean;
+  /** 0037, new entries: save although an open debt of the same or a near amount exists (counted twice) */
+  ack_open_debt?: boolean;
 }
 
 export interface ImportBatchJson {
@@ -1488,6 +1570,8 @@ export interface ImportRowsResultJson {
     status: "inserted" | "matched" | "skipped_same" | "skipped_matched";
     entry_id: string;
     payment_id: string | null;
+    /** 0037: the cancelled rest of the matched debt (close_remainder) */
+    remainder_closed_cents?: number;
   }[];
   reconciliation: {
     month: string;

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { isMatchEligible, matchTargetsError, scoreCandidates } from "../matching";
 import { mergeSessionBalances, toBalancePayload } from "../balances";
 import {
   acknowledgements,
@@ -12,6 +11,7 @@ import {
   toCheckPayload,
   toImportRowPayload,
   checkableRow,
+  flagsFromCheck,
   keyDay,
   type RowCheck,
 } from "../review";
@@ -90,6 +90,10 @@ describe("review list (§3.4, §11)", () => {
     const list = appendToReview([], [mk({ key: "b", date: "2026-10-09", bucket: "patient_receipts", amount: 10 }), mk({ key: "a", date: "2026-10-01", bucket: "doctor", requiresEntitlementMonth: true })], "workbook", () => undefined);
     expect(saveProblems(list)).toEqual(["Hekim hakediş ödemelerinde hakediş ayını seçin."]);
     expect(saveProblems([])).toEqual(["Aktarılacak satır seçin."]);
+    // A doctor row matched to an open hakediş debt keeps the debt's period: no month needed (0037).
+    const doctor = list.find((r) => r.key === "a")!;
+    expect(saveProblems([{ ...doctor, match: { entry_id: "e" } }])).toEqual([]);
+    expect(saveProblems([{ ...doctor, match: null }])).toEqual(["Hekim hakediş ödemelerinde hakediş ayını seçin."]);
     expect(selectedReceiptsCents(list)).toBe(10);
     expect(sortReview(list).map((r) => r.key)).toEqual(["a", "b"]);
   });
@@ -171,38 +175,37 @@ describe("counterparty, key dates and the preflight scope", () => {
   });
 });
 
-describe("matching (§12, MT:4-13)", () => {
-  const row = { description: "EFT ÖRNEK LAB LTD ödeme", date: "2026-10-10", amount: 10000 };
-  it("scores by name, exact amount and date proximity", () => {
-    const s = scoreCandidates(row, [
-      { id: "far", due_date: "2026-08-01", outstanding_cents: 10000, counterparty_name: "Örnek Lab" },
-      { id: "near", due_date: "2026-10-08", outstanding_cents: 20000, counterparty_name: "Örnek Lab" },
-      { id: "other", due_date: "2026-10-09", outstanding_cents: 10000, counterparty_name: "Başka Firma" },
-      { id: "small", due_date: "2026-10-09", outstanding_cents: 5000, counterparty_name: "Örnek Lab" },
-      { id: "stop", due_date: "2026-10-09", outstanding_cents: 10000, counterparty_name: "Banka Ödeme" },
-    ]);
-    expect(s.map((x) => [x.entry.id, x.score, x.suggested])).toEqual([
-      ["far", 120, false],
-      ["near", 110, true],
-      ["other", 30, false],
-      ["stop", 30, false],
-    ]);
-    expect(s[1].reason).toBe("Kişi / kurum eşleşiyor · kısmi ödeme");
-    expect(s[0].reason).toBe("Kişi / kurum eşleşiyor · tutar aynı");
+describe("0037 open-debt flags in the payloads", () => {
+  const category = { id: "cat-lab", bucket: "lab" as const, name: "Laboratuvar", is_system: true };
+  const row = appendToReview([], [mk({ key: "clinic:2026-10-06:expense:2", sourceKind: "clinic_excel", kind: "workbook_expense", bucket: "lab", categoryId: "cat-lab", legacyAccount: "Nakit" })], "workbook", () => undefined)[0];
+  const save = { rowNo: 1, clinicId: "c1", accountId: "cash", category, receiptsCounterpartyText: "G" };
+  const match = { entry_id: "e", version: 3, payment_id: "p" };
+  it("close_remainder only on a matched row, ack_open_debt only on a new entry, both only when set", async () => {
+    const closed = await toImportRowPayload(row, { ...save, match, closeRemainder: true, ackOpenDebt: true });
+    expect(closed).toMatchObject({ kind: "clinic_excel", account_id: "cash", match, close_remainder: true });
+    expect("ack_open_debt" in closed).toBe(false);
+    const open = await toImportRowPayload(row, { ...save, match, closeRemainder: false });
+    expect("close_remainder" in open).toBe(false);
+    const fresh = await toImportRowPayload(row, { ...save, closeRemainder: true, ackOpenDebt: true });
+    expect(fresh).toMatchObject({ match: null, ack_open_debt: true });
+    expect("close_remainder" in fresh).toBe(false);
+    const plain = await toImportRowPayload(row, { ...save, ackOpenDebt: false });
+    expect("ack_open_debt" in plain).toBe(false);
   });
-  it("45-day suggestion boundary", () => {
-    const at = (due: string) => scoreCandidates(row, [{ id: "x", due_date: due, outstanding_cents: 10000, counterparty_name: "Örnek Lab" }])[0].suggested;
-    expect(at("2026-08-26")).toBe(true);
-    expect(at("2026-08-25")).toBe(false);
+  it("the check carries the chosen debt only when there is one, and close_remainder only with it", async () => {
+    const check = { rowNo: 1, clinicId: "c1", category, receiptsCounterpartyText: "G", withDescription: false };
+    const matched = await toCheckPayload(row, { ...check, matchEntryId: "e" });
+    expect(matched.match_entry_id).toBe("e");
+    expect("close_remainder" in matched).toBe(false);
+    expect(await toCheckPayload(row, { ...check, matchEntryId: "e", closeRemainder: true })).toMatchObject({ match_entry_id: "e", close_remainder: true });
+    expect("close_remainder" in (await toCheckPayload(row, { ...check, matchEntryId: "e", closeRemainder: false }))).toBe(false);
+    const fresh = await toCheckPayload(row, { ...check, matchEntryId: null, closeRemainder: true });
+    expect("match_entry_id" in fresh || "close_remainder" in fresh).toBe(false);
   });
-  it("only unsaved bank outflows are eligible; one row per debt", () => {
-    expect(isMatchEligible({ key: "bank:x", signedCents: -1 }, "out", false)).toBe(true);
-    expect(isMatchEligible({ key: "bank:x", signedCents: 1 }, "out", false)).toBe(false);
-    expect(isMatchEligible({ key: "clinic:x", signedCents: -1 }, "out", false)).toBe(false);
-    expect(isMatchEligible({ key: "bank-table:x", signedCents: -1 }, "in", false)).toBe(false);
-    expect(isMatchEligible({ key: "bank-table:x", signedCents: -1 }, "out", true)).toBe(false);
-    expect(matchTargetsError(["a", null, "b"])).toBe(null);
-    expect(matchTargetsError(["a", "a"])).toMatch(/Aynı borca/);
+  it("open_debt is no acknowledgeable warning", () => {
+    const flags = flagsFromCheck({ status: "new", warnings: [{ code: "open_debt" }] });
+    expect(flags.possibleDuplicate || flags.manualReceiptOverlap).toBe(false);
+    expect(acknowledgements({ ...row, flags })).toEqual([]);
   });
 });
 
