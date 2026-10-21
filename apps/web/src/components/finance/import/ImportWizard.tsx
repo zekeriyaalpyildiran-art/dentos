@@ -6,6 +6,8 @@ import { useReferenceData } from "@/components/finance/useReferenceData";
 import { Card, ErrorBox, Loading, SuccessBox, buttonPrimary, buttonSecondary } from "@/components/finance/ui";
 import { useAuthStore } from "@/lib/store";
 import {
+  DEBT_SUGGESTION_MAX,
+  finDebtCandidatesBatch,
   finImportCheck,
   finImportRows,
   formatDay,
@@ -16,6 +18,7 @@ import {
   isMonth,
   newId,
   toFinanceError,
+  type DebtSuggestionRowJson,
   type FinanceError,
   type ImportCheckJson,
   type ImportCheckRowJson,
@@ -28,7 +31,19 @@ import {
 import { mergeSessionBalances, type TableBalanceResult } from "@/lib/finance-import/balances";
 import { intakePdf, intakeSpreadsheet, type SavedWorkbookLayout, type SpreadsheetOutcome } from "@/lib/finance-import/detect";
 import { validateWorkbookLayout } from "@/lib/finance-import/layout";
-import { matchTargetsError } from "@/lib/finance-import/matching";
+import {
+  MATCH_OVERPAID_TEXT,
+  applySuggestions,
+  closesRemainder,
+  isMatchEligible,
+  matchTargetsError,
+  matchedDebts,
+  openDebtProblem,
+  overpaysMatch,
+  releaseAutoMatches,
+  rowOpenDebts,
+  suggestionCalls,
+} from "@/lib/finance-import/matching";
 import {
   FileReadError,
   GENERAL_ACCEPT,
@@ -59,14 +74,17 @@ import { BankMapperCard, type AcceptedBankRows, type CardState } from "./BankMap
 import { FxRatesCard, mergeFxRates, saveWorkbookFxRates, type PendingFxRate } from "./FxRatesCard";
 import { ReviewTable, type ReviewItem, type RowPatch } from "./ReviewTable";
 import { compileSetupRules } from "./rules";
-import { resolveAccount, rowCategory, rowWarnings, toRowCategory, wizardBlockers, type WizardRow } from "./review";
+import { NO_MATCH, resolveAccount, rowCategory, rowWarnings, toRowCategory, wizardBlockers, type WizardRow } from "./review";
 import { useImportSetup } from "./useImportSetup";
 
 const MAX_LIST = 2000;
 /** Legacy receipts counterparty (IP:54) when no workbook layout gives one. */
 const LEGACY_RECEIPTS_TEXT = "Günlük toplam";
 
-type Extra = Pick<WizardRow, "accountId" | "layoutId" | "match">;
+type Extra = Pick<WizardRow, "accountId" | "layoutId">;
+/** Patch fields that change what fin_import_check / fin_debt_candidates_batch answer for a row. */
+const CHECK_FIELDS = ["date", "description", "amount", "categoryId", "bucket", "subcategory", "entitlementMonth", "counterpartyId", "match"];
+const SUGGEST_FIELDS = ["date", "description", "amount", "categoryId", "bucket", "counterpartyId"];
 
 /** /finance/import: month, files, cards, balances, review list and the atomic save (fin_import_rows). */
 export function ImportWizard() {
@@ -123,6 +141,9 @@ function Wizard({
   const [fxRates, setFxRates] = useState<PendingFxRate[]>([]);
   const [fxSaving, setFxSaving] = useState(false);
   const [fxStatus, setFxStatus] = useState<{ ok: boolean; text: string } | null>(null);
+  // fin_debt_candidates_batch answers by row key (owner decision 2026-10-21); replaced as a whole on every refresh.
+  const [suggestions, setSuggestions] = useState<Map<string, DebtSuggestionRowJson>>(() => new Map());
+  const [suggestError, setSuggestError] = useState<FinanceError | null>(null);
   const busy = progress !== null || saving || fxSaving;
   // Latest list for async readers (several files are appended inside one handler).
   const rowsRef = useRef<WizardRow[]>(rows);
@@ -164,10 +185,11 @@ function Wizard({
   /**
    * Preflight of the given rows. Only rows inside the chosen month are ever sent; the narration goes only with rows
    * the user has selected (toCheckPayload). Row numbers follow the given order, so the pre-save check over the
-   * chosen rows reports exactly the warnings fin_import_rows will enforce.
+   * chosen rows reports exactly the warnings fin_import_rows will enforce. A selected row's debt match goes along
+   * (match_entry_id, with close_remainder when it closes the rest), as the save sends it.
    */
   const runCheck = useCallback(
-    async (list: Pick<WizardRow, keyof ParsedRow | "layoutId">[]): Promise<ImportCheckJson | null> => {
+    async (list: Pick<WizardRow, keyof ParsedRow | "layoutId" | "match" | "closeRemainder">[]): Promise<ImportCheckJson | null> => {
       const sendable = list.filter((row) => checkableRow(row, month)).slice(0, MAX_LIST);
       if (!sendable.length) return null;
       const payload = await Promise.all(
@@ -179,6 +201,8 @@ function Wizard({
             counterparty: counterpartyOf(row.counterpartyId),
             receiptsCounterpartyText: receiptsTextFor(row),
             withDescription: row.selected,
+            matchEntryId: row.selected ? (row.match?.entry_id ?? null) : null,
+            closeRemainder: row.selected && closesRemainder(row),
           })
         )
       );
@@ -234,6 +258,57 @@ function Wizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editVersion]);
 
+  // Debt suggestions (owner decision 2026-10-21): after the check, one fin_debt_candidates_batch call (≤ 500 rows
+  // each) for every unsaved eligible outflow of the list, debounced like the check. The answer pre-selects strong
+  // matches on rows the user has not decided; the narration goes only with selected rows (as in the check).
+  const suggestTick = useRef(0);
+  const [suggestVersion, setSuggestVersion] = useState(0);
+  const refreshSuggestions = useCallback(() => setSuggestVersion((v) => v + 1), []);
+  useEffect(() => {
+    if (!suggestVersion) return;
+    const tick = ++suggestTick.current;
+    const t = setTimeout(async () => {
+      const eligible = rowsRef.current.filter(
+        (r) =>
+          checkableRow(r, month) &&
+          !r.flags.financingLine &&
+          isMatchEligible(r, rowCategory(refData, r)?.direction ?? null, r.flags.saved)
+      );
+      const calls = suggestionCalls(
+        eligible.map((r) => ({
+          key: r.key,
+          date: r.date,
+          amount: r.amount,
+          text: r.selected ? r.description : null,
+          categoryId: rowCategory(refData, r)?.id ?? null,
+          counterpartyId: r.counterpartyId,
+        })),
+        DEBT_SUGGESTION_MAX
+      );
+      try {
+        const answers = new Map<string, DebtSuggestionRowJson>();
+        for (const call of calls) {
+          const res = await finDebtCandidatesBatch(call.rows);
+          for (const a of res.rows) {
+            const key = call.keys[a.row_no - 1];
+            if (key) answers.set(key, a);
+          }
+        }
+        if (tick !== suggestTick.current) return;
+        setSuggestions(answers);
+        setRows((old) => applySuggestions(old, answers, newId));
+        setSuggestError(null);
+      } catch (err) {
+        if (tick === suggestTick.current) setSuggestError(toFinanceError(err));
+      }
+    }, 700);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestVersion]);
+  // A pre-selection that changes after the final confirmation (a refresh after an edit) asks for it again.
+  const matchSignature = rows.map((r) => r.match?.entry_id ?? "").join("|");
+  useEffect(() => setConfirmed(false), [matchSignature]);
+
   // --- appending rows ------------------------------------------------------------------------------
 
   const appendRows = useCallback(
@@ -251,7 +326,7 @@ function Wizard({
       }
       const extras = new Map(fresh.map((r) => [r.key, extraOf(r)]));
       // Only the new rows are checked; rows already in the list keep their answers.
-      const res = await runCheck(fresh.map((r) => ({ ...r, ...(extras.get(r.key) as Extra) })));
+      const res = await runCheck(fresh.map((r) => ({ ...r, ...NO_MATCH, ...(extras.get(r.key) as Extra) })));
       const map = new Map((res?.rows ?? []).map((r) => [r.key, r as RowCheck]));
       setRows((old) => {
         const appended = appendToReview(old, fresh, source, (k) => map.get(k));
@@ -262,8 +337,8 @@ function Wizard({
             const c = map.get(r.key);
             return c ? { ...prev, flags: { ...flagsFromCheck(c), listDuplicate: prev.flags.listDuplicate } } : prev;
           }
-          const extra = extras.get(r.key) ?? { accountId: null, layoutId: null, match: null };
-          return { ...r, ...extra };
+          const extra = extras.get(r.key) ?? { accountId: null, layoutId: null };
+          return { ...r, ...NO_MATCH, ...extra };
         });
         const next = sortReview(merged) as WizardRow[];
         rowsRef.current = next;
@@ -272,9 +347,10 @@ function Wizard({
       if (res) mergeCheck(res);
       setCheckError(null);
       setConfirmed(false);
+      if (fresh.length) refreshSuggestions();
       return fresh.length;
     },
-    [runCheck, mergeCheck]
+    [runCheck, mergeCheck, refreshSuggestions]
   );
 
   // --- reading files (§3) --------------------------------------------------------------------------
@@ -328,7 +404,6 @@ function Wizard({
               const n = await appendRows(out.result.rows, "workbook", (r) => ({
                 accountId: resolveAccount(r, setup, layout, null),
                 layoutId: out.layoutId,
-                match: null,
               }));
               added += n;
               if (out.cash.source) newBalances = mergeSessionBalances(newBalances, [out.cash.source]);
@@ -376,7 +451,6 @@ function Wizard({
       const n = await appendRows(accepted.rows, "bank", () => ({
         accountId: accepted.accountId,
         layoutId: accepted.layoutId,
-        match: null,
       }));
       setNotes((old) => [...old, ...accepted.notes]);
       setMessage(
@@ -393,12 +467,18 @@ function Wizard({
 
   const change = useCallback(
     (key: string, patch: RowPatch) => {
-      setRows((old) => old.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+      setRows((old) => {
+        const next = old.map((r) => (r.key === key ? { ...r, ...patch } : r));
+        return patch.match ? releaseAutoMatches(next, key, patch.match.entry_id) : next;
+      });
       setConfirmed(false);
-      // Ticking a row sends its narration for the first time (financing-line check); deselecting needs no check.
-      if (patch.selected !== false || Object.keys(patch).length > 1) recheck([key]);
+      // Ticking a row sends its narration for the first time (financing-line check, name match of the debt
+      // suggestions); deselecting and the row's confirmation boxes need no check.
+      const fields = Object.keys(patch);
+      if (patch.selected === true || fields.some((f) => CHECK_FIELDS.includes(f))) recheck([key]);
+      if (patch.selected === true || fields.some((f) => SUGGEST_FIELDS.includes(f))) refreshSuggestions();
     },
-    [recheck]
+    [recheck, refreshSuggestions]
   );
 
   const clearAll = () => {
@@ -418,6 +498,9 @@ function Wizard({
     setHighlight(null);
     setFxRates([]);
     setFxStatus(null);
+    setSuggestions(new Map());
+    setSuggestError(null);
+    suggestTick.current++;
     dirty.current = new Set();
   };
 
@@ -454,11 +537,22 @@ function Wizard({
       const next = { ...b, file };
       return JSON.stringify(old[cardId]) === JSON.stringify(next) ? old : { ...old, [cardId]: next };
     });
-  const items: ReviewItem[] = rows.map((row) => {
-    const blockers = wizardBlockers(row, ctx);
-    const warnings = Array.from(new Set([...rowWarnings(row), ...(preFlags[row.key] ?? [])]));
-    return { row, blockers, warnings, check: checkByKey.get(row.key) };
-  });
+  const base = rows.map((row) => ({
+    row,
+    blockers: wizardBlockers(row, ctx),
+    warnings: Array.from(new Set([...rowWarnings(row), ...(preFlags[row.key] ?? [])])),
+    check: checkByKey.get(row.key),
+    suggestion: suggestions.get(row.key),
+  }));
+  // What the selected rows' matches leave of their debts, as in the save (fin__open_debts): a debt with nothing left
+  // open counts for no other row, a partly paid one with the rest it leaves open.
+  const matched = matchedDebts(base.filter((i) => i.row.selected && i.blockers.length === 0).map((i) => i.row));
+  const items: ReviewItem[] = base.map((i) => ({
+    ...i,
+    openDebts: i.row.flags.saved
+      ? []
+      : rowOpenDebts(i.row, i.check?.warnings.find((w) => w.code === "open_debt")?.debts, i.suggestion, matched),
+  }));
   const chosenItems = items.filter((i) => i.row.selected && i.blockers.length === 0);
   const chosen = chosenItems.map((i) => i.row);
   const flaggedKeys = chosenItems.filter((i) => i.warnings.length > 0).map((i) => i.row.key);
@@ -466,6 +560,11 @@ function Wizard({
   const problems = [...saveProblems(chosen)];
   const matchError = matchTargetsError(chosen.map((r) => r.match?.entry_id));
   if (matchError) problems.push(matchError);
+  if (chosen.some(overpaysMatch)) problems.push(MATCH_OVERPAID_TEXT);
+  const unconfirmed = chosenItems.filter((i) => i.openDebts.length > 0 && !i.row.ackOpenDebt).length;
+  if (unconfirmed) problems.push(openDebtProblem(unconfirmed));
+  const matchedCount = items.filter((i) => !i.row.flags.saved && i.row.match).length;
+  const openDebtCount = items.filter((i) => i.openDebts.length > 0).length;
   const changedSaved = rows.filter((r) => r.flags.saved && r.key.startsWith("clinic:") && r.flags.savedAmount !== null && r.flags.savedAmount !== r.amount);
   const receiptsCents = selectedReceiptsCents(chosen);
   const feeNote = setup.settings.physician_fee_note;
@@ -496,9 +595,18 @@ function Wizard({
         return setLocalError(`${nowBlocked.length} satır artık aktarılamaz (kaydedilmiş veya geçersiz). Liste yenileniyor; kontrol edip tekrar deneyin.`);
       }
       const codes: Record<string, ImportWarningCode[]> = {};
+      let openNow = 0;
       for (const r of chosen) {
-        const w = (preMap.get(r.key)?.warnings ?? []).map((x) => x.code);
+        const found = preMap.get(r.key)?.warnings ?? [];
+        // open_debt is confirmed per row (ack_open_debt), never through the warnings override.
+        const w = found.flatMap((x) => (x.code === "open_debt" ? [] : [x.code]));
         if (w.length) codes[r.key] = w;
+        if (!r.match && !r.ackOpenDebt && found.some((x) => x.code === "open_debt")) openNow++;
+      }
+      if (openNow && pre) {
+        mergeCheck(pre);
+        setSaving(false);
+        return setLocalError(openDebtProblem(openNow));
       }
       const flaggedNow = Object.keys(codes);
       if (flaggedNow.length && !(override && flaggedNow.every((k) => override.includes(k)))) {
@@ -508,7 +616,9 @@ function Wizard({
         return setLocalError(`${flaggedNow.length} seçili satırda tekrar uyarısı var. Uyarıları kontrol edip bilerek aktarmayı onaylayın.`);
       }
       // A batch id is reused only to retry exactly the same selection (a lost response); any change starts a new batch.
-      const signature = chosen.map((r) => `${r.key}|${r.match?.entry_id ?? ""}`).join("\n");
+      const signature = chosen
+        .map((r) => `${r.key}|${r.match?.entry_id ?? ""}|${closesRemainder(r) ? 1 : 0}|${!r.match && r.ackOpenDebt ? 1 : 0}`)
+        .join("\n");
       const id = batchId && batchId.signature === signature ? batchId.id : newId();
       setBatchId({ id, signature });
       const payload: ImportRowPayload[] = await Promise.all(
@@ -523,6 +633,8 @@ function Wizard({
             counterparty: counterpartyOf(row.counterpartyId),
             receiptsCounterpartyText: receiptsTextFor(row),
             match: row.match ? { entry_id: row.match.entry_id, version: row.match.version, payment_id: row.match.payment_id } : null,
+            closeRemainder: closesRemainder(row),
+            ackOpenDebt: !row.match && row.ackOpenDebt,
             acknowledged: codes[row.key] ?? [],
           })) as ImportRowPayload;
         })
@@ -534,9 +646,13 @@ function Wizard({
       setConfirmed(false);
       setOverride(null);
       setPreFlags({});
-      const parts = [
-        `${res.inserted} kayıt eklendi; ${res.matched} banka ödemesi mevcut borca işlendi; ${res.skipped} tekrar atlandı.`,
-      ];
+      const parts = [`${res.inserted} kayıt eklendi; ${res.matched} ödeme mevcut borca işlendi; ${res.skipped} tekrar atlandı.`];
+      const closed = res.rows.filter((r) => (r.remainder_closed_cents ?? 0) > 0);
+      if (closed.length) {
+        parts.push(
+          `${closed.length} borcun kalanı kapatıldı (toplam ${formatTL(closed.reduce((n, r) => n + (r.remainder_closed_cents ?? 0), 0))}).`
+        );
+      }
       if (res.already_saved) parts.unshift("Bu aktarım daha önce kaydedilmişti.");
       // Deselect exactly the rows the server reports for this batch (a replayed batch may differ from the screen).
       const savedKeys = new Set(res.rows.map((r) => r.key));
@@ -551,11 +667,18 @@ function Wizard({
       const fx = await saveFxRates();
       if (fx?.text) parts.push(fx.text);
       setMessage(parts.join(" "));
-      setRows((old) => old.map((r) => (savedKeys.has(r.key) ? { ...r, selected: false, match: null } : r)));
-      recheck(Array.from(savedKeys));
+      // A saved row is decided (matchChosen): a suggestion refresh that still sees it before the check marks it saved
+      // never pre-selects a debt on it.
+      setRows((old) => old.map((r) => (savedKeys.has(r.key) ? { ...r, ...NO_MATCH, matchChosen: true, selected: false } : r)));
+      // Saved payments change the open debts: re-check the saved rows and the rows warned about an open debt, and
+      // ask for fresh suggestions.
+      recheck([...Array.from(savedKeys), ...items.filter((i) => i.openDebts.length > 0).map((i) => i.row.key)]);
+      refreshSuggestions();
     } catch (err) {
       const fe = toFinanceError(err);
       setSaveError(fe);
+      // A debt changed elsewhere (version, outstanding): pre-selected rows take its current state.
+      refreshSuggestions();
       const at = importErrorRow(fe);
       const target = at.key ?? (at.row_no ? chosen[at.row_no - 1]?.key : null);
       if (target) {
@@ -728,6 +851,17 @@ function Wizard({
             )}
             {feeNote && !Number.isFinite(feePct) && <> · Hekim hakedişi notu: {feeNote}</>}
           </p>
+          {(matchedCount > 0 || openDebtCount > 0) && (
+            <p className="text-sm mb-3">
+              {matchedCount} satır açık borca eşleştirildi, {openDebtCount} satırda açık borç uyarısı var.
+            </p>
+          )}
+          {suggestError && (
+            <p className="text-sm mb-3 text-amber-700">
+              Açık borç önerileri alınamadı ({suggestError.message}). Borçları satırdaki “Açık borçları göster” ile
+              seçebilirsiniz.
+            </p>
+          )}
           <ReviewTable items={items} refData={refData} disabled={busy} highlightKey={highlight} onChange={change} />
           <p className="text-xs text-gray-600 mt-3">
             Banka girişleri ve belirsiz işlemler başlangıçta seçili değildir. Bankadaki POS yatışını Excel tahsilatına

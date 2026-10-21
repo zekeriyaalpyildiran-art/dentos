@@ -192,7 +192,7 @@ function BatchDialog({ batch, onClose }: { batch: ImportBatchJson; onClose: () =
     <Modal title={`${KIND_LABELS[batch.kind]} · ${formatTimestamp(batch.created_at)}`} onClose={onClose} wide>
       <div className="space-y-3">
         <p className="text-sm text-gray-700">
-          {batch.inserted} kayıt eklendi; {batch.matched} banka ödemesi mevcut borca işlendi; {batch.skipped} tekrar
+          {batch.inserted} kayıt eklendi; {batch.matched} ödeme mevcut borca işlendi; {batch.skipped} tekrar
           atlandı.
           {batch.acknowledged > 0 && ` ${batch.acknowledged} satır uyarı onaylanarak kaydedildi.`}
         </p>

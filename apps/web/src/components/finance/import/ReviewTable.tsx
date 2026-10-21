@@ -9,26 +9,47 @@ import {
   formatTL,
   parseTL,
   sortByOrder,
+  type DebtSuggestionRowJson,
   type ImportCheckRowJson,
   type ImportWarningCode,
+  type OpenDebtJson,
   type ReferenceData,
   type Subcategory,
 } from "@/lib/finance";
 import { takesEntitlementMonth } from "@/lib/finance-import/keys";
-import { isMatchEligible } from "@/lib/finance-import/matching";
+import { amountPatch, isMatchEligible } from "@/lib/finance-import/matching";
 import { keyDay, type Blocker } from "@/lib/finance-import/review";
-import { DebtMatchSelect } from "./DebtMatchSelect";
-import { WARNING_LABEL, rowCategory, rowDirection, type MatchChoice, type WizardRow } from "./review";
+import { DebtMatchSelect, OpenDebtNotice } from "./DebtMatchSelect";
+import { WARNING_LABEL, rowCategory, rowDirection, type WizardRow } from "./review";
 
-export type RowPatch = Partial<Pick<WizardRow, "selected" | "date" | "description" | "amount" | "categoryId" | "bucket" | "subcategory" | "entitlementMonth" | "counterpartyId">> & {
-  match?: MatchChoice | null;
-};
+export type RowPatch = Partial<
+  Pick<
+    WizardRow,
+    | "selected"
+    | "date"
+    | "description"
+    | "amount"
+    | "categoryId"
+    | "bucket"
+    | "subcategory"
+    | "entitlementMonth"
+    | "counterpartyId"
+    | "match"
+    | "matchChosen"
+    | "closeRemainder"
+    | "ackOpenDebt"
+  >
+>;
 
 export interface ReviewItem {
   row: WizardRow;
   blockers: Blocker[];
   warnings: ImportWarningCode[];
   check: ImportCheckRowJson | undefined;
+  /** fin_debt_candidates_batch answer of an eligible row (0037) */
+  suggestion: DebtSuggestionRowJson | undefined;
+  /** open debts a new entry of this row would count twice (matching.ts rowOpenDebts); empty when matched */
+  openDebts: OpenDebtJson[];
 }
 
 /** The review list (IP:65): editable date / description / amount / category, warnings and debt matching. */
@@ -88,7 +109,7 @@ const ReviewLine = memo(function ReviewLine({
   highlight: boolean;
   onChange: (key: string, patch: RowPatch) => void;
 }) {
-  const { row, blockers, warnings, check } = item;
+  const { row, blockers, warnings, check, suggestion, openDebts } = item;
   const saved = row.flags.saved;
   const locked = disabled || saved;
   // A row with any blocker cannot be ticked (§11.1); its selection comes back once the problem is fixed.
@@ -130,7 +151,7 @@ const ReviewLine = memo(function ReviewLine({
           disabled={locked || dateFixed}
           title={dateFixed ? "Bu satırın tarihi dosyadan gelir ve kaynak anahtarının parçasıdır; değiştirilemez." : undefined}
           value={row.date}
-          onChange={(e) => e.target.value && set({ date: e.target.value })}
+          onChange={(e) => e.target.value && set({ date: e.target.value, ackOpenDebt: false })}
         />
         <div className="text-xs text-gray-500 max-w-[10rem] truncate" title={row.file}>
           {row.file}
@@ -178,7 +199,7 @@ const ReviewLine = memo(function ReviewLine({
         {row.meta.formulaCellEmpty && <div className="text-xs text-amber-700">Toplam hücresi boş; tutar ödeme sütunlarından okundu.</div>}
       </td>
       <td className="px-2 py-2">
-        <AmountInput cents={row.amount} disabled={locked} onCommit={(amount) => set({ amount })} />
+        <AmountInput cents={row.amount} disabled={locked} onCommit={(amount) => set(amountPatch(row, amount))} />
       </td>
       <td className="px-2 py-2 space-y-1">
         {row.match ? (
@@ -252,20 +273,31 @@ const ReviewLine = memo(function ReviewLine({
           </>
         )}
       </td>
-      <td className="px-2 py-2">
+      <td className="px-2 py-2 space-y-1">
         {eligible ? (
           <DebtMatchSelect
             amount={row.amount}
             date={row.date}
             description={row.description}
+            suggestion={suggestion}
             value={row.match}
+            closeRemainder={row.closeRemainder}
             disabled={disabled}
-            onChange={(match) => set({ match })}
+            onChange={set}
           />
         ) : saved ? (
           <span className="text-xs text-gray-500">Kaydedilmiş satır</span>
         ) : (
-          <span className="text-xs text-gray-500">Banka çıkışlarında kullanılabilir.</span>
+          <span className="text-xs text-gray-500">Banka ve klinik Excel gider satırlarında kullanılabilir.</span>
+        )}
+        {!saved && !row.match && (
+          <OpenDebtNotice
+            debts={openDebts}
+            higher={eligible ? (suggestion?.higher ?? null) : null}
+            ack={row.ackOpenDebt}
+            disabled={disabled}
+            onAck={(ackOpenDebt) => set(ackOpenDebt ? { ackOpenDebt, matchChosen: true } : { ackOpenDebt })}
+          />
         )}
       </td>
     </tr>

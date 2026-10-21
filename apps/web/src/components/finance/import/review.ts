@@ -1,5 +1,6 @@
 // Wizard rows: the parser library's review rows (lib/finance-import/review.ts) plus the UI-only state
-// the save needs: the resolved account (C16), the source layout and an optional debt match (§12).
+// the save needs: the resolved account (C16), the source layout and an optional debt match (§12; 0037 flags in
+// lib/finance-import/matching.ts).
 
 import type {
   CategoryJson,
@@ -10,6 +11,7 @@ import type {
   ReferenceData,
   ReportBucket,
 } from "@/lib/finance";
+import type { MatchState } from "@/lib/finance-import/matching";
 import {
   rowBlockers,
   type Blocker,
@@ -18,15 +20,21 @@ import {
 } from "@/lib/finance-import/review";
 import type { ParsedRow } from "@/lib/finance-import/types";
 
-export type MatchChoice = { entry_id: string; version: number; payment_id: string; label: string };
+/** `match` settles an existing debt instead of creating an entry; see MatchState for the 0037 flags. */
+export type WizardRow = LibReviewRow &
+  MatchState & {
+    /** fin_accounts id of the payment; null = the statement's account still has to be linked */
+    accountId: string | null;
+    /** workbook layout or saved bank-table layout the row came from (history only) */
+    layoutId: string | null;
+  };
 
-export type WizardRow = LibReviewRow & {
-  /** fin_accounts id of the payment; null = the statement's account still has to be linked */
-  accountId: string | null;
-  /** workbook layout or saved bank-table layout the row came from (history only) */
-  layoutId: string | null;
-  /** settle an existing debt instead of creating an entry */
-  match: MatchChoice | null;
+/** Match state of a row as read from a file: nothing chosen yet. */
+export const NO_MATCH: Pick<WizardRow, "match" | "matchChosen" | "closeRemainder" | "ackOpenDebt"> = {
+  match: null,
+  matchChosen: false,
+  closeRemainder: false,
+  ackOpenDebt: false,
 };
 
 export const NO_ACCOUNT_TEXT = "Bu dökümün hesabı bir finans hesabıyla eşleşmemiş. Banka kartından hesabı seçin.";
