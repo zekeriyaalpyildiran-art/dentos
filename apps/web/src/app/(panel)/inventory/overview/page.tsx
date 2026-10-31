@@ -32,17 +32,20 @@ import { Loading, Notice, StockErrorBox } from "@/components/stock/ui";
 const READ_PAGE = 1000;
 const MONTHS = 6;
 
-/** Every row of a clinic table, 1000 at a time (PostgREST caps one answer). */
+/**
+ * Every row of a clinic table in pages (PostgREST caps one answer at its max-rows setting, which may be below
+ * READ_PAGE): the next page starts after the rows received, and an empty page ends the read.
+ */
 async function readAll<T>(table: string, columns: string, clinicId: string, orderBy: string, positiveQty = false): Promise<T[]> {
   const out: T[] = [];
-  for (let from = 0; ; from += READ_PAGE) {
+  for (;;) {
     let q = stockDb().from(table).select(columns).eq("clinic_id", clinicId);
     if (positiveQty) q = q.gt("quantity", 0);
-    const { data, error } = await q.order(orderBy).range(from, from + READ_PAGE - 1);
+    const { data, error } = await q.order(orderBy).range(out.length, out.length + READ_PAGE - 1);
     if (error) throw toStockError(error);
     const rows = (data || []) as T[];
+    if (rows.length === 0) return out;
     out.push(...rows);
-    if (rows.length < READ_PAGE) return out;
   }
 }
 
