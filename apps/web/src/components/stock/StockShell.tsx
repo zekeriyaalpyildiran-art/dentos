@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { useAuthStore } from "@/lib/store";
 import { useStock } from "./StockContext";
 import { useWorkCounts } from "./purchasing/common";
 
@@ -10,12 +11,13 @@ interface Tab {
   href: string;
   label: string;
   short?: string;
-  gate?: "op" | "mgr" | "cost" | "po";
+  gate?: "op" | "mgr" | "cost" | "po" | "owner";
   badge?: "critical" | "requests" | "corrections" | "orders";
 }
 
 const TABS: Tab[] = [
   { href: "/inventory", label: "Ana ekran" },
+  { href: "/inventory/overview", label: "Özet", gate: "owner" },
   { href: "/inventory/items", label: "Stok kartları", badge: "critical" },
   { href: "/inventory/movements", label: "Hareketler" },
   { href: "/inventory/receipt", label: "Toplu mal kabul", gate: "op" },
@@ -49,6 +51,7 @@ export function StockShell({
 }) {
   const pathname = usePathname();
   const { gates, dashboard, openSheet, notifyChanged, moduleMissing } = useStock();
+  const isOwner = useAuthStore((state) => state.user?.role === "owner");
   const { counts: workCounts, missing, known } = useWorkCounts();
   // Until stock_work_counts answered, behave as if purchasing were missing: the tabs appear once, never flicker away.
   const purchasingMissing = missing || !known;
@@ -80,7 +83,17 @@ export function StockShell({
       <nav className="mb-6 flex gap-2 border-b pb-3 overflow-x-auto" aria-label="Stok bölümleri">
         {(purchasingMissing ? TABS_WITHOUT_PURCHASING : TABS)
           .filter((t) =>
-            t.gate === "mgr" ? gates.mgr : t.gate === "cost" ? gates.cost : t.gate === "op" ? gates.op : t.gate === "po" ? po : true
+            t.gate === "mgr"
+              ? gates.mgr
+              : t.gate === "cost"
+                ? gates.cost
+                : t.gate === "op"
+                  ? gates.op
+                  : t.gate === "po"
+                    ? po
+                    : t.gate === "owner"
+                      ? isOwner
+                      : true
           )
           .map((tab) => {
             const n = badgeValue(tab.badge);
