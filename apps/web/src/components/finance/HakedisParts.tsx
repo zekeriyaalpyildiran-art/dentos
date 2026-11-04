@@ -363,7 +363,7 @@ export function HkVoidDialog({
 
 /**
  * How one component of a payee was computed: per payment method gross → implant part → lab part → (0035, financing:
- * the Burgan bank's fee share) → deduction → net, then matrah × rate; implants qty × amount; management share on the clinic's gross ciro; ortho lab totals per patient;
+ * the Burgan bank's fee share) → deduction → net, then matrah × rate; implants qty × amount; management share on the month's patient receipts (0039); ortho lab totals per patient;
  * the fixed monthly salary and the month's bonus / other rows (0031). Used by the month pages and by Hakedişim (where
  * the management component carries base and amount only).
  */

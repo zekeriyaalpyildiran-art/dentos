@@ -13,8 +13,8 @@
 // summary of the month (lab_summary / lab_totals), and v2 (0033_hakedis_macro_import.sql): lines imported from the
 // Macro reports (hakedis-macro.ts; fin_hk_import_macro) carry the Macro doctor, procedure, tooth and treatment day; the
 // part of a treatment still unpaid at the end of its month is a line of method 'unpaid' deducted at the rule's
-// deduct_unpaid_bp; lines of a Macro doctor mapped to the clinic or to an outside doctor have no doctor and count only
-// in the clinic ciro (clinic_ciro_share); procedure groups (fin_hk_proc_groups: Macro operation names) and rule kind
+// deduct_unpaid_bp; lines of a Macro doctor mapped to the clinic or to an outside doctor have no doctor and feed no
+// payee (until 0039 they counted in the clinic_ciro_share base, now the month's Finans patient receipts); procedure groups (fin_hk_proc_groups: Macro operation names) and rule kind
 // procedure_piece = a fixed amount per piece of one group for one doctor; imported pieces of the clinic wait for the
 // performing doctor (fin_hk_assign_piece, UNASSIGNED_PIECES), and v2.1 / v2.2 (0034_hakedis_override_unmarked.sql):
 // the performing doctor of ANY imported piece can be chosen (another doctor, "Hakediş yok" or back to its Macro default,
@@ -1179,8 +1179,8 @@ export interface HkRuleComponentJson {
   /** ciro_share / ortho_lab_first only */
   by_method: HkByMethodJson | null;
   /**
-   * matrah: Σ(eligible − deduction) for ciro / ortho (ciro_share from 0032: minus lab_cents), gross clinic ciro for
-   * clinic_ciro_share; implant_piece: null in the SQL payload, 0 from computeMonth; procedure_piece and fixed_monthly:
+   * matrah: Σ(eligible − deduction) for ciro / ortho (ciro_share from 0032: minus lab_cents), the month's Finans
+   * patient receipts for clinic_ciro_share (0039; before, the gross of the month's lines); implant_piece: null in the SQL payload, 0 from computeMonth; procedure_piece and fixed_monthly:
    * null
    */
   base_cents: number | null;
@@ -1459,7 +1459,7 @@ export interface HkLabTotalJson {
 export interface HkComputeResult {
   month: string;
   payees: HkPayeeJson[];
-  /** gross Σ try_cents of the month's live lines (all doctors, incl. implant parts) */
+  /** 0039: the month's Finans patient receipts (the clinic_ciro_share base); before 0039 Σ try_cents of the live lines */
   clinic_total_cents: number;
   warnings: HkWarningJson[];
 }
@@ -3740,7 +3740,7 @@ const mulDiv = (a: number, b: number, c: number) =>
  * the line stays under its method (the line counts once). The bank's fee share of a ciro_share line is round((F −
  * implant share − lab share) × loan fee / loan gross) per line (ortho_lab_first and lines without a rule: 0); the
  * financing bucket carries fee = Σ, its deduction is round((eligible − fee) × bp / 10000) and it adds eligible − fee −
- * deduction to the base. clinic_total_cents stays the gross of every live line. FINANCING_MATCHED (the month's lines
+ * deduction to the base. clinic_total_cents is not affected (0039: the month's patient receipts). FINANCING_MATCHED (the month's lines
  * with F > 0: count, Σ F, Σ fee) and, with `financings`, FINANCING_UNMATCHED (the live loans dated in the month that
  * no line of any month matched; by day, patient, id; only when a live line of the month has a paid_on: a month imported
  * before 0035 or never imported lists no loans) come after UNMARKED_AS_CHILD.

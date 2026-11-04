@@ -8,11 +8,14 @@
 -- ciro_share bases, pieces, deductions, lab costs, floors and the netting are computed as before.
 --
 -- Only fin__hk_compute is replaced (0035 body, same signature, the gross CTE swapped). A closed month keeps its stored
--- statement; open months follow Finans (a receipt booked or excluded later changes the open month's base). Every
--- caller (month view, hk_my_month, close, netting) reads the base through fin__hk_compute, so all agree.
+-- statement; open months follow Finans (a receipt booked or excluded later changes the open month's base; a closed
+-- month's live figure may then differ from its statement, as for a changed mark). Every caller (month view,
+-- hk_my_month, hk_my_months, close) reads the base through fin__hk_compute, so all agree. Who sees the base is
+-- unchanged: everyone who saw the management component and clinic_total_cents before (owner, finance, the hakediş
+-- preparer; a payee only on their own component).
 --
 -- Self-check: for every clinic, the computed clinic_total_cents of the current and the previous month equals the
--- dashboard receipts figure.
+-- dashboard's receipts query (fin__dashboard v_receipts: same bucket, exclusion and month bounds).
 
 BEGIN;
 

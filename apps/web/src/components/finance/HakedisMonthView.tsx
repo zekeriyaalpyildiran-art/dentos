@@ -697,7 +697,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
         “Ödenmemiş” işlemin ay sonuna kadar ödenmemiş kısmıdır). İmplant payı ciroya girmez; kesintiler ödeme şekline
         göre kalan tutardan düşülür. Lab: ortodontide hastanın ödemelerinden önce karşılanan lab gideri, ciro payında ayın
         lab gideri (kesintilerden sonra düşülür; ciroyu aşan kısım klinikte kalır). Oran matraha uygulanır. Yönetim
-        payı kliniğin brüt cirosundan hesaplanır. Sabit maaş net tutardır; prim ve diğer satırları o ayın elle girilen tutarlarıdır (eksi
+        payı kliniğin o ayki toplam hasta tahsilatından (Finans → Brüt hasta tahsilatı) hesaplanır. Sabit maaş net tutardır; prim ve diğer satırları o ayın elle girilen tutarlarıdır (eksi
         tutar kesintidir). Ay kapatılınca hekimin bütün tutarları tek hakediş kaydına, personelin maaşı ve primi
         personel gideri olarak Finans&apos;a yazılır.
         {showProcedure && " İşlem ücreti: hekimin “İşlem başı ücret” kurallarındaki gruplarda yaptığı işlemler × tutar."}
@@ -775,7 +775,10 @@ function StatementCell({
   );
 }
 
-/** Closed month: what was frozen at close, and whether the live figure has moved since (marks / rules changed). */
+/**
+ * Closed month: what was frozen at close, and whether the live figure has moved since (marks / rules changed, or from
+ * 0039 the month's Finans patient receipts behind the management share).
+ */
 function StatementsCard({ data }: { data: HkMonthPayload }) {
   const live = new Map(data.payees.map((p) => [p.payee_user_id, p.total_cents]));
   const moved = data.statements.some((st) => (live.get(st.payee_user_id) ?? 0) !== st.total_cents);
@@ -879,7 +882,7 @@ function StatementsCard({ data }: { data: HkMonthPayload }) {
       )}
       <p className="text-xs text-gray-500 mt-3">
         {moved
-          ? "Kapanıştan sonra hasta işaretleri, kurallar ya da Burgan finansman kayıtları değiştiği için güncel hesap farklı. Kapanış dökümü ve finans kaydı değişmez; düzeltmek için ayı yeniden açıp tekrar kapatın (yalnızca klinik sahibi)."
+          ? "Kapanıştan sonra hasta işaretleri, kurallar, Burgan finansman kayıtları ya da Finans'taki o ayın hasta tahsilatları (yönetim payı) değiştiği için güncel hesap farklı. Kapanış dökümü ve finans kaydı değişmez; düzeltmek için ayı yeniden açıp tekrar kapatın (yalnızca klinik sahibi)."
           : ledger
             ? "Kapanış dökümü ve finans kaydı ay kapatıldığı andaki hesaptır. Ödemeleri finans kaydına ekleyin."
             : "Kapanış dökümü ay kapatıldığı andaki hesaptır; ödemeleri Finans yetkilisi kaydeder."}
@@ -1085,7 +1088,8 @@ function CloseDialog({
           ay ayrı kayıtlarla (kişinin hakediş carisi ve bu hakediş ayıyla Hekim hakedişi / Personel kategorisinde; ör.
           ay içi avans, bankadan maaş) girilen tutarlar (ödenmemiş planlı kayıtlar dahil) toplamdan düşülür ve kayda
           yalnızca kalan yazılır; hiçbir şey kalmıyorsa kayıt açılmaz. Fazla ödeme ayın kapanmasını engellemez, uyarı
-          olarak gösterilir.
+          olarak gösterilir. Yönetim payı kapanış anında Finans&apos;ta kayıtlı o ayın hasta tahsilatından hesaplanır;
+          ayın banka, POS ve kasa kayıtları girildikten sonra kapatın.
           {data.payees.some((p) => bankSplitOf(p)) &&
             " Bankadan ödenen sabit tutarı olan kişinin kaydının açıklamasına bankadan ve elden ödenecek kısımlar yazılır; kayıt tutarı yine toplamdır."}
           {data.payees.some((p) => p.components.some((c) => c.kind === "minimum_topup")) &&

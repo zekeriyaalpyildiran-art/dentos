@@ -224,7 +224,7 @@ export function StockOverviewView({
             items={[
               { cls: "bg-blue-500", label: "Kullanım" },
               { cls: "bg-amber-500", label: "Sayım eksiği" },
-              ...(showWaste ? [{ cls: "bg-rose-500", label: "Fire" }] : []),
+              ...(showWaste ? [{ cls: "bg-red-500", label: "Fire" }] : []),
             ]}
           />
           <StockErrorBox error={reportError} />
@@ -243,7 +243,7 @@ export function StockOverviewView({
                 bars: [
                   { name: "Kullanım", value: m.usedCents, cls: "bg-blue-500" },
                   { name: "Sayım eksiği", value: m.countLossCents, cls: "bg-amber-500" },
-                  { name: "Fire", value: m.wasteCents, cls: "bg-rose-500" },
+                  { name: "Fire", value: m.wasteCents, cls: "bg-red-500" },
                 ],
               }))}
             />
