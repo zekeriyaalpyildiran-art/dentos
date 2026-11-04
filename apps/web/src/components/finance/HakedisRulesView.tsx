@@ -793,7 +793,7 @@ function RuleDialog({
               label="Pay oranı (%)"
               hint={
                 form.kind === "clinic_ciro_share"
-                  ? "Kliniğin aylık brüt cirosu üzerinden (tüm hekimler, implant ve lab dahil, kesintisiz)."
+                  ? "Kliniğin o ayki toplam hasta tahsilatı üzerinden (Finans'taki brüt hasta tahsilatı, kesintisiz)."
                   : form.kind === "ortho_lab_first"
                     ? "Her ödemeden önce hastanın lab gideri karşılanır, kalan tutara uygulanır."
                     : "Kesintilerden sonra kalan matraha uygulanır. Örnek: 30 veya 12,5"

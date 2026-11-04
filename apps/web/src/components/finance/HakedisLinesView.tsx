@@ -704,7 +704,7 @@ function LinesTab({
                       {voided ? (
                         "—"
                       ) : !l.doctor_id ? (
-                        <span className="text-gray-600 whitespace-nowrap">Yalnız klinik cirosu</span>
+                        <span className="text-gray-600 whitespace-nowrap">Hekim hakedişine girmez</span>
                       ) : l.rule_kind && l.rule_id ? (
                         <>
                           <div className="whitespace-nowrap">{KIND_LABELS[l.rule_kind]}</div>
@@ -759,7 +759,7 @@ function LinesTab({
         {unmarkedChild > 0 &&
           ` Çocuk kuralında “${UNMARKED_DEFAULT_LABEL}” seçili hekimin işaretsiz hastası çocuk sayılır (“${SEGMENT_SOURCE_LABELS.unmarked_default}”; bu ay ${unmarkedChild} satır); hasta yetişkinse “İşaretle” ile “${MARK_GROUP_LABELS.adult}” seçin.`}
         {hasImport &&
-          ` Macro'dan aktarılan satırlar işlem gününe göredir (ortodontide ödeme gününe göre); “${METHOD_LABELS.unpaid}” işlemin ay sonuna kadar ödenmemiş kısmıdır. Bu satırlar düzenlenmez: yanlışsa Macro'da düzeltip aralığı yeniden yükleyin ya da satırı iptal edin. Hekimsiz satırlar (klinik / dışarıdan hekim) yalnız klinik cirosuna girer. Macro satırlarının hasta anahtarı dosya numarasıdır (macro:…); hastanın Macro'dan önce adla ya da dosya numarasıyla girilmiş işareti ve lab giderleri bu satırlara da uygulanır, yüklemeden sonra adla girilen işaret dosya numarasına kaydedilir.`}
+          ` Macro'dan aktarılan satırlar işlem gününe göredir (ortodontide ödeme gününe göre); “${METHOD_LABELS.unpaid}” işlemin ay sonuna kadar ödenmemiş kısmıdır. Bu satırlar düzenlenmez: yanlışsa Macro'da düzeltip aralığı yeniden yükleyin ya da satırı iptal edin. Hekimsiz satırlar (klinik / dışarıdan hekim) hiçbir hekimin hakedişine girmez. Macro satırlarının hasta anahtarı dosya numarasıdır (macro:…); hastanın Macro'dan önce adla ya da dosya numarasıyla girilmiş işareti ve lab giderleri bu satırlara da uygulanır, yüklemeden sonra adla girilen işaret dosya numarasına kaydedilir.`}
         {hasImport &&
           ` Havaleler ödeme gününe göre ayrı satırdır; hastanın Burgan kredisiyle ödediği havaleler (aynı hasta adı, kredi gününden en fazla 3 gün önce ya da sonra) hesapta “${METHOD_LABELS.financing}” sayılır.`}
         {financed > 0 && ` ${FINANCING_NOTE}`}

@@ -901,6 +901,26 @@ describe("clinic_ciro_share", () => {
     });
     expect(s.gross_by_method).toEqual({ cash: 0, card: TL(29_000), transfer: 0, financing: 0, unpaid: 0 });
   });
+
+  it("is computed on the month's patient receipts from 0039, the doctors' shares unchanged", () => {
+    const aRule = aStd();
+    const mgmt = rule({ kind: "clinic_ciro_share", payee_user_id: "u-a", share_bp: 400 });
+    const input = {
+      month: "2026-11",
+      rules: [aRule, mgmt],
+      lines: [
+        line({ doctor_id: "doc-a", method: "card", try_cents: TL(30_000), implant_cents: TL(10_000) }),
+        line({ doctor_id: "doc-d", try_cents: TL(3_500) }),
+      ],
+    };
+    const before = run(input);
+    const out = run({ ...input, receipts: { cents: TL(120_000), count: 57 } });
+    expect(KIND_LABELS.clinic_ciro_share).toBe("Yönetim payı (klinik tahsilatı)");
+    expect(out.clinic_total_cents).toBe(TL(120_000));
+    expect(component(out, mgmt.id)).toMatchObject({ base_cents: TL(120_000), amount_cents: TL(4_800), lines_count: 57 });
+    expect(component(out, aRule.id)).toEqual(component(before, aRule.id));
+    expect(out.warnings).toEqual(before.warnings);
+  });
 });
 
 describe("rule month ranges", () => {

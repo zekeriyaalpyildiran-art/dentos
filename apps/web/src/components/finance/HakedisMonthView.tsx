@@ -419,7 +419,7 @@ function StatusCard({
       </div>
       <div className="grid gap-x-8 gap-y-1 mt-4 sm:grid-cols-2 text-sm">
         <div className="flex justify-between gap-4 py-1 border-b">
-          <span className="text-gray-700">Klinik cirosu (brüt, tüm satırlar)</span>
+          <span className="text-gray-700">Klinik toplam tahsilatı (Finans)</span>
           <span className="tabular-nums">{formatTL(data.clinic_total_cents)}</span>
         </div>
         <div className="flex justify-between gap-4 py-1 border-b">
@@ -1011,7 +1011,7 @@ function LinesByDoctor({ data, month, base }: { data: HkMonthPayload; month: str
                             </td>
                             <td className="px-3 py-1.5 whitespace-nowrap">
                               {!l.doctor_id ? (
-                                <span className="text-gray-600">Yalnız klinik cirosu</span>
+                                <span className="text-gray-600">Hekim hakedişine girmez</span>
                               ) : l.rule_kind && l.rule_id ? (
                                 <>
                                   {KIND_LABELS[l.rule_kind]}

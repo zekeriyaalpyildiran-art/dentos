@@ -163,7 +163,7 @@ export const FINANCING_FEE_LABEL = "Banka kesintisi";
 export const FINANCING_NOTE =
   "Finansman (Burgan): hastanın Burgan kredisiyle ödediği havale kısmı. Hekimin cirosuna bankanın kesintisi " +
   "(komisyon, KKDF ve BSMV; kredi tutarına oranla) düşülerek girer, kalan tutara kuralın finansman kesintisi " +
-  "uygulanır. Ortodonti kuralında banka kesintisi düşülmez. Klinik cirosu (yönetim payı) brüt tutarla hesaplanır.";
+  "uygulanır. Ortodonti kuralında banka kesintisi düşülmez. Yönetim payı Finans'taki toplam hasta tahsilatından hesaplanır.";
 
 /** 0035: rules editor hint of the financing deduction (ciro_share / ortho_lab_first). */
 export const FINANCING_DEDUCT_HINT =
@@ -283,7 +283,7 @@ export const KIND_LABELS: Record<HkKind, string> = {
   ortho_lab_first: "Ortodonti (önce lab)",
   implant_piece: "İmplant (adet başı)",
   procedure_piece: "İşlem başı ücret",
-  clinic_ciro_share: "Yönetim payı (klinik cirosu)",
+  clinic_ciro_share: "Yönetim payı (klinik tahsilatı)",
   fixed_monthly: "Sabit aylık maaş",
   bank_portion: "Bankadan ödenen sabit tutar",
   minimum_monthly: "Taban maaş (hangisi yüksekse)",
@@ -3364,6 +3364,11 @@ export interface HkComputeInput {
   payees?: readonly { user_id: string; name: string }[];
   /** payees that have a physician counterparty; when given, NO_COUNTERPARTY is reported for the others (total ≠ 0) */
   counterparty_user_ids?: readonly string[];
+  /**
+   * 0039: the month's patient receipts in Finans ("Brüt hasta tahsilatı (blokeli dahil)") and their number, the
+   * clinic_ciro_share base and clinic_total_cents. Absent: the pre-0039 base, the gross of the month's live lines.
+   */
+  receipts?: { cents: number; count: number } | null;
 }
 
 /** Per-line resolution of the month's live lines (fin_hk_month lines: resolved_segment, rule_id, lab_part). */
@@ -3715,7 +3720,8 @@ const mulDiv = (a: number, b: number, c: number) =>
  * Macro import (0033): an 'unpaid' line goes to the 'unpaid' bucket, deducted at the rule's deduct_unpaid_bp (the
  * bucket exists when the rule has that rate or such lines, so other components keep their 0032 keys). A line without a
  * doctor (Macro doctor mapped to the clinic / an outside doctor) has no rule and no warning; like every live line it is
- * in clinic_total_cents (the clinic_ciro_share base). A procedure_piece rule pays piece_cents × Σ qty of the month's
+ * in clinic_total_cents (the clinic_ciro_share base; 0039: the month's patient receipts when `receipts` is given, as the
+ * SQL always does). A procedure_piece rule pays piece_cents × Σ qty of the month's
  * live pieces of its doctor and group (component with qty, lines_count, proc_group_id / proc_group_name, base null),
  * ranked with implant_piece and after the doctor's implant_piece component, by group name. An implant_piece rule counts
  * its doctor's implant-type pieces: of an implant group, or without a group (manual / clinical; the import stores only
@@ -3933,7 +3939,8 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
     }
   }
 
-  const clinicTotal = monthLines.reduce((sum, l) => sum + l.try_cents, 0);
+  // 0039: the management base is the month's patient receipts (SQL gross CTE over fin__live_payments).
+  const clinicTotal = input.receipts ? input.receipts.cents : monthLines.reduce((sum, l) => sum + l.try_cents, 0);
   // Pieces counted by an implant_piece / procedure_piece component (0033: UNRULED_PIECES = implant pieces outside it).
   const pieceRuled = new Set<string>();
   const labOverCiro: Extract<HkWarningJson, { code: "LAB_OVER_CIRO" }>[] = [];
@@ -3988,7 +3995,7 @@ export function computeMonth(input: HkComputeInput): HkComputeOutput {
       c.amount_cents = rule.piece_cents ?? 0;
     } else {
       c.base_cents = clinicTotal;
-      c.lines_count = monthLines.length;
+      c.lines_count = input.receipts ? input.receipts.count : monthLines.length;
       c.amount_cents = applyBp(clinicTotal, rule.share_bp ?? 0);
     }
   });

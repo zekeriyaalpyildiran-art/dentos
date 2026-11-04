@@ -363,7 +363,7 @@ function MonthDetail({ data }: { data: HkMyMonthData }) {
               label="Yönetim payı"
               cents={s.management_cents}
               caption={management
-                .map((c) => `Klinik cirosu ${formatTL(c.base_cents ?? 0)} × ${formatBp(c.share_bp)}`)
+                .map((c) => `Klinik toplam tahsilatı ${formatTL(c.base_cents ?? 0)} × ${formatBp(c.share_bp)}`)
                 .join("; ")}
             />
           )}

@@ -463,7 +463,7 @@ export function ComponentBreakdown({ c }: { c: HkMyComponentJson }) {
       )}
       {c.kind === "clinic_ciro_share" && (
         <p className="text-gray-700">
-          Klinik cirosu (brüt, tüm hekimler) {formatTL(c.base_cents ?? 0)} × {formatBp(c.share_bp)} ={" "}
+          Klinik toplam tahsilatı (Finans) {formatTL(c.base_cents ?? 0)} × {formatBp(c.share_bp)} ={" "}
           <strong>{formatTL(c.amount_cents)}</strong>
         </p>
       )}
