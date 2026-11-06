@@ -118,7 +118,7 @@ describe("homePathFor", () => {
     expect(homePathFor("assistant")).toBe("/inventory");
     expect(homePathFor("doctor")).toBe("/appointments");
     expect(homePathFor("owner")).toBe("/crm/today");
-    expect(homePathFor("admin")).toBe("/crm/today");
+    expect(homePathFor("admin")).toBe("/yonetim");
   });
 
   it("has an entry for every staff role and falls back for anything else", () => {
@@ -487,6 +487,7 @@ describe("links into closed sections from shared pages", () => {
     "components/crm/DaySummary.tsx": "DaySummary",
     "components/crm/OverdueDialog.tsx": "OverdueDialog",
     "components/crm/ui.tsx": "CrmShell",
+    "components/mgmt/ChecklistItemsEditor.tsx": "ChecklistItemsEditor",
   };
 
   it("finds the links it guards (the check is not vacuous)", () => {
@@ -572,5 +573,21 @@ describe("badgeText", () => {
     expect(badgeText(7)).toBe("7");
     expect(badgeText(99)).toBe("99");
     expect(badgeText(100)).toBe("99+");
+  });
+});
+
+describe("Yönetim (owner's decision 2026-11-06: the administrative manager's checklist)", () => {
+  it("is open to the owner and admins only, first in their menu", () => {
+    expect([...rolesAllowedFor("/yonetim")].sort()).toEqual(["admin", "owner"]);
+    for (const role of ["owner", "admin"]) expect(hrefs(menuItemsFor(user(role)))[0], role).toBe("/yonetim");
+    for (const role of ["reception", "assistant", "doctor"]) {
+      expect(hrefs(menuItemsFor(user(role, ["finance", "crm_manage"]))), role).not.toContain("/yonetim");
+      expect(canOpenPath(role, "/yonetim"), role).toBe(false);
+    }
+  });
+
+  it("is where admins start", () => {
+    expect(homePathFor("admin")).toBe("/yonetim");
+    expect(pageSource("/yonetim")).not.toBeNull();
   });
 });

@@ -27,6 +27,9 @@ export interface MenuItem {
  * active and reminders are done from CRM · Bugün. Their routes still work for direct links.
  */
 export const MENU_ITEMS: readonly MenuItem[] = [
+  // The administrative manager's routine and alerts (owner's workflow 2026-11-06); owner and admins, see
+  // SECTIONS_CLOSED_FOR.
+  { name: "🧭 Yönetim", href: "/yonetim" },
   { name: "📅 Ajanda", href: "/appointments" },
   { name: "👥 Hastalar", href: "/patients" },
   { name: "🦷 Tedavi Planları", href: "/treatment-plans" },
@@ -63,6 +66,7 @@ export const MENU_ITEMS: readonly MenuItem[] = [
  * Hakedişim is for the payees only: doctors and the owner (management share); reception has no hakediş.
  * Hasta işaretleri (owner's decision 2026-10-18) is for the reception desk: reception, admins and the owner mark the
  * patients; assistants and doctors (the payees) do not.
+ * Yönetim (owner's decision 2026-11-06) is the idari işler müdürü's checklist: owner and admins only.
  */
 export const SECTIONS_CLOSED_FOR: Readonly<Record<string, readonly UserRole[]>> = {
   "/crm": ["assistant", "doctor"],
@@ -71,6 +75,7 @@ export const SECTIONS_CLOSED_FOR: Readonly<Record<string, readonly UserRole[]>> 
   "/reports": ["assistant", "doctor"],
   "/hakedisim": ["reception", "assistant", "admin"],
   "/hasta-isaretleri": ["assistant", "doctor"],
+  "/yonetim": ["reception", "assistant", "doctor"],
 };
 
 function sectionOf(href: string): string | undefined {
@@ -117,7 +122,7 @@ export function isMenuItemActive(item: MenuItem, pathname: string | null | undef
  */
 export const ROLE_HOME: Record<UserRole, string> = {
   owner: "/crm/today",
-  admin: "/crm/today",
+  admin: "/yonetim",
   doctor: "/appointments",
   assistant: "/inventory",
   reception: "/crm/today",
