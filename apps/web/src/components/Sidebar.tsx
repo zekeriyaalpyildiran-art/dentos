@@ -33,6 +33,8 @@ const BADGE_CLASS: Record<MenuBadgeKey, string> = {
   stock: "bg-red-600 text-white",
   // Amber (waiting work, not an alarm) with the navy ink: the same in both themes, about 8:1.
   roomRequests: "bg-amber-400 text-sidebar",
+  // Orders waiting for the owner's approval (0041): an action only the owner can take.
+  approvals: "bg-red-600 text-white",
 };
 
 function NavList({
@@ -185,7 +187,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const user = useAuthStore((state) => state.user);
-  const badges = useMenuBadges(user?.user_id, canManageStock(user));
+  const badges = useMenuBadges(user?.user_id, canManageStock(user), user?.role === "owner");
 
   const handleLogout = async () => {
     try {

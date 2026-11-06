@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { crmWorkList } from "@/lib/crm";
 import { stockItemLevels, stockWorkCounts } from "@/lib/stock/rpc";
+import { mgmtOwnerApprovalCount } from "@/lib/mgmt";
 import type { MenuBadgeKey } from "@/lib/nav";
 
 export type MenuBadges = Partial<Record<MenuBadgeKey, number>>;
@@ -49,13 +50,15 @@ function count(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-async function loadBadges(stockManager: boolean): Promise<MenuBadges> {
-  const [work, stock, rooms] = await Promise.allSettled([
+async function loadBadges(stockManager: boolean, owner: boolean): Promise<MenuBadges> {
+  const [work, stock, rooms, approvals] = await Promise.allSettled([
     // Same list as the CRM · Bugün page opens with (all staff, 'Günlük liste'); one row is enough for the counts.
     crmWorkList({ p_filter: "all", p_user_id: null, p_page: { offset: 0, limit: 1 } }),
     stockItemLevels({ status: "critical" }, { offset: 0, limit: 1 }),
     // Only the people who approve / deliver room requests see that count (the server flag decides below).
     stockManager ? stockWorkCounts() : Promise.resolve(null),
+    // Orders above the owner's approval limit (0041): only the owner can approve them.
+    owner ? mgmtOwnerApprovalCount() : Promise.resolve(null),
   ]);
   const badges: MenuBadges = {};
   if (work.status === "fulfilled" && work.value) {
@@ -71,6 +74,7 @@ async function loadBadges(stockManager: boolean): Promise<MenuBadges> {
     const approved = count(r?.approved);
     if (pending !== undefined || approved !== undefined) badges.roomRequests = (pending ?? 0) + (approved ?? 0);
   }
+  if (approvals.status === "fulfilled") badges.approvals = count(approvals.value);
   return badges;
 }
 
@@ -78,7 +82,7 @@ async function loadBadges(stockManager: boolean): Promise<MenuBadges> {
  * @param stockManager the client mirror of the stock manager rule (canManageStock); the room request count is only
  *   loaded for them, and only shown when stock_work_counts confirms can_manage.
  */
-export function useMenuBadges(userId: string | null | undefined, stockManager = false): MenuBadges {
+export function useMenuBadges(userId: string | null | undefined, stockManager = false, owner = false): MenuBadges {
   const pathname = usePathname();
   const [badges, setBadges] = useState<MenuBadges>({});
   const refreshRef = useRef<() => void>(() => {});
@@ -102,7 +106,7 @@ export function useMenuBadges(userId: string | null | undefined, stockManager = 
       if (!force && Date.now() - last < MIN_GAP_MS) return;
       busy = true;
       last = Date.now();
-      loadBadges(stockManager)
+      loadBadges(stockManager, owner)
         .then((next) => {
           if (!alive) return;
           setBadges(next);
@@ -139,7 +143,7 @@ export function useMenuBadges(userId: string | null | undefined, stockManager = 
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener(REFRESH_EVENT, onRequest);
     };
-  }, [userId, stockManager]);
+  }, [userId, stockManager, owner]);
 
   // After a page change (e.g. a call result was saved and the user moved on) the counts follow sooner.
   useEffect(() => {

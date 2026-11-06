@@ -8,7 +8,7 @@ import { useParams, usePathname, useRouter, useSearchParams } from "next/navigat
 import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { UUID_RE } from "@/lib/finance";
 import { canSeeFinance } from "@/lib/permissions";
-import { PAYABLE_STATE_LABELS, qtyLabel, type PayableState } from "@/lib/stock/purchasing";
+import { PAYABLE_STATE_LABELS, ownerApprovalText, qtyLabel, type PayableState } from "@/lib/stock/purchasing";
 import {
   istanbulToday,
   stockPoDetail,
@@ -255,6 +255,12 @@ function OrderDetail() {
             )}
             {!o.actions.can_approve && o.actions.approve_blocked === "self" && (
               <Notice tone="info">Bu siparişi başka bir stok yetkilisi onaylamalı.</Notice>
+            )}
+            {!o.actions.can_approve && o.actions.approve_blocked === "owner" && (
+              <Notice tone="warn">{ownerApprovalText(o.owner_approval_limit_cents)}</Notice>
+            )}
+            {o.actions.can_approve && o.owner_approval && (
+              <Notice tone="warn">Onay sınırının üzerinde bir sipariş: onayınızı bekliyor.</Notice>
             )}
             {o.actions.can_mark_ordered && (
               <button type="button" className={`${buttonPrimary} min-h-[44px]`} onClick={() => setDialog({ kind: "mark_ordered" })}>

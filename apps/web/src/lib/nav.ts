@@ -7,7 +7,7 @@ import { canSeeFinance, canSeeHakedis } from "./permissions";
 type NavUser = { role?: string | null; permissions?: readonly string[] } | null | undefined;
 
 /** Counts shown next to a menu item (see useMenuBadges). */
-export type MenuBadgeKey = "crm" | "tasks" | "stock" | "roomRequests";
+export type MenuBadgeKey = "crm" | "tasks" | "stock" | "roomRequests" | "approvals";
 
 export interface MenuItem {
   name: string;
@@ -29,7 +29,7 @@ export interface MenuItem {
 export const MENU_ITEMS: readonly MenuItem[] = [
   // The administrative manager's routine and alerts (owner's workflow 2026-11-06); owner and admins, see
   // SECTIONS_CLOSED_FOR.
-  { name: "🧭 Yönetim", href: "/yonetim" },
+  { name: "🧭 Yönetim", href: "/yonetim", badges: ["approvals"] },
   { name: "📅 Ajanda", href: "/appointments" },
   { name: "👥 Hastalar", href: "/patients" },
   { name: "🦷 Tedavi Planları", href: "/treatment-plans" },
@@ -164,6 +164,12 @@ export const MENU_BADGES: Record<MenuBadgeKey, { short: string; label: (n: numbe
     short: "talep",
     label: (n) => `${n} açık oda talebi (onay veya teslim bekliyor); listeyi aç`,
     href: "/inventory/requests",
+  },
+  // Purchase orders above the owner's limit waiting for the owner (0041); loaded for the owner only.
+  approvals: {
+    short: "onay",
+    label: (n) => `${n} sipariş onayınızı bekliyor (onay sınırının üzerinde); listeyi aç`,
+    href: "/inventory/orders?status=pending",
   },
 };
 

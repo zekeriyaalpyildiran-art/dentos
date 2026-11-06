@@ -61,3 +61,13 @@ describe("mgmt helpers", () => {
     expect(itemPayload({ ...base, frequency: "daily" })).toMatchObject({ weekdays: [1], weekday: null, month_day: null });
   });
 });
+
+describe("ownerApprovalText (0041)", () => {
+  it("names the owner's limit in TL", async () => {
+    const { ownerApprovalText } = await import("../stock/purchasing");
+    expect(ownerApprovalText(1000000)).toBe(
+      "10.000 TL üzerindeki veya fiyatı girilmemiş satırı olan siparişleri yalnızca klinik sahibi onaylayabilir."
+    );
+    expect(ownerApprovalText(null)).toMatch(/^onay sınırının üzerindeki/);
+  });
+});

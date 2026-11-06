@@ -347,3 +347,15 @@ export function formLinePriceCents(line: Pick<PoFormLine, "price_text" | "price_
   if (!parsed.ok) return null;
   return pricePerUsage(parsed.cents, line.price_unit, Number(line.units_per_purchase) || 1);
 }
+
+/**
+ * Why a stock manager cannot approve an order above the owner's limit (0041 approve_blocked = 'owner'). Orders with
+ * unpriced lines are held too, since their total cannot be checked.
+ */
+export function ownerApprovalText(limitCents: number | null | undefined): string {
+  const limit =
+    typeof limitCents === "number" && limitCents > 0
+      ? `${new Intl.NumberFormat("tr-TR", { maximumFractionDigits: 2 }).format(limitCents / 100)} TL`
+      : "onay sınırının";
+  return `${limit} üzerindeki veya fiyatı girilmemiş satırı olan siparişleri yalnızca klinik sahibi onaylayabilir.`;
+}

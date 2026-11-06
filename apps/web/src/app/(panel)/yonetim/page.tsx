@@ -22,6 +22,7 @@ import {
   groupBoard,
   labReadyCount,
   mgmtBoard,
+  mgmtOwnerApprovalCount,
   mgmtMark,
   scheduleLabel,
   type Board,
@@ -62,12 +63,13 @@ function settledValue<T>(r: PromiseSettledResult<T>, pick: (v: T) => number | un
 }
 
 async function loadAlerts(stockManager: boolean): Promise<Alert[]> {
-  const [work, tasks, critical, rooms, lab] = await Promise.allSettled([
+  const [work, tasks, critical, rooms, lab, approvals] = await Promise.allSettled([
     crmWorkList({ p_filter: "all", p_user_id: null, p_page: { offset: 0, limit: 1 } }),
     staffTaskList({ p_scope: "all", p_page: { offset: 0, limit: 1 } }),
     stockItemLevels({ status: "critical" }, { offset: 0, limit: 1 }),
     stockManager ? stockWorkCounts() : Promise.resolve(null),
     labReadyCount(),
+    mgmtOwnerApprovalCount(),
   ]);
   const alerts: Alert[] = [
     { key: "crm_overdue", label: "Geciken CRM işi", value: settledValue(work, (w) => w.counts?.overdue), href: "/crm/today", tone: "red" },
@@ -81,6 +83,13 @@ async function loadAlerts(stockManager: boolean): Promise<Alert[]> {
       value: settledValue(rooms, (r) => (r && r.can_manage !== false ? (r.room_requests?.pending ?? 0) + (r.room_requests?.approved ?? 0) : undefined)),
       href: "/inventory/requests",
       tone: "amber",
+    },
+    {
+      key: "owner_approvals",
+      label: "Sahip onayı bekleyen sipariş",
+      value: settledValue(approvals, (n) => n),
+      href: "/inventory/orders?status=pending",
+      tone: "red",
     },
     { key: "lab_ready", label: "Lab'dan gelen iş", value: settledValue(lab, (n) => n), href: "/lab", tone: "blue" },
   ];
@@ -203,7 +212,7 @@ export default function YonetimPage() {
         ) : alerts.length === 0 ? (
           <p className="text-sm text-gray-500">Uyarı bilgisi alınamadı.</p>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-3">
             {alerts.map((a) => (
               <Link
                 key={a.key}

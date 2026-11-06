@@ -854,8 +854,11 @@ export function refLabel(refNo: number | null | undefined): string {
 export interface PoActions {
   can_edit: boolean;
   can_approve: boolean;
-  /** 'self' when only the "creator cannot approve" rule blocks the caller. */
-  approve_blocked: "self" | null;
+  /**
+   * 'self' when only the "creator cannot approve" rule blocks the caller; 'owner' when the order is above the owner's
+   * approval limit (or has unpriced lines) and the caller is not the clinic owner (0041).
+   */
+  approve_blocked: "self" | "owner" | null;
   can_mark_ordered: boolean;
   can_cancel: boolean;
   can_close: boolean;
@@ -880,6 +883,9 @@ export interface PoListRow {
   lines_complete: number;
   summary: string;
   payable_state: PayableState;
+  /** 0041: a pending order only the clinic owner may approve; the limit (kuruş) comes with it. */
+  owner_approval?: boolean;
+  owner_approval_limit_cents?: number | null;
   actions: PoActions;
   total_cents?: number;
   unpriced_lines?: number;
@@ -972,6 +978,9 @@ export interface PoDetailOrder {
   cancel_reason: string | null;
   cancelled_by_name: string | null;
   payable_state: PayableState;
+  /** 0041: a pending order only the clinic owner may approve; the limit (kuruş) comes with it. */
+  owner_approval?: boolean;
+  owner_approval_limit_cents?: number | null;
   actions: PoActions;
   lines: PoLineJson[];
   total_cents?: number;

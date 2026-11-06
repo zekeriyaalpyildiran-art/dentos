@@ -117,6 +117,8 @@ export const mgmtMark = (itemId: string, date: string, done: boolean, note: stri
     p_done: done,
     p_note: note,
   });
+/** Pending purchase orders waiting for the owner (0041). */
+export const mgmtOwnerApprovalCount = () => rpc<number>("mgmt_owner_approval_count");
 export const mgmtSaveItem = (item: ItemInput) => rpc<ChecklistItem>("mgmt_checklist_save_item", { p_item: item });
 
 /** Lab jobs that came back from the lab ('ready'), read under the lab_orders RLS (head count only). */

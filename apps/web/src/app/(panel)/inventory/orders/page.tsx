@@ -6,7 +6,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { canReadPurchasing, PO_STATUSES, type PoStatus } from "@/lib/stock/purchasing";
+import { canReadPurchasing, ownerApprovalText, PO_STATUSES, type PoStatus } from "@/lib/stock/purchasing";
 import {
   stockPoList,
   stockPoTransition,
@@ -266,6 +266,9 @@ function Orders() {
                     </Link>
                     <PoStatusBadge status={r.status} closedShort={r.closed_short} />
                     {r.overdue && <span className="text-xs font-semibold text-red-700">Gecikti</span>}
+                    {r.owner_approval && (
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded bg-amber-100 text-amber-900">Sahip onayı gerekli</span>
+                    )}
                   </div>
                   <p className="text-sm text-gray-900">{r.supplier_name ?? "Tedarikçi"}</p>
                   <p className="text-sm text-gray-700 break-words">{r.summary}</p>
@@ -301,6 +304,9 @@ function Orders() {
                   )}
                   {!r.actions.can_approve && r.actions.approve_blocked === "self" && (
                     <span className="text-xs text-gray-600 max-w-[14rem]">Bu siparişi başka bir stok yetkilisi onaylamalı.</span>
+                  )}
+                  {!r.actions.can_approve && r.actions.approve_blocked === "owner" && (
+                    <span className="text-xs text-gray-600 max-w-[14rem]">{ownerApprovalText(r.owner_approval_limit_cents)}</span>
                   )}
                   {r.actions.can_mark_ordered && (
                     <button

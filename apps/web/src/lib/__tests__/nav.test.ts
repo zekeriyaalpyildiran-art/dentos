@@ -79,7 +79,13 @@ describe("menuItemsFor", () => {
 
   it("puts the badges on CRM · Bugün, Görevler and Stok (critical cards, then open room requests)", () => {
     const badged = Object.fromEntries(MENU_ITEMS.flatMap((i) => (i.badges ?? []).map((key) => [key, i.href])));
-    expect(badged).toEqual({ crm: "/crm/today", tasks: "/tasks", stock: "/inventory", roomRequests: "/inventory" });
+    expect(badged).toEqual({
+      crm: "/crm/today",
+      tasks: "/tasks",
+      stock: "/inventory",
+      roomRequests: "/inventory",
+      approvals: "/yonetim",
+    });
     expect(MENU_ITEMS.find((i) => i.href === "/inventory")?.badges).toEqual(["stock", "roomRequests"]);
   });
 
