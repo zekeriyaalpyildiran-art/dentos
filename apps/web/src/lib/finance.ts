@@ -733,6 +733,8 @@ export interface ForecastJson extends Paged {
   liquid_cents: number | null;
   after_payments_cents: number | null;
   forecast_cents: number | null;
+  /** day of the balance snapshot behind liquid_cents */
+  snapshot_day?: string | null;
 }
 
 export interface LedgerRowJson {

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { FinanceShell } from "@/components/finance/FinanceShell";
 import { EntryTable } from "@/components/finance/EntryTable";
+import { RealisticProjection } from "@/components/finance/RealisticProjection";
 import { Card, ErrorBox, ListTotalsBox, Loading, MoneyRow, Pager } from "@/components/finance/ui";
 import { finForecast, formatDay, toFinanceError, type FinanceError, type ForecastJson } from "@/lib/finance";
 
@@ -58,6 +59,7 @@ function Plan() {
           {data.liquid_cents === null && " Likit tahmini için önce banka ve kasa bakiyelerini girin."}
         </p>
       </Card>
+      {data.liquid_cents !== null && <RealisticProjection forecast={data} />}
       {loading && <p className="text-sm text-gray-500">Güncelleniyor...</p>}
       <EntryTable rows={data.rows} emptyText="Bu dönemde açık kayıt yok." />
       <Pager offset={data.offset} limit={data.limit} total={data.total_count} onChange={setOffset} disabled={loading} />
