@@ -510,8 +510,9 @@ function PayeeCardDialog({
       title={
         <span>
           {payee.payee_name}
-          <span className="block text-sm font-normal text-gray-600 capitalize">
-            {formatMonth(monthKey(data.month))} hakedişi · {closed ? "ay kapandı" : "ay açık (tutarlar değişebilir)"}
+          <span className="block text-sm font-normal text-gray-600">
+            <span className="capitalize">{formatMonth(monthKey(data.month))}</span> hakedişi ·{" "}
+            {closed ? "ay kapandı" : "ay açık (tutarlar değişebilir)"}
           </span>
         </span>
       }
