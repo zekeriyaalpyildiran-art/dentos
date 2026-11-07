@@ -108,7 +108,9 @@ export function rowBlockers(row: ReviewRow, ctx: { month: string; today: string 
       code: "saved",
       text:
         row.flags.savedAmount !== null && row.flags.savedAmount !== row.amount && row.key.startsWith("clinic:")
-          ? `TUTAR DEĞİŞMİŞ: Kayıt ${trMoney(row.flags.savedAmount)} TL, dosya ${trMoney(row.amount)} TL. Otomatik atlanmış bir güncelleme değildir; mevcut kaydın tutarını ve gerçekleşen tahsilatını finans listesinden düzeltin. Yeni kayıt eklemeyin.`
+          ? row.kind === "workbook_receipts"
+            ? `TUTAR DEĞİŞMİŞ: Kayıt ${trMoney(row.flags.savedAmount)} TL, dosya ${trMoney(row.amount)} TL. Listenin üstündeki “Farkı işle” ile güncelleyin. Yeni kayıt eklemeyin.`
+            : `TUTAR DEĞİŞMİŞ: Kayıt ${trMoney(row.flags.savedAmount)} TL, dosya ${trMoney(row.amount)} TL. Otomatik atlanmış bir güncelleme değildir; mevcut kaydın tutarını ve gerçekleşen tahsilatını finans listesinden düzeltin. Yeni kayıt eklemeyin.`
           : "Daha önce aktarıldı. Değişiklik için finans listesinden düzenle.",
     });
   if (row.date.slice(0, 7) !== ctx.month) out.push({ code: "outside_month", text: "Seçilen ay dışında." });

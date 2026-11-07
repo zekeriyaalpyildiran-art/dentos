@@ -55,6 +55,8 @@ import {
   readSpreadsheetFile,
 } from "@/lib/finance-import/read-file";
 import { maskFileName } from "@/lib/finance-import/primitives";
+import { isChangedReceipts } from "@/lib/finance-import/receipts-update";
+import { ChangedReceipts, type ChangedReceiptsItem } from "./ChangedReceipts";
 import {
   FINAL_CONFIRM_TEXT,
   OVERRIDE_TEXT,
@@ -567,6 +569,17 @@ function Wizard({
   const matchedCount = items.filter((i) => !i.row.flags.saved && i.row.match).length;
   const openDebtCount = items.filter((i) => i.openDebts.length > 0).length;
   const changedSaved = rows.filter((r) => r.flags.saved && r.key.startsWith("clinic:") && r.flags.savedAmount !== null && r.flags.savedAmount !== r.amount);
+  // Day totals among them can be brought to the file amount here ("Farkı işle"); other rows are fixed in the list.
+  const changedReceipts: ChangedReceiptsItem[] = sortReview(rows.filter(isChangedReceipts)).map((r) => ({
+    key: r.key,
+    date: r.date,
+    fileAmount: r.amount,
+    savedAmount: r.flags.savedAmount as number,
+    entryId: checkByKey.get(r.key)?.existing?.entry_id ?? null,
+    fxApplied: !!r.meta.fxApplied,
+  }));
+  const receiptsAccountId = rows.find((r) => r.kind === "workbook_receipts" && r.accountId)?.accountId ?? null;
+  const changedOther = changedSaved.length - changedReceipts.length;
   const receiptsCents = selectedReceiptsCents(chosen);
   const feeNote = setup.settings.physician_fee_note;
   const feePct = feeNote ? Number(feeNote.match(/%\s*(\d+(?:[.,]\d+)?)/)?.[1]?.replace(",", ".")) : NaN;
@@ -823,10 +836,31 @@ function Wizard({
         <Card title={`Kontrol listesi · ${formatMonth(month)}`}>
           {checkError && <ErrorBox error={checkError} onReload={() => recheck("all")} />}
           {changedSaved.length > 0 && (
-            <p role="alert" className="p-3 mb-3 rounded bg-red-50 text-red-700 text-sm">
-              <b>Dikkat: Önceden aktarılan günlük toplamlar değişmiş.</b> Aşağıda eski ve yeni tutarları gösteriyoruz. Bu
-              satırlar otomatik olarak güncellenmez; mevcut kayıtları finans listesinden düzeltin.
-            </p>
+            <div role="alert" className="p-3 mb-3 rounded bg-red-50 text-red-700 text-sm space-y-2">
+              <p>
+                <b>Dikkat: Önceden aktarılan günler dosyada değişmiş</b> (gün aktarıldıktan sonra Excel&apos;e satır eklenmiş
+                ya da tutar düzeltilmiş).
+                {changedReceipts.length > 0 &&
+                  " Günlük tahsilat toplamını “Farkı işle” ile dosyadaki tutara getirin; yeni kayıt eklemeyin."}
+              </p>
+              {changedReceipts.length > 0 && (
+                <ChangedReceipts
+                  items={changedReceipts}
+                  receiptsAccountId={receiptsAccountId}
+                  disabled={saving || busy}
+                  onUpdated={(key, text) => {
+                    setMessage(text);
+                    recheck([key]);
+                  }}
+                />
+              )}
+              {changedOther > 0 && (
+                <p>
+                  {changedOther} gider satırının tutarı değişmiş. Bunlar otomatik güncellenmez; mevcut kayıtları finans
+                  listesinden düzeltin.
+                </p>
+              )}
+            </div>
           )}
           {hasWorkbookReceipts && check && check.manual_receipts.count > 0 && (
             <div className="p-3 mb-3 rounded bg-amber-50 text-amber-900 text-sm">
