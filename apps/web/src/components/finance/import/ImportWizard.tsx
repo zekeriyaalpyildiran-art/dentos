@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useReferenceData } from "@/components/finance/useReferenceData";
 import { Card, ErrorBox, Loading, SuccessBox, buttonPrimary, buttonSecondary } from "@/components/finance/ui";
+import { MonthInput } from "@/components/finance/MonthInput";
 import { useAuthStore } from "@/lib/store";
 import {
   DEBT_SUGGESTION_MAX,
@@ -710,13 +711,11 @@ function Wizard({
         <div className="flex flex-wrap items-end gap-4">
           <label className="block">
             <span className="block text-sm font-semibold mb-1 text-gray-800">Aktarım ayı</span>
-            <input
-              type="month"
-              className="px-3 py-2 border rounded bg-white text-gray-900 disabled:bg-gray-100"
+            <MonthInput
               value={month}
               max={setup.current_month}
               disabled={busy || rows.length > 0 || cards.length > 0}
-              onChange={(e) => isMonth(e.target.value) && setMonth(e.target.value)}
+              onChange={setMonth}
             />
           </label>
           <label className="block">

@@ -32,6 +32,7 @@ import {
 } from "@/lib/hakedis";
 import { formatMonth, formatTL, isMonth, toFinanceError, type FinanceError } from "@/lib/finance";
 import { ErrorBox, Field, Modal, buttonDanger, buttonPrimary, buttonSecondary, inputClass } from "./ui";
+import { MonthInput } from "./MonthInput";
 
 /**
  * 'finance': Finans → Hakediş (FinanceShell; month close, rules editor for 'finance'). 'prep': the 'Hakediş ve maaş'
@@ -237,17 +238,7 @@ export function MonthPicker({
       </button>
       <label className="flex items-center gap-2">
         <span className="sr-only">Ay</span>
-        <input
-          type="month"
-          className="px-3 py-2 border rounded bg-white text-gray-900"
-          value={monthKey(month)}
-          max={maxKey}
-          disabled={disabled}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (isMonth(v) && (!maxKey || v <= maxKey)) onChange(v);
-          }}
-        />
+        <MonthInput value={monthKey(month)} max={maxKey} disabled={disabled} onChange={onChange} ariaLabel="Ay" />
       </label>
       <button
         type="button"

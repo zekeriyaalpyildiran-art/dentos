@@ -5,13 +5,13 @@ import { FinanceShell } from "@/components/finance/FinanceShell";
 import { CategoryReportCard, ResultFigure } from "@/components/finance/ReportBlocks";
 import { useReferenceData } from "@/components/finance/useReferenceData";
 import { Card, ErrorBox, Loading, MoneyRow, buttonPrimary, buttonSecondary } from "@/components/finance/ui";
+import { MonthInput } from "@/components/finance/MonthInput";
 import { useAuthStore } from "@/lib/store";
 import {
   finDashboard,
   finFinancingSummary,
   formatMonth,
   formatTL,
-  isMonth,
   toFinanceError,
   type DashboardJson,
   type FinanceError,
@@ -214,17 +214,11 @@ function Reports() {
       <div className="flex flex-wrap items-end gap-4">
         <label className="block">
           <span className="block text-sm font-semibold mb-1 text-gray-800">Rapor ayı</span>
-          <input
-            type="month"
-            className="px-3 py-2 border rounded bg-white text-gray-900"
+          <MonthInput
             value={month ?? data.month}
             max={currentMonth}
             disabled={job !== null}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (!v) setMonth(null);
-              else if (isMonth(v) && v <= currentMonth) setMonth(v);
-            }}
+            onChange={(v) => setMonth(v)}
           />
         </label>
         {month && month !== currentMonth && (

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Card, ErrorBox, Field, Loading, Modal, Pager, inputClass, buttonSecondary } from "@/components/finance/ui";
+import { MonthInput } from "@/components/finance/MonthInput";
 import {
   STATUS_LABELS,
   finImportBatch,
@@ -81,11 +82,12 @@ export function ImportHistory() {
             </select>
           </Field>
           <Field label="Aktarım ayı">
-            <input
-              type="month"
+            <MonthInput
               className={inputClass}
               value={filters.month ?? ""}
-              onChange={(e) => update({ month: isMonth(e.target.value) ? e.target.value : undefined })}
+              allowEmpty
+              emptyLabel="Tüm aylar"
+              onChange={(v) => update({ month: isMonth(v) ? v : undefined })}
             />
           </Field>
           <Field label="Kayıt tarihi (başlangıç)">

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { FinanceShell, useCanWriteFinance } from "@/components/finance/FinanceShell";
 import { Card, ErrorBox, Loading, MoneyRow, buttonPrimary, buttonSecondary } from "@/components/finance/ui";
+import { MonthInput } from "@/components/finance/MonthInput";
 import { CategoryReportCard, ResultFigure } from "@/components/finance/ReportBlocks";
 import { FinancingSummaryCard } from "@/components/finance/import/FinancingSummaryCard";
 import { PatientReceiptsCompareCard } from "@/components/finance/PatientReceiptsCompareCard";
@@ -12,7 +13,6 @@ import {
   formatDay,
   formatMonth,
   formatTL,
-  isMonth,
   toFinanceError,
   type DashboardJson,
   type FinanceError,
@@ -75,17 +75,7 @@ function Dashboard() {
       <div className="flex flex-wrap items-end gap-4">
         <label className="block">
           <span className="block text-sm font-semibold mb-1 text-gray-800">Rapor ayı</span>
-          <input
-            type="month"
-            className="px-3 py-2 border rounded bg-white text-gray-900"
-            value={month ?? data.month}
-            max={currentMonth}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (!v) setMonth(null);
-              else if (isMonth(v) && v <= currentMonth) setMonth(v);
-            }}
-          />
+          <MonthInput value={month ?? data.month} max={currentMonth} onChange={(v) => setMonth(v)} />
         </label>
         {month && month !== currentMonth && (
           <button type="button" className={buttonSecondary} onClick={() => setMonth(null)}>

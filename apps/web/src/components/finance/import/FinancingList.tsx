@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Card, ErrorBox, Field, Loading, MoneyRow, Pager, inputClass } from "@/components/finance/ui";
+import { MonthInput } from "@/components/finance/MonthInput";
 import {
   finFinancingList,
   formatDay,
@@ -85,7 +86,13 @@ export function FinancingList({ canWrite, refreshKey, onChanged }: { canWrite: b
           </select>
         </Field>
         <Field label="İşlem ayı">
-          <input type="month" className={inputClass} value={filters.month ?? ""} onChange={(e) => update({ month: isMonth(e.target.value) ? e.target.value : undefined })} />
+          <MonthInput
+            className={inputClass}
+            value={filters.month ?? ""}
+            allowEmpty
+            emptyLabel="Tüm aylar"
+            onChange={(v) => update({ month: isMonth(v) ? v : undefined })}
+          />
         </Field>
         <Field label="Hasta adı / referans" className="md:col-span-2">
           <input className={inputClass} value={query} maxLength={100} onChange={(e) => setQuery(e.target.value)} onBlur={() => update({ query: query.trim() || undefined })} />
