@@ -462,7 +462,168 @@ function implantText(components: HkComponentJson[], qty: number): string {
  * appear only in months that have them, so a month of hakediş alone looks as before; the bank / cash columns (0038)
  * only for finance readers (hkSplitVisible).
  */
+/** One figure of the payee card: label left, amount right; `minus` shows a deduction as a negative amount. */
+function CardRow({ label, cents, minus, note, strong }: { label: string; cents: number; minus?: boolean; note?: string; strong?: boolean }) {
+  return (
+    <div className={`flex items-baseline justify-between gap-3 py-1.5 border-b border-gray-100 ${strong ? "font-semibold" : ""}`}>
+      <span className="text-gray-700">
+        {label}
+        {note && <span className="block text-xs text-gray-500">{note}</span>}
+      </span>
+      <span className="tabular-nums whitespace-nowrap">{formatTL(minus ? -cents : cents)}</span>
+    </div>
+  );
+}
+
+/**
+ * Hakediş card of one payee (opened from the name in the month table): total, paid / remaining (finance readers),
+ * the ciro → share walk, the other parts and every component's breakdown. Same figures as the table row; nothing is
+ * recomputed beyond summarizePayee.
+ */
+function PayeeCardDialog({
+  data,
+  payeeId,
+  onClose,
+}: {
+  data: HkMonthPayload;
+  payeeId: string;
+  onClose: () => void;
+}) {
+  const payee = data.payees.find((p) => p.payee_user_id === payeeId);
+  if (!payee) return null;
+  const s = summarizePayee(payee);
+  const split = hkSplitVisible(data) && s.bank_cents !== null;
+  const ledger = hkLedgerVisible(data);
+  const closed = data.status === "closed";
+  const statement = data.statements.find((st) => st.payee_user_id === payeeId);
+  const stPaid = closed && ledger && statement ? statementPaidOf(statement) : null;
+  const openPaid = !closed && ledger && typeof payee.paid_so_far === "number" ? payee.paid_so_far : null;
+  const paid = stPaid ? stPaid.paid_cents : openPaid;
+  const remaining = stPaid ? stPaid.remaining_cents : openPaid !== null ? payee.total_cents - openPaid : null;
+  const hasCiro = s.gross_cents !== 0 || s.share_cents !== 0 || s.base_cents !== 0;
+  const methods = HK_LINE_METHODS.filter((m) => s.gross_by_method[m] !== 0);
+
+  return (
+    <Modal
+      wide
+      onClose={onClose}
+      title={
+        <span>
+          {payee.payee_name}
+          <span className="block text-sm font-normal text-gray-600 capitalize">
+            {formatMonth(monthKey(data.month))} hakedişi · {closed ? "ay kapandı" : "ay açık (tutarlar değişebilir)"}
+          </span>
+        </span>
+      }
+    >
+      <div className="space-y-5 text-sm">
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="rounded border bg-gray-50 p-3">
+            <div className="text-xs text-gray-600">Hakediş toplamı</div>
+            <div className={`text-xl font-semibold tabular-nums ${payee.total_cents < 0 ? "text-red-600" : ""}`}>
+              {formatTL(payee.total_cents)}
+            </div>
+            {split && <div className="text-xs text-gray-600 mt-1">{bankSplitText(payee)}</div>}
+          </div>
+          {paid !== null && (
+            <div className="rounded border bg-gray-50 p-3">
+              <div className="text-xs text-gray-600">{closed ? "Ödenen" : "Bu ay ödenen"}</div>
+              <div className="text-xl font-semibold tabular-nums">{formatTL(paid)}</div>
+            </div>
+          )}
+          {remaining !== null && (
+            <div className={`rounded border p-3 ${remaining < 0 ? "bg-amber-50 border-amber-200" : "bg-gray-50"}`}>
+              <div className="text-xs text-gray-600">{remaining < 0 ? "Fazla ödenen" : "Kalan"}</div>
+              <div className={`text-xl font-semibold tabular-nums ${remaining < 0 ? "text-amber-700" : ""}`}>
+                {formatTL(Math.abs(remaining))}
+              </div>
+            </div>
+          )}
+        </div>
+        {!closed && openPaid !== null && (
+          <p className="text-xs text-gray-500 -mt-3">
+            Ay açık: kalan, ay kapanana kadar yeni işlemler ve ödemelerle değişir.
+          </p>
+        )}
+
+        {hasCiro && (
+          <div>
+            <h3 className="font-semibold mb-1">Ciro ve pay</h3>
+            {methods.map((m) => (
+              <CardRow key={m} label={`Ciro · ${METHOD_LABELS[m]}`} cents={s.gross_by_method[m]} />
+            ))}
+            {s.implant_cents !== 0 && <CardRow label="İmplant payı (ciroya girmez)" cents={s.implant_cents} minus />}
+            {s.lab_cents !== 0 && (
+              <CardRow
+                label={LAB_LABELS.column}
+                cents={s.lab_cents}
+                minus
+                note={s.lab_excess_cents > 0 ? `Ciroyu aşan ${formatTL(s.lab_excess_cents)} klinikte kalır` : undefined}
+              />
+            )}
+            {s.fee_cents !== 0 && <CardRow label={FINANCING_FEE_LABEL} cents={s.fee_cents} minus />}
+            {s.deduction_cents !== 0 && <CardRow label="Kesintiler (ödeme şekline göre)" cents={s.deduction_cents} minus />}
+            <CardRow label="Matrah" cents={s.base_cents} strong />
+            <CardRow
+              label={`Ciro payı${s.share_bps.length ? ` (${s.share_bps.map((bp) => formatBp(bp)).join(" / ")})` : ""}`}
+              cents={s.share_cents}
+              strong
+            />
+          </div>
+        )}
+
+        {(s.implant_amount_cents !== 0 ||
+          s.procedure_amount_cents !== 0 ||
+          s.management_cents !== 0 ||
+          s.salary_cents !== 0 ||
+          s.adjustments_cents !== 0 ||
+          s.minimum_topup_cents !== 0) && (
+          <div>
+            <h3 className="font-semibold mb-1">Diğer kalemler</h3>
+            {s.implant_amount_cents !== 0 && (
+              <CardRow label={`İmplant (${implantText(payee.components, s.implant_qty)})`} cents={s.implant_amount_cents} />
+            )}
+            {s.procedure_amount_cents !== 0 && (
+              <CardRow label={`İşlem ücreti (${s.procedure_qty} işlem)`} cents={s.procedure_amount_cents} />
+            )}
+            {s.management_cents !== 0 && (
+              <CardRow
+                label="Yönetim payı"
+                cents={s.management_cents}
+                note={s.management_base_cents ? `Klinik toplam tahsilatı ${formatTL(s.management_base_cents)} üzerinden` : undefined}
+              />
+            )}
+            {s.salary_cents !== 0 && <CardRow label="Sabit maaş" cents={s.salary_cents} />}
+            {s.adjustments_cents !== 0 && <CardRow label="Prim ve diğer" cents={s.adjustments_cents} />}
+            {s.minimum_topup_cents !== 0 && <CardRow label={MINIMUM_TOPUP_COMPONENT_LABEL} cents={s.minimum_topup_cents} />}
+          </div>
+        )}
+
+        <CardRow label="Hakediş toplamı" cents={payee.total_cents} strong />
+
+        {payee.components.length > 0 && (
+          <details className="rounded border p-3">
+            <summary className="cursor-pointer font-semibold">Kural kural ayrıntı</summary>
+            <div className="grid gap-3 mt-3">
+              {payee.components.map((c) => (
+                <ComponentBreakdown key={componentKey(c)} c={c} />
+              ))}
+            </div>
+          </details>
+        )}
+
+        {closed && statement && ledger && statement.fin_entry_id && (
+          <Link href={`/finance/entries/${statement.fin_entry_id}`} className="text-blue-600 hover:underline">
+            Finans kaydını aç
+          </Link>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<string>; onToggle: (id: string) => void }) {
+  const [cardId, setCardId] = useState<string | null>(null);
   const rows = useMemo(() => data.payees.map((p) => ({ payee: p, s: summarizePayee(p) })), [data.payees]);
   const totals = useMemo(() => sumPayeeSummaries(rows.map((r) => r.s)), [rows]);
   const statements = new Map(data.statements.map((st) => [st.payee_user_id, st]));
@@ -500,6 +661,7 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
 
   return (
     <div className="bg-white rounded-lg shadow overflow-x-auto text-gray-900">
+      {cardId && <PayeeCardDialog data={data} payeeId={cardId} onClose={() => setCardId(null)} />}
       <table className="w-full text-sm">
         <thead className="bg-gray-100 border-b">
           <tr className="text-left text-gray-800">
@@ -550,7 +712,16 @@ function PayeeTable({ data, open, onToggle }: { data: HkMonthPayload; open: Set<
               return (
                 <Fragment key={payee.payee_user_id}>
                   <tr className="border-b align-top">
-                    <td className="px-3 py-2 font-medium">{payee.payee_name}</td>
+                    <td className="px-3 py-2 font-medium">
+                      <button
+                        type="button"
+                        className="text-left text-blue-700 hover:underline"
+                        onClick={() => setCardId(payee.payee_user_id)}
+                        title="Hakediş kartını aç"
+                      >
+                        {payee.payee_name}
+                      </button>
+                    </td>
                     {methods.map((m) => (
                       <td key={m} className={NUM}>
                         {dash(s.gross_by_method[m])}
