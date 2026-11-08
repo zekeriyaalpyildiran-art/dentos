@@ -118,3 +118,30 @@ describe("buildProjection", () => {
     expect(p.min!.balanceCents).toBeLessThan(0);
   });
 });
+
+import { bucketCategoryText, expenseRows, outgoingByCategory } from "../finance-report-lines";
+import type { DashboardJson } from "../finance";
+
+describe("bucket category split (Hizmet alımı under Diğer faaliyet gideri)", () => {
+  const cat = (name: string, bucket: string, out: number) =>
+    ({ category_id: name, name, direction: "out", report_bucket: bucket, is_active: true, count: 1, incoming_cents: 0, outgoing_cents: out, open_incoming_cents: 0, open_outgoing_cents: 0, net_cents: -out }) as DashboardJson["category_report"][number];
+  const d = {
+    category_report: [cat("Diğer faaliyet gideri", "other_expense", 11_400), cat("Hizmet alımı", "other_expense", 7_722_500), cat("Kira", "rent", 0), cat("Laboratuvar", "lab", 500)],
+    expenses: { by_bucket: { other_expense: 7_733_900, lab: 500 }, current_doctor_cents: 0, past_doctor_cents: 0, general_cents: 0, operational_cents: 0 },
+  } as unknown as DashboardJson;
+  it("lists the categories of a bucket, largest first, only when there are several", () => {
+    expect(outgoingByCategory(d, "other_expense").map((c) => c.name)).toEqual(["Hizmet alımı", "Diğer faaliyet gideri"]);
+    expect(bucketCategoryText(d, "other_expense")).toMatch(/^Hizmet alımı .* · Diğer faaliyet gideri /);
+    expect(bucketCategoryText(d, "lab")).toBeUndefined();
+  });
+  it("adds them as sub rows under the bucket line in the report rows", () => {
+    const rows = expenseRows(d);
+    const i = rows.findIndex((r) => r.label === "Diğer faaliyet gideri" && r.kind === "main");
+    expect(rows[i].cents).toBe(7_733_900);
+    expect(rows.slice(i + 1, i + 3)).toEqual([
+      { label: "Hizmet alımı", cents: 7_722_500, kind: "sub" },
+      { label: "Diğer faaliyet gideri", cents: 11_400, kind: "sub" },
+    ]);
+    expect(rows.filter((r) => r.label === "Laboratuvar")).toHaveLength(1);
+  });
+});

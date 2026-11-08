@@ -113,6 +113,11 @@ export function expenseRows(
     cents: b[l.bucket] ?? 0,
     kind: "main",
   });
+  // A bucket holding several categories with outflow (e.g. 'Diğer faaliyet gideri' + 'Hizmet alımı') lists them below.
+  const withCategories = (l: { bucket: ReportBucket; label: string }): ExpenseRow[] => {
+    const cats = outgoingByCategory(d, l.bucket);
+    return [line(l), ...(cats.length > 1 ? cats.map((c) => ({ label: c.name, cents: c.cents, kind: "sub" as const })) : [])];
+  };
   return [
     { label: PHYSICIAN_LABEL, cents: b.doctor ?? 0, kind: "main" },
     { label: PHYSICIAN_CURRENT_LABEL, cents: d.expenses.current_doctor_cents, kind: "sub" },
@@ -121,7 +126,7 @@ export function expenseRows(
       cents: d.expenses.past_doctor_cents,
       kind: "sub",
     },
-    ...EXPENSE_LINES.map(line),
+    ...EXPENSE_LINES.flatMap(withCategories),
     { label: GENERAL_EXPENSE_LABEL, cents: d.expenses.general_cents, kind: "subtotal" },
     line(FEES_LINE),
     ...(opts.withOperationalTotal
@@ -129,6 +134,20 @@ export function expenseRows(
       : []),
     ...NON_OPERATING_LINES.map(line),
   ];
+}
+
+/** The month's realized outflow of each category in one bucket, largest first (category_report rows; zeros left out). */
+export function outgoingByCategory(d: Pick<DashboardJson, "category_report">, bucket: ReportBucket): { name: string; cents: number }[] {
+  return d.category_report
+    .filter((r) => r.report_bucket === bucket && r.outgoing_cents !== 0)
+    .map((r) => ({ name: r.name, cents: r.outgoing_cents }))
+    .sort((a, b) => b.cents - a.cents);
+}
+
+/** "Hizmet alımı ₺77.225,00 · Diğer faaliyet gideri ₺114,00" when a bucket has several categories, else undefined. */
+export function bucketCategoryText(d: Pick<DashboardJson, "category_report">, bucket: ReportBucket): string | undefined {
+  const cats = outgoingByCategory(d, bucket);
+  return cats.length > 1 ? cats.map((c) => `${c.name} ${formatTL(c.cents)}`).join(" · ") : undefined;
 }
 
 /** Sum of the selected month's realized inflow of every category in one bucket (category_report rows). */

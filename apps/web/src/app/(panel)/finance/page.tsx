@@ -27,6 +27,7 @@ import {
   PHYSICIAN_LABEL,
   RESULT_FIGURES,
   RESULT_FOOTNOTE,
+  bucketCategoryText,
   exclusionWarning,
 } from "@/lib/finance-report-lines";
 
@@ -262,7 +263,12 @@ function Dashboard() {
             hint={`Cari dönem ${formatTL(expenses.current_doctor_cents)} · Geçmiş dönem ${formatTL(expenses.past_doctor_cents)}`}
           />
           {EXPENSE_LINES.map((l) => (
-            <MoneyRow key={l.bucket} label={l.label} cents={expenses.by_bucket[l.bucket] ?? 0} />
+            <MoneyRow
+              key={l.bucket}
+              label={l.label}
+              cents={expenses.by_bucket[l.bucket] ?? 0}
+              hint={bucketCategoryText(data, l.bucket)}
+            />
           ))}
           <MoneyRow label={GENERAL_EXPENSE_LABEL} cents={expenses.general_cents} />
           <MoneyRow label={FEES_LINE.label} cents={expenses.by_bucket[FEES_LINE.bucket] ?? 0} />
