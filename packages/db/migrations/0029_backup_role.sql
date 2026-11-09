@@ -731,11 +731,11 @@ BEGIN
   END IF;
   -- A few lines this file itself guarantees (format check of the listing).
   IF NOT EXISTS (SELECT 1 FROM public.backup_acl_listing() AS x(l)
-                 WHERE x.l = 'fn|backup_heartbeat(p_size bigint, p_sha256 text, p_toc integer, p_auth_included boolean)|dentos_backup|EXECUTE|false')
+                 WHERE x.l = 'fn|backup_heartbeat(p_size bigint, p_sha256 text, p_toc integer, p_auth_included boolean)|dentos_backup|EXECUTE|f')
      OR NOT EXISTS (SELECT 1 FROM public.backup_acl_listing() AS x(l)
-                    WHERE x.l = 'rel|r|backup_runs|dentos_backup|SELECT|false')
-     OR NOT EXISTS (SELECT 1 FROM public.backup_acl_listing() AS x(l) WHERE x.l = 'rls|backup_runs|true|false')
-     OR NOT EXISTS (SELECT 1 FROM public.backup_acl_listing() AS x(l) WHERE x.l = 'def|r|dentos_backup|SELECT|false')
+                    WHERE x.l = 'rel|r|backup_runs|dentos_backup|SELECT|f')
+     OR NOT EXISTS (SELECT 1 FROM public.backup_acl_listing() AS x(l) WHERE x.l = 'rls|backup_runs|t|f')
+     OR NOT EXISTS (SELECT 1 FROM public.backup_acl_listing() AS x(l) WHERE x.l = 'def|r|dentos_backup|SELECT|f')
      OR EXISTS (SELECT 1 FROM public.backup_acl_listing() AS x(l)
                 WHERE (x.l LIKE 'fn|backup\_%' OR x.l LIKE 'rel|r|backup\_runs|%')
                   -- grantee: field 3 of 'fn|name(args)|grantee|…', field 4 of 'rel|kind|name|grantee|…'
