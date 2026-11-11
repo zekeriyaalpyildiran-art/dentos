@@ -33,6 +33,8 @@ export const MENU_ITEMS: readonly MenuItem[] = [
   { name: "📅 Ajanda", href: "/appointments" },
   { name: "👥 Hastalar", href: "/patients" },
   { name: "🦷 Tedavi Planları", href: "/treatment-plans" },
+  // The standalone presentation program in a frame (public/sunum-programi); its data stays in the browser.
+  { name: "🎬 Hasta Sunumu", href: "/sunum" },
   { name: "📞 CRM · Bugün", href: "/crm/today", badges: ["crm"] },
   { name: "📊 CRM", href: "/crm/leads", match: "/crm", exclude: "/crm/today" },
   { name: "✅ Görevler", href: "/tasks", badges: ["tasks"] },

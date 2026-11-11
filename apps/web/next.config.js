@@ -24,7 +24,12 @@ const nextConfig = {
     '@dentos/ui',
   ],
   async headers() {
-    return [{ source: '/:path*', headers: securityHeaders }];
+    return [
+      { source: '/:path*', headers: securityHeaders },
+      // The presentation program is shown inside the panel's /sunum page, so it may be framed by this site only
+      // (a later matching rule overrides the same header key).
+      { source: '/sunum-programi/:path*', headers: [{ key: 'X-Frame-Options', value: 'SAMEORIGIN' }] },
+    ];
   },
 };
 

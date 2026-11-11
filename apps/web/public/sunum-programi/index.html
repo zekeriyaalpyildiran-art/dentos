@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tedavi Planı Sunumu</title>
+  <link rel="stylesheet" href="css/style.css?v=13">
+</head>
+<body>
+
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <img id="brandLogo" alt="" hidden>
+      <div class="brand-mark" id="brandMark">KP</div>
+      <div class="brand-text"><b id="brandName">Klinik</b><small>Tedavi Planlama &amp; Sunum</small></div>
+    </div>
+    <div class="patient-picker">
+      <select id="patientSelect" title="Hasta seç"></select>
+      <button class="btn" id="btnNewPatient">+ Yeni Hasta</button>
+    </div>
+    <div class="top-actions">
+      <button class="btn ghost" id="btnSettings">⚙ Ayarlar</button>
+      <button class="btn ghost" id="btnExport" title="Tüm hastaları JSON dosyası olarak yedekle">⇩ Yedekle</button>
+      <label class="btn ghost" title="Yedek dosyasını geri yükle">⇧ Yükle<input type="file" id="importFile" accept=".json,application/json" hidden></label>
+      <button class="btn ghost" id="btnPrint">🖨 Yazdır / PDF</button>
+      <button class="btn ghost" id="btnSend" title="Bu hastanın sunumunu tek dosya olarak kaydet (WhatsApp / e-posta ile gönderilebilir)">📤 Hastaya Gönder</button>
+      <button class="btn primary" id="btnPresent">▶ Sunumu Başlat</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Sol: hasta bilgileri -->
+    <aside class="panel" id="patientPanel">
+      <h3>Hasta Bilgileri</h3>
+      <label>Ad Soyad<input data-f="name" type="text"></label>
+      <div class="row2">
+        <label>Yaş<input data-f="age" type="text" inputmode="numeric"></label>
+        <label>Tarih<input data-f="date" type="date"></label>
+      </div>
+      <label>Telefon<input data-f="phone" type="tel"></label>
+      <label>Hekim<input data-f="doctor" type="text"></label>
+      <label>Şikayet / Beklenti <small>(sunumda görünür)</small><textarea data-f="complaint" rows="3"></textarea></label>
+      <label>Tedavi hedefi <small>(sunumda görünür)</small><textarea data-f="goal" rows="3"></textarea></label>
+      <label>Önemli bilgiler <small>(her satır bir madde, sunumda görünür)</small><textarea data-f="info" rows="4"></textarea></label>
+      <label>Hekim notu <small>(sunumda görünmez)</small><textarea data-f="notes" rows="3"></textarea></label>
+      <div class="uploads">
+        <div class="upload" data-img="photo"><span>Gülüş fotoğrafı</span><div class="thumb"></div><input type="file" accept="image/*" hidden></div>
+        <div class="upload" data-img="xray"><span>Panoramik röntgen</span><div class="thumb"></div><input type="file" accept="image/*" hidden></div>
+      </div>
+      <button class="btn danger small" id="btnDeletePatient">Hastayı sil</button>
+    </aside>
+
+    <!-- Orta: diş şeması -->
+    <section class="panel chart-panel">
+      <div class="chart-head">
+        <div class="seg" id="modeSeg">
+          <button data-mode="find" class="on">1 · Mevcut Durum</button>
+          <button data-mode="plan">2 · Tedavi Planı</button>
+        </div>
+        <label class="switch" id="afterSwitch"><input type="checkbox" id="chkAfter"><span>Tedavi sonrası görünüm</span></label>
+      </div>
+      <div class="palette" id="palette"></div>
+      <div class="hint" id="hint"></div>
+      <div class="banner" id="banner"></div>
+      <div class="chart" id="chart"></div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <!-- Sağ: plan & fiyat -->
+    <aside class="panel plan-panel">
+      <div class="opt-tabs" id="optTabs"></div>
+      <div class="opt-tools">
+        <button class="btn small ghost" id="btnOptDesc">✎ Sunum metni</button>
+        <button class="btn small ghost" id="btnRecommend">★ Önerilen</button>
+        <button class="btn small ghost" id="btnRenameOpt">Yeniden adlandır</button>
+        <button class="btn small ghost" id="btnDelOpt">Sil</button>
+      </div>
+      <div class="items" id="items"></div>
+      <div class="totals" id="totals"></div>
+    </aside>
+  </main>
+</div>
+
+<!-- Modal -->
+<div class="modal hidden" id="modal">
+  <div class="modal-card">
+    <div class="modal-head"><h3 id="modalTitle"></h3><button class="x" id="modalClose">✕</button></div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<!-- Sunum -->
+<div class="present hidden" id="present">
+  <div class="p-stage" id="pStage"></div>
+  <div class="p-bar">
+    <button class="p-btn" id="pPrev" title="Önceki (←)">‹</button>
+    <div class="p-dots" id="pDots"></div>
+    <button class="p-btn" id="pNext" title="Sonraki (→)">›</button>
+    <span class="p-count" id="pCount"></span>
+    <select id="pOption" title="Sunulan seçenek"></select>
+    <button class="p-btn small" id="pFull" title="Tam ekran (F)">⤢</button>
+    <button class="p-btn small" id="pClose" title="Kapat (Esc)">✕</button>
+  </div>
+</div>
+
+<div id="printView"></div>
+
+<script src="js/data.js?v=13"></script>
+<script src="js/teeth.js?v=13"></script>
+<script src="js/anim.js?v=13"></script>
+<script src="js/core.js?v=13"></script>
+<script src="js/present.js?v=13"></script>
+<script src="js/viewer-bundle.js?v=13"></script>
+<script src="js/app.js?v=13"></script>
+</body>
+</html>
