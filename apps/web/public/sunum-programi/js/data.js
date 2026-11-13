@@ -96,6 +96,12 @@ const TX = {
     desc: 'Eksik diş, komşu dişlerden destek alan tek parça bir köprü ile tamamlanır. Fiyat üye (diş) sayısı üzerinden hesaplanır.',
     benefits: ['Cerrahi işlem gerektirmez', 'Sabit ve hızlı çözüm', 'Çiğneme fonksiyonu geri kazanılır']
   },
+  mpKopru: {
+    name: 'Metal Destekli Porselen (Kron / Köprü)', abbr: 'MP', scope: 'multi', phase: 3, price: 8000,
+    sessions: '2–3 seans', duration: '5–7 gün', color: '#c0844a', anim: 'kopru',
+    desc: 'Doğal dişler hazırlanır; metal altyapının üzerine diş renginde porselen kaplanarak kron veya köprü yapılır. Tek dişe kron, eksik dişe köprü olarak uygulanabilir. Fiyat üye (diş) sayısı üzerinden hesaplanır.',
+    benefits: ['Güçlü metal altyapı ile dayanıklı yapı', 'Diş renginde porselen yüzey', 'Zirkonyuma göre daha ekonomik seçenek']
+  },
   beyazlatma: {
     name: 'Diş Beyazlatma', abbr: 'BYZ', scope: 'mouth', phase: 3, price: 8000,
     sessions: '1 seans', duration: '60–90 dk', color: '#f2b705', anim: 'beyazlatma',
@@ -165,9 +171,9 @@ const TX = {
 };
 
 const TX_ORDER = ['detartraj', 'kuretaj', 'dolgu', 'kanal', 'cekim', 'greft', 'sinus', 'implant', 'implantustu', 'hassasTutucu',
-  'allon4', 'geciciHareketli', 'geciciSabit', 'tamProtez', 'overdenture', 'hassasProtez', 'barProtez', 'ortodonti', 'kron', 'lamina', 'kopru',
+  'allon4', 'geciciHareketli', 'geciciSabit', 'tamProtez', 'overdenture', 'hassasProtez', 'barProtez', 'ortodonti', 'kron', 'lamina', 'kopru', 'mpKopru',
   'iuZirkonyum', 'iuMetalPorselen', 'beyazlatma', 'gecePlagi'];
-const MULTI_CROWN = { kopru: 'zirconia', iuZirkonyum: 'zirconia', iuMetalPorselen: 'pfm' };
+const MULTI_CROWN = { kopru: 'zirconia', mpKopru: 'pfm', iuZirkonyum: 'zirconia', iuMetalPorselen: 'pfm' };
 
 const FINDINGS = {
   curuk: { name: 'Çürük', abbr: 'Ç', color: '#6d4c41' },
