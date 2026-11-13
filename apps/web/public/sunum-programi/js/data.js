@@ -97,7 +97,7 @@ const TX = {
     benefits: ['Cerrahi işlem gerektirmez', 'Sabit ve hızlı çözüm', 'Çiğneme fonksiyonu geri kazanılır']
   },
   mpKopru: {
-    name: 'Metal Destekli Porselen (Kron / Köprü)', abbr: 'MP', scope: 'multi', phase: 3, price: 8000,
+    name: 'Metal Destekli Porselen (Kron / Köprü)', abbr: 'MP', scope: 'multi', phase: 3, price: 10000,
     sessions: '2–3 seans', duration: '5–7 gün', color: '#c0844a', anim: 'kopru',
     desc: 'Doğal dişler hazırlanır; metal altyapının üzerine diş renginde porselen kaplanarak kron veya köprü yapılır. Tek dişe kron, eksik dişe köprü olarak uygulanabilir. Fiyat üye (diş) sayısı üzerinden hesaplanır.',
     benefits: ['Güçlü metal altyapı ile dayanıklı yapı', 'Diş renginde porselen yüzey', 'Zirkonyuma göre daha ekonomik seçenek']
