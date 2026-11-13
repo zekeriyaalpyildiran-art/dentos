@@ -182,7 +182,7 @@ function onToothClick(n) {
   const t = TX[UI.tool];
   if (t.scope === 'tooth') {
     let it = o.items.find(x => x.tx === UI.tool);
-    if (!it) { it = { id: uid(), tx: UI.tool, teeth: [], price: priceOf(UI.tool), phase: t.phase }; o.items.push(it); }
+    if (!it) { it = { id: uid(), tx: UI.tool, teeth: [], price: priceOf(UI.tool), cur: TX[UI.tool].cur || 'TRY', phase: t.phase }; o.items.push(it); }
     it.teeth = it.teeth.includes(n) ? it.teeth.filter(x => x !== n) : sortTeeth([...it.teeth, n]);
     if (!it.teeth.length) o.items = o.items.filter(x => x !== it);
   } else if (t.scope === 'multi') {
@@ -192,7 +192,7 @@ function onToothClick(n) {
     const arch = isUpper(n) ? 'upper' : 'lower';
     const ex = o.items.find(x => x.tx === UI.tool && x.arch === arch);
     if (ex) o.items = o.items.filter(x => x !== ex);
-    else o.items.push({ id: uid(), tx: UI.tool, arch, teeth: archTeeth(arch).slice(), price: priceOf(UI.tool), phase: t.phase });
+    else o.items.push({ id: uid(), tx: UI.tool, arch, teeth: archTeeth(arch).slice(), price: priceOf(UI.tool), cur: TX[UI.tool].cur || 'TRY', phase: t.phase });
   } else {
     flash('Bu tedavi tüm ağza uygulanır — "Plana ekle" butonunu kullanın.'); return;
   }
@@ -202,7 +202,7 @@ function onToothClick(n) {
 function addMouthItem() {
   const o = opt();
   if (o.items.some(x => x.tx === UI.tool)) { flash('Bu tedavi zaten planda.'); return; }
-  o.items.push({ id: uid(), tx: UI.tool, teeth: [], price: priceOf(UI.tool), phase: TX[UI.tool].phase });
+  o.items.push({ id: uid(), tx: UI.tool, teeth: [], price: priceOf(UI.tool), cur: TX[UI.tool].cur || 'TRY', phase: TX[UI.tool].phase });
   save(); renderChart(); renderPlan();
 }
 
@@ -210,7 +210,7 @@ function makeBridge() {
   const sel = sortTeeth(UI.bridgeSel);
   if (sel.length < 2) return;
   if (new Set(sel.map(isUpper)).size > 1) { flash('Köprü dişleri aynı çenede olmalı.'); return; }
-  opt().items.push({ id: uid(), tx: UI.tool, teeth: sel, price: priceOf(UI.tool), phase: TX[UI.tool].phase });
+  opt().items.push({ id: uid(), tx: UI.tool, teeth: sel, price: priceOf(UI.tool), cur: TX[UI.tool].cur || 'TRY', phase: TX[UI.tool].phase });
   UI.bridgeSel.clear();
   save(); renderHint(); renderChart(); renderPlan();
 }

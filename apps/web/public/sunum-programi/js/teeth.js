@@ -125,14 +125,15 @@ const TEETH = (() => {
 
     // Hassas tutuculu protez: yalnızca o çenedeki eksik (veya çekilecek) dişleri tamamlar, kalan dişler yerinde kalır
     items.filter(it => it.tx === 'hassasTutucu' && !it.optional).forEach(it => {
-      const row = archTeeth(it.arch);
-      const fill = n => n % 10 !== 8 && res[n].missing;
-      const set = new Set(row.filter(fill));
+      // Seçilen destek dişlerin çenelerinde eksik dişler protezle tamamlanır
+      const arches = new Set((it.teeth || []).map(n => isUpper(n) ? 'upper' : 'lower'));
+      arches.forEach(a => { const row = archTeeth(a);
+      const set = new Set(row.filter(n => n % 10 !== 8 && res[n].missing));
       set.forEach(n => {
         Object.assign(res[n], emptyState(), { prosthesis: true, crown: 'prosthesis' });
         const i = row.indexOf(n);
         res[n].bridgeL = set.has(row[i - 1]); res[n].bridgeR = set.has(row[i + 1]);
-      });
+      }); });
     });
 
     if (items.some(it => it.tx === 'beyazlatma')) {
