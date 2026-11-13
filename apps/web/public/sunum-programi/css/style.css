@@ -496,3 +496,9 @@ body.viewer #pClose { display: none; }
   .io-card { padding: 14px; gap: 12px; }
   .io-n { width: 44px; height: 44px; font-size: 20px; }
 }
+.tool .sc { font-size: 10px; font-weight: 600; color: var(--muted); margin-left: -2px; }
+.pal-tabs { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.pal-tab { border: 0; background: transparent; padding: 5px 10px; border-radius: 8px; font: inherit; font-size: 12px; font-weight: 700; color: var(--ink2); cursor: pointer; }
+.pal-tab small { margin-left: 5px; font-size: 10px; color: var(--muted); font-weight: 600; }
+.pal-tab:hover { background: #eef3f7; }
+.pal-tab.on { background: color-mix(in srgb, var(--accent) 12%, #fff); color: var(--accent); }

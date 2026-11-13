@@ -74,7 +74,7 @@ const TEETH = (() => {
     const clearProblems = s => { s.caries = false; s.broken = false; s.abscess = false; s.mobile = false; };
 
     ORDER.forEach(code => {
-      items.filter(it => it.tx === code && !it.optional).forEach(it => (it.teeth || []).forEach(n => {
+      items.filter(it => txBase(it.tx) === code && !it.optional).forEach(it => (it.teeth || []).forEach(n => {
         const s = res[n]; if (!s) return; touched.add(n);
         switch (code) {
           case 'cekim': Object.assign(s, emptyState(), { missing: true }); break;
@@ -88,6 +88,12 @@ const TEETH = (() => {
         clearProblems(s);
       }));
     });
+
+    // Adeziv (Maryland) köprü: eksik dişin yerine gövde (pontik)
+    items.filter(it => TX[it.tx].after === 'pontic' && !it.optional).forEach(it => (it.teeth || []).forEach(n => {
+      const s = res[n]; if (!s) return; touched.add(n);
+      Object.assign(s, emptyState(), { pontic: true, crown: 'zirconia' });
+    }));
 
     // Köprüler
     items.filter(it => MULTI_CROWN[it.tx] && !it.optional).forEach(it => {
@@ -105,8 +111,8 @@ const TEETH = (() => {
     });
 
     // Çene bazlı
-    items.filter(it => ['allon4', 'barProtez', 'tamProtez', 'overdenture'].includes(it.tx) && !it.optional).forEach(it => {
-      const fixed = !['tamProtez', 'overdenture'].includes(it.tx);
+    items.filter(it => ['fixedArch', 'removableArch'].includes(TX[it.tx].after) && it.arch && !it.optional).forEach(it => {
+      const fixed = TX[it.tx].after === 'fixedArch';
       archTeeth(it.arch).forEach(n => {
         const p = n % 10; const s = res[n];
         Object.assign(s, emptyState());
@@ -124,7 +130,7 @@ const TEETH = (() => {
     });
 
     // Hassas tutuculu protez: yalnızca o çenedeki eksik (veya çekilecek) dişleri tamamlar, kalan dişler yerinde kalır
-    items.filter(it => it.tx === 'hassasProtez' && !it.optional).forEach(it => {
+    items.filter(it => TX[it.tx].after === 'partial' && it.arch && !it.optional).forEach(it => {
       const row = archTeeth(it.arch);
       const set = new Set(row.filter(n => n % 10 !== 8 && res[n].missing));
       set.forEach(n => {
@@ -134,9 +140,10 @@ const TEETH = (() => {
       });
     });
 
-    if (items.some(it => it.tx === 'beyazlatma')) {
-      ALL_TEETH.forEach(n => { if (res[n].crown === 'natural') res[n].white = true; });
-    }
+    // Beyazlatma çene başına; eski (çenesiz) kayıtlar tüm ağız
+    items.filter(it => it.tx === 'beyazlatma' && !it.optional).forEach(it => {
+      (it.arch ? archTeeth(it.arch) : ALL_TEETH).forEach(n => { if (res[n].crown === 'natural') res[n].white = true; });
+    });
     return res;
   }
 

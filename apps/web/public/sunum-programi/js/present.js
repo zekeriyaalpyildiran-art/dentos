@@ -30,7 +30,7 @@ const PRESENT = (() => {
   const groupWhere = g => {
     const sc = TX[g.tx].scope;
     if (sc === 'mouth') return 'Tüm ağız';
-    if (sc === 'arch') return [...new Set(g.items.map(it => it.arch === 'upper' ? 'Üst çene' : 'Alt çene'))].join(' + ');
+    if (sc === 'arch' || sc === 'quad') return [...new Set(g.items.map(itemWhere))].join(' + ');
     if (sc === 'multi') {
       const n = g.items.reduce((a, it) => a + it.teeth.length, 0);
       return g.items.length > 1 ? `${n} üye · ` + g.items.map(it => it.teeth.join('-')).join(' / ') : it0(g).teeth.join('-');
@@ -93,7 +93,7 @@ const PRESENT = (() => {
     if (problemKeys.length) {
       const marks = {};
       Object.entries(findings).forEach(([n, l]) => marks[n] = l.map(k => ({ abbr: FINDINGS[k].abbr, color: FINDINGS[k].color })));
-      const ext = (opts[0] || o).items.filter(it => it.tx === 'cekim').flatMap(it => it.teeth);
+      const ext = (opts[0] || o).items.filter(it => txBase(it.tx) === 'cekim').flatMap(it => it.teeth);
       list.push({
         cls: 'findings', html: `${head('Muayene bulguları', 'Ağız İçi Değerlendirme')}
           <div class="s-split">
@@ -137,7 +137,7 @@ const PRESENT = (() => {
       const qty = g.items.reduce((a, it) => a + itemQty(it), 0);
       const free = g.items.every(it => it.free);
       const tot = g.items.reduce((a, it) => tAdd(a, it.cur, itemTotal(it)), T0());
-      const unitWord = { tooth: 'diş', multi: 'üye', arch: 'çene', mouth: '' }[t.scope];
+      const unitWord = { tooth: 'diş', multi: 'üye', quad: 'bölge', arch: 'çene', mouth: '' }[t.scope];
       const marks = {};
       if (t.scope === 'tooth' || t.scope === 'multi') g.items.forEach(it => it.teeth.forEach(n => marks[n] = [{ abbr: t.abbr, color: t.color }]));
       const title = g.items.length === 1 && g.items[0].label && t.scope !== 'multi' ? g.items[0].label : t.name;
@@ -213,7 +213,7 @@ const PRESENT = (() => {
       const saved = optionTotals(opts[0] || o).saved;
       list.push({
         cls: 'gift', html: `${head('Size özel', 'Tedavi Avantajlarınız')}
-          <div class="gift">${freeItems.map((it, i) => `<div class="gift-card" style="--d:${i}"><span class="gift-ic">🎁</span><div><b>${esc(itemName(it))}${TX[it.tx].scope === 'arch' ? ' · ' + itemWhere(it) : ''}</b>
+          <div class="gift">${freeItems.map((it, i) => `<div class="gift-card" style="--d:${i}"><span class="gift-ic">🎁</span><div><b>${esc(itemName(it))}${['arch', 'quad'].includes(TX[it.tx].scope) ? ' · ' + itemWhere(it) : ''}</b>
             <small>${itemTotal(it) ? `${itemQty(it)} × ${money(it.price, it.cur)} = <s>${money(itemTotal(it), it.cur)}</s>` : 'Tedavi kapsamında'}</small></div><em>ÜCRETSİZ</em></div>`).join('')}</div>
           ${tZero(saved) ? '' : `<div class="gift-sum"><span>Toplam avantajınız</span><b ${totAttr(saved)}>${mt(saved)}</b></div>`}
           ${multi ? '<p class="io-note">Bu avantajlar tüm tedavi seçeneklerinde geçerlidir.</p>' : ''}`,
@@ -233,7 +233,7 @@ const PRESENT = (() => {
                 <span class="kicker">Seçenek ${i + 1}</span>
                 <h3>${esc(x.subtitle || x.name)}</h3>
                 <ul>${sortedItems(x).filter(it => !it.free).map(it => `<li><i style="background:${TX[it.tx].color}"></i>${esc(itemName(it))}<small>${itemQty(it) > 1 ? itemQty(it) + ' × ' + money(it.price, it.cur) + ' = ' : ''}${money(itemTotal(it), it.cur)}</small></li>`).join('')}
-                  ${sortedItems(x).filter(it => it.free).map(it => `<li class="fr"><i></i>${esc(itemName(it))}${TX[it.tx].scope === 'arch' ? ' · ' + itemWhere(it) : ''}<small>Ücretsiz</small></li>`).join('')}</ul>
+                  ${sortedItems(x).filter(it => it.free).map(it => `<li class="fr"><i></i>${esc(itemName(it))}${['arch', 'quad'].includes(TX[it.tx].scope) ? ' · ' + itemWhere(it) : ''}<small>Ücretsiz</small></li>`).join('')}</ul>
                 <div class="cmp-price">${x.discount ? `<s>${mt(tt.sub)}</s>` : ''}<small>Toplam tedavi bedeli</small><b ${totAttr(tt.total)}>${mt(tt.total)}</b></div>
               </div>`;
             }).join('')}</div>`,

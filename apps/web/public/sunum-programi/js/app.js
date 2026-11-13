@@ -44,10 +44,12 @@ function renderPalette() {
     pal.innerHTML = FINDING_ORDER.map(k => `<button class="tool ${UI.tool === k ? 'on' : ''}" data-tool="${k}"><i style="background:${FINDINGS[k].color}">${FINDINGS[k].abbr}</i>${FINDINGS[k].name}</button>`).join('')
       + `<button class="tool ${UI.tool === 'sil' ? 'on' : ''}" data-tool="sil"><i style="background:#cfd8dc;color:#37474f">⌫</i>Temizle</button>`;
   } else {
-    const groups = [['tooth', 'Dişe uygulanan'], ['multi', 'Çoklu diş'], ['arch', 'Çene'], ['mouth', 'Tüm ağız']];
-    pal.innerHTML = groups.map(([sc, label]) => `<div class="pal-group"><span>${label}</span>${TX_ORDER.filter(k => TX[k].scope === sc).map(k =>
-      `<button class="tool ${UI.tool === k ? 'on' : ''}" data-tool="${k}"><i style="background:${TX[k].color}">${TX[k].abbr}</i>${TX[k].name}</button>`).join('')}</div>`).join('')
-      + `<div class="pal-group"><span>&nbsp;</span><button class="tool ${UI.tool === 'sil' ? 'on' : ''}" data-tool="sil"><i style="background:#cfd8dc;color:#37474f">⌫</i>Dişten kaldır</button></div>`;
+    // İşlemler gruplara ayrılmış sekmelerde; aynı anda tek grup görünür
+    if (!UI.palGroup) UI.palGroup = (TX[UI.tool] && TX[UI.tool].group) || PAL_GROUPS[0][0];
+    const tabs = `<div class="pal-tabs">${PAL_GROUPS.map(([g, label]) => `<button class="pal-tab ${UI.palGroup === g ? 'on' : ''}" data-pgroup="${g}">${label}<small>${TX_ORDER.filter(k => TX[k].group === g).length}</small></button>`).join('')}</div>`;
+    pal.innerHTML = tabs + `<div class="pal-group">${TX_ORDER.filter(k => TX[k].group === UI.palGroup).map(k =>
+      `<button class="tool ${UI.tool === k ? 'on' : ''}" data-tool="${k}"><i style="background:${TX[k].color}">${TX[k].abbr}</i>${TX[k].name}${SCOPE_TAG[TX[k].scope] ? `<small class="sc">${SCOPE_TAG[TX[k].scope]}</small>` : ''}</button>`).join('')}`
+      + `<button class="tool ${UI.tool === 'sil' ? 'on' : ''}" data-tool="sil"><i style="background:#cfd8dc;color:#37474f">⌫</i>Dişten kaldır</button></div>`;
   }
   renderHint();
 }
@@ -63,6 +65,7 @@ function renderHint() {
   const t = TX[UI.tool];
   if (t.scope === 'tooth') h.innerHTML = `<b>${t.name}</b> eklemek için dişlere tıklayın. Tekrar tıklamak kaldırır.`;
   if (t.scope === 'arch') h.innerHTML = `<b>${t.name}</b>: üst veya alt çeneden herhangi bir dişe tıklayın.`;
+  if (t.scope === 'quad') h.innerHTML = `<b>${t.name}</b>: ilgili yarım çeneden (bölgeden) herhangi bir dişe tıklayın.`;
   if (t.scope === 'mouth') h.innerHTML = `<b>${t.name}</b> tüm ağza uygulanır. <button class="btn small primary" id="btnAddMouth">Plana ekle</button>`;
   if (t.scope === 'multi') {
     const sel = sortTeeth(UI.bridgeSel);
@@ -97,7 +100,7 @@ function renderChart() {
   // Çene / tüm ağız bandı
   const b = $('#banner');
   if (UI.mode === 'plan') {
-    const wide = opt().items.filter(it => ['arch', 'mouth'].includes(TX[it.tx].scope));
+    const wide = opt().items.filter(it => ['arch', 'quad', 'mouth'].includes(TX[it.tx].scope));
     b.innerHTML = wide.map(it => `<span class="chip" style="--c:${TX[it.tx].color}">${TX[it.tx].name} · ${itemWhere(it)}</span>`).join('');
   } else b.innerHTML = '';
 
@@ -193,6 +196,11 @@ function onToothClick(n) {
     const ex = o.items.find(x => x.tx === UI.tool && x.arch === arch);
     if (ex) o.items = o.items.filter(x => x !== ex);
     else o.items.push({ id: uid(), tx: UI.tool, arch, teeth: archTeeth(arch).slice(), price: priceOf(UI.tool), cur: TX[UI.tool].cur || 'TRY', phase: t.phase });
+  } else if (t.scope === 'quad') {
+    const quad = quadOf(n);
+    const ex = o.items.find(x => x.tx === UI.tool && x.quad === quad);
+    if (ex) o.items = o.items.filter(x => x !== ex);
+    else o.items.push({ id: uid(), tx: UI.tool, quad, teeth: quadTeeth(quad), price: priceOf(UI.tool), cur: TX[UI.tool].cur || 'TRY', phase: t.phase });
   } else {
     flash('Bu tedavi tüm ağza uygulanır — "Plana ekle" butonunu kullanın.'); return;
   }
@@ -261,7 +269,7 @@ function editOptionDesc() {
 function openSettings() {
   const s = S();
   const rows = TX_ORDER.map(k => `<tr><td><span class="dot" style="background:${TX[k].color}"></span>${TX[k].name}</td>
-    <td class="muted">${{ tooth: 'diş başı', multi: 'üye başı', arch: 'çene', mouth: 'tüm ağız' }[TX[k].scope]}</td>
+    <td class="muted">${{ tooth: 'diş başı', multi: 'üye başı', quad: 'yarım çene', arch: 'çene', mouth: 'tüm ağız' }[TX[k].scope]}${TX[k].cur === 'EUR' ? ' · €' : ''}</td>
     <td><input type="number" min="0" step="100" data-price="${k}" value="${priceOf(k)}"></td>
     <td><button class="ic play" data-anim="${k}" title="Animasyonu izle">▶</button></td></tr>`).join('');
   openModal('Ayarlar', `
@@ -457,6 +465,8 @@ function bind() {
   };
   $('#chkAfter').onchange = e => { UI.after = e.target.checked; renderChart(); };
   $('#palette').onclick = e => {
+    const g = e.target.closest('[data-pgroup]');
+    if (g) { UI.palGroup = g.dataset.pgroup; renderPalette(); return; }
     const b = e.target.closest('[data-tool]'); if (!b) return;
     UI.tool = b.dataset.tool; UI.bridgeSel.clear(); renderPalette(); renderChart();
   };
@@ -542,7 +552,8 @@ function bind() {
     const p = newPatient(); p.name = 'Örnek Hasta';
     p.findings = { 16: ['curuk'], 26: ['iltihap', 'curuk'], 36: ['eksik'], 46: ['kirik'], 11: ['kirik'], 21: ['dolgu'], 47: ['kanalli'] };
     p.options[0].items = [
-      { id: uid(), tx: 'detartraj', teeth: [], price: priceOf('detartraj'), phase: 1 },
+      { id: uid(), tx: 'detartraj', arch: 'upper', teeth: UPPER.slice(), price: priceOf('detartraj'), phase: 1 },
+      { id: uid(), tx: 'detartraj', arch: 'lower', teeth: LOWER.slice(), price: priceOf('detartraj'), phase: 1 },
       { id: uid(), tx: 'dolgu', teeth: [16], price: priceOf('dolgu'), phase: 1 },
       { id: uid(), tx: 'kanal', teeth: [26], price: priceOf('kanal'), phase: 1 },
       { id: uid(), tx: 'implant', teeth: [36], price: priceOf('implant'), phase: 2 },
@@ -556,6 +567,7 @@ function bind() {
     b.items = b.items.filter(it => !['implant', 'implantustu'].includes(it.tx)).map(it => ({ ...it, id: uid() }));
     b.items.push({ id: uid(), tx: 'kopru', teeth: [37, 36, 35], price: priceOf('kopru'), phase: 3 });
     p.options.push(b);
+    p.options.forEach(op => op.items.forEach(it => { it.cur = TX[it.tx].cur || 'TRY'; }));
     p.complaint = 'Sol alt bölgede eksik diş nedeniyle çiğneme zorluğu, ön dişlerin renginden memnun değil.';
     DB.patients.push(p);
   }

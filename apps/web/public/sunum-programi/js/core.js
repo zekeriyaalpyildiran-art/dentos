@@ -5,7 +5,7 @@
 const STORE_KEY = 'kp_sunum_v1';
 const DEFAULT_SETTINGS = {
   clinicName: 'Klinik Prime Maltepe', tagline: 'Ağız ve Diş Sağlığı Polikliniği', doctor: '', phone: '', address: '', web: '',
-  logo: 'img/logo.png', accent: '#6c54a3', currency: '₺', cashDiscount: 20, cardDiscount: 10, installments: '3,6,9,12', showPrices: true, animSpeed: 1, prices: {}
+  logo: 'img/logo.png', accent: '#6c54a3', currency: '₺', cashDiscount: 20, cardDiscount: 10, installments: '3,6,9,12', showPrices: true, animSpeed: 1, prices: {}, priceList: PRICE_LIST
 };
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -24,7 +24,10 @@ function load() {
     const d = JSON.parse(localStorage.getItem(STORE_KEY));
     if (d && d.patients) {
       const legacy = !d.settings || d.settings.cardDiscount === undefined;
+      const oldList = d.settings && d.settings.priceList;
       d.settings = { ...DEFAULT_SETTINGS, ...d.settings };
+      // Yeni fiyat listesi geldiğinde, Ayarlar'da elle girilmiş eski fiyatlar bir kez temizlenir
+      if (oldList !== PRICE_LIST) { d.settings.prices = {}; d.settings.priceList = PRICE_LIST; }
       if (legacy) { d.settings.cardDiscount = 10; d.settings.cashDiscount = 20; }
       if (!d.settings.logo) d.settings.logo = DEFAULT_SETTINGS.logo;
       if (d.settings.accent === '#14a39b') d.settings.accent = DEFAULT_SETTINGS.accent;
@@ -85,7 +88,8 @@ function optionTotals(o) {
 function itemWhere(it) {
   const sc = TX[it.tx].scope;
   if (sc === 'mouth') return 'Tüm ağız';
-  if (sc === 'arch') return it.arch === 'upper' ? 'Üst çene' : 'Alt çene';
+  if (sc === 'arch') return it.arch === 'upper' ? 'Üst çene' : it.arch === 'lower' ? 'Alt çene' : 'Tüm ağız';
+  if (sc === 'quad') return QUAD_NAMES[it.quad] || 'Tüm ağız';
   return (it.teeth || []).join(', ');
 }
 function sortedItems(o) {
