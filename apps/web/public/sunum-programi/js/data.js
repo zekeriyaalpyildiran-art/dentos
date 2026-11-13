@@ -120,11 +120,17 @@ const TX = {
     desc: 'Çeneye yerleştirilen 2–4 implantın üzerine tutucu başlıklar (locator) takılır. Kişiye özel hazırlanan protez bu başlıklara “klik” diye oturur; yerinde sağlam durur, temizlik için hasta tarafından çıkarılıp takılır. İmplantlar ayrıca ücretlendirilir.',
     benefits: ['Klasik protezden çok daha sağlam tutuculuk, yapıştırıcıya gerek kalmaz', 'Daha az sayıda implantla ekonomik çözüm', 'Temizlik için kolayca çıkarılıp takılır', 'Çiğneme ve konuşma güveni artar']
   },
-  hassasTutucu: {
-    name: 'Hassas Tutuculu Protez', abbr: 'HTP', scope: 'tooth', phase: 3, price: 100, cur: 'EUR',
+  hassasProtez: {
+    name: 'Hassas Tutuculu Protez', abbr: 'HTP', scope: 'arch', phase: 3, price: 30000,
     sessions: '4–5 seans', duration: '3–4 hafta', color: '#b5784f', anim: 'hassasTutucu',
-    desc: 'Eksik dişler, kalan dişlere yapılan kronlardaki hassas tutucularla (attachment) bağlanan bölümlü bir protezle tamamlanır. Kanca görünmez; protez tutuculara oturarak sağlam durur ve temizlik için çıkarılıp takılır. Fiyat tutucu sayısı üzerinden hesaplanır: tutucunun takılacağı destek dişleri seçin. Destek dişlerdeki kronlar ayrıca ücretlendirilir.',
+    desc: 'Eksik dişler, kalan dişlere yapılan kronlardaki hassas tutuculara (attachment) bağlanan bölümlü bir protezle tamamlanır. Kanca görünmez; protez tutuculara oturarak sağlam durur ve temizlik için çıkarılıp takılır. Hassas tutucular ve destek dişlerdeki kronlar ayrıca ücretlendirilir.',
     benefits: ['Görünen metal kanca yok, estetik sonuç', 'Klasik bölümlü protezden daha sağlam ve dengeli tutuculuk', 'Kalan doğal dişlerden destek alır', 'Temizlik için kolayca çıkarılıp takılır']
+  },
+  hassasTutucu: {
+    name: 'Hassas Tutucu (Attachment)', abbr: 'HT', scope: 'tooth', phase: 3, price: 100, cur: 'EUR',
+    sessions: 'Kronla birlikte', duration: 'Kron yapımı süresince', color: '#c9a227', anim: 'hassasTutucu',
+    desc: 'Destek dişe yapılan kronun içine yerleştirilen, hareketli protezi kanca olmadan tutan hassas bağlantı parçası. Fiyat tutucu sayısı üzerinden hesaplanır: tutucunun takılacağı destek dişleri seçin.',
+    benefits: ['Görünen metal kanca olmadan tutuculuk', 'Protezin sağlam ve dengeli oturması', 'Destek dişe binen yükün dengelenmesi']
   },
   barProtez: {
     name: 'Titanyum Bar Destekli Sabit Protez', abbr: 'BAR', scope: 'arch', phase: 3, price: 4500,
@@ -158,8 +164,8 @@ const TX = {
   }
 };
 
-const TX_ORDER = ['detartraj', 'kuretaj', 'dolgu', 'kanal', 'cekim', 'greft', 'sinus', 'implant', 'implantustu',
-  'allon4', 'geciciHareketli', 'geciciSabit', 'tamProtez', 'overdenture', 'hassasTutucu', 'barProtez', 'ortodonti', 'kron', 'lamina', 'kopru',
+const TX_ORDER = ['detartraj', 'kuretaj', 'dolgu', 'kanal', 'cekim', 'greft', 'sinus', 'implant', 'implantustu', 'hassasTutucu',
+  'allon4', 'geciciHareketli', 'geciciSabit', 'tamProtez', 'overdenture', 'hassasProtez', 'barProtez', 'ortodonti', 'kron', 'lamina', 'kopru',
   'iuZirkonyum', 'iuMetalPorselen', 'beyazlatma', 'gecePlagi'];
 const MULTI_CROWN = { kopru: 'zirconia', iuZirkonyum: 'zirconia', iuMetalPorselen: 'pfm' };
 
