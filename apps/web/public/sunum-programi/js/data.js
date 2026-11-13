@@ -114,6 +114,18 @@ const TX = {
     desc: 'Metal altyapının sağladığı mekanik destek ile porselenin estetik özelliklerini birleştiren, implantlara sabitlenen köprüler. Fiyat üye (diş) sayısı üzerinden hesaplanır.',
     benefits: ['Metal altyapının sağladığı mekanik destek', 'İmplant destekli sabit kullanım konforu', 'Zirkonyuma göre farklı bütçe seçeneği']
   },
+  overdenture: {
+    name: 'İmplant Üstü Hareketli Protez (Overdenture)', abbr: 'OVD', scope: 'arch', phase: 3, price: 35000,
+    sessions: '4–5 seans', duration: '2–3 hafta', color: '#a0638a', anim: 'overdenture',
+    desc: 'Çeneye yerleştirilen 2–4 implantın üzerine tutucu başlıklar (locator) takılır. Kişiye özel hazırlanan protez bu başlıklara “klik” diye oturur; yerinde sağlam durur, temizlik için hasta tarafından çıkarılıp takılır. İmplantlar ayrıca ücretlendirilir.',
+    benefits: ['Klasik protezden çok daha sağlam tutuculuk, yapıştırıcıya gerek kalmaz', 'Daha az sayıda implantla ekonomik çözüm', 'Temizlik için kolayca çıkarılıp takılır', 'Çiğneme ve konuşma güveni artar']
+  },
+  hassasTutucu: {
+    name: 'Hassas Tutuculu Protez', abbr: 'HTP', scope: 'arch', phase: 3, price: 30000,
+    sessions: '4–5 seans', duration: '3–4 hafta', color: '#b5784f', anim: 'hassasTutucu',
+    desc: 'Eksik dişler, kalan dişlere yapılan kronlardaki hassas tutucularla (attachment) bağlanan bölümlü bir protezle tamamlanır. Kanca görünmez; protez tutuculara oturarak sağlam durur ve temizlik için çıkarılıp takılır. Destek dişlerdeki kronlar ayrıca ücretlendirilir.',
+    benefits: ['Görünen metal kanca yok, estetik sonuç', 'Klasik bölümlü protezden daha sağlam ve dengeli tutuculuk', 'Kalan doğal dişlerden destek alır', 'Temizlik için kolayca çıkarılıp takılır']
+  },
   barProtez: {
     name: 'Titanyum Bar Destekli Sabit Protez', abbr: 'BAR', scope: 'arch', phase: 3, price: 4500,
     sessions: '3–4 seans', duration: '2–3 hafta', color: '#546e7a', anim: 'bar',
@@ -147,7 +159,7 @@ const TX = {
 };
 
 const TX_ORDER = ['detartraj', 'kuretaj', 'dolgu', 'kanal', 'cekim', 'greft', 'sinus', 'implant', 'implantustu',
-  'allon4', 'geciciHareketli', 'geciciSabit', 'tamProtez', 'barProtez', 'ortodonti', 'kron', 'lamina', 'kopru',
+  'allon4', 'geciciHareketli', 'geciciSabit', 'tamProtez', 'overdenture', 'hassasTutucu', 'barProtez', 'ortodonti', 'kron', 'lamina', 'kopru',
   'iuZirkonyum', 'iuMetalPorselen', 'beyazlatma', 'gecePlagi'];
 const MULTI_CROWN = { kopru: 'zirconia', iuZirkonyum: 'zirconia', iuMetalPorselen: 'pfm' };
 

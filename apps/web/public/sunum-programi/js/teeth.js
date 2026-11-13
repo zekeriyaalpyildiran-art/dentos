@@ -105,8 +105,8 @@ const TEETH = (() => {
     });
 
     // Çene bazlı
-    items.filter(it => ['allon4', 'barProtez', 'tamProtez'].includes(it.tx) && !it.optional).forEach(it => {
-      const fixed = it.tx !== 'tamProtez';
+    items.filter(it => ['allon4', 'barProtez', 'tamProtez', 'overdenture'].includes(it.tx) && !it.optional).forEach(it => {
+      const fixed = !['tamProtez', 'overdenture'].includes(it.tx);
       archTeeth(it.arch).forEach(n => {
         const p = n % 10; const s = res[n];
         Object.assign(s, emptyState());
@@ -120,6 +120,18 @@ const TEETH = (() => {
         const nb = row[i - 1], na = row[i + 1];
         s.bridgeL = !!nb && nb % 10 < (fixed ? 7 : 8);
         s.bridgeR = !!na && na % 10 < (fixed ? 7 : 8);
+      });
+    });
+
+    // Hassas tutuculu protez: yalnızca o çenedeki eksik (veya çekilecek) dişleri tamamlar, kalan dişler yerinde kalır
+    items.filter(it => it.tx === 'hassasTutucu' && !it.optional).forEach(it => {
+      const row = archTeeth(it.arch);
+      const fill = n => n % 10 !== 8 && res[n].missing;
+      const set = new Set(row.filter(fill));
+      set.forEach(n => {
+        Object.assign(res[n], emptyState(), { prosthesis: true, crown: 'prosthesis' });
+        const i = row.indexOf(n);
+        res[n].bridgeL = set.has(row[i - 1]); res[n].bridgeR = set.has(row[i + 1]);
       });
     });
 

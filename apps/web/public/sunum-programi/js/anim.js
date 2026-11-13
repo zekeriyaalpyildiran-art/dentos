@@ -601,8 +601,10 @@ const ANIM = (() => {
       const d = `M${x + 1},${bot} L${x + 1},${top + 7} Q${x + 1},${top} ${x + 7},${top} L${x + w - 7},${top} Q${x + w - 1},${top} ${x + w - 1},${top + 7} L${x + w - 1},${bot} Z`;
       x += w; const gap = gapAfter.includes(i);
       const dd = gap ? d.replace(/L(-?[\d.]+),(-?[\d.]+) Z$/, (m0, a, b) => `L${+a - 2},${b} Z`) : d;
-      return `<path d="${dd}" fill="${o.pfm ? '#fffaf0' : 'url(#zr§)'}" stroke="${o.pfm ? '#d2a77a' : '#d3cbb8'}" stroke-width="1.3"/>`;
-    }).join('');
+      return `<path data-ti="${i}" d="${dd}" fill="${o.pfm ? '#fffaf0' : 'url(#zr§)'}" stroke="${o.pfm ? '#d2a77a' : '#d3cbb8'}" stroke-width="1.3"/>`;
+    });
+    const front = o.partial ? teeth.slice(4, 10).join('') : '';
+    const teethHTML = o.partial ? [...teeth.slice(0, 4), ...teeth.slice(10)].join('') : teeth.join('');
     const imps = implList.map(([ix, a], k) => {
       let th = ''; for (let y = 10; y < 80; y += 9) th += `<path d="M-10,${y} L10,${y + 4}" stroke="#56616d" stroke-width="2"/>`;
       return `<g transform="translate(${ix},176) rotate(${a})"><g data-p="i${k}" opacity="0"><path d="M-11,0 L11,0 L9,80 Q0,96 -9,80 Z" fill="url(#ti§)" stroke="#5e6a76" stroke-width="1.4"/>${th}<rect x="-8" y="-12" width="16" height="12" fill="#c7d0d8" stroke="#5e6a76"/></g></g>`;
@@ -614,7 +616,9 @@ const ANIM = (() => {
       <path d="M-196,150 Q0,172 196,150 L196,186 Q0,206 -196,186 Z" fill="url(#gum§)"/>
       ${imps}
       <g data-p="bar" opacity="0"><path d="M-150,144 Q0,166 150,144 L150,158 Q0,180 -150,158 Z" fill="url(#ti§)" stroke="#5e6a76" stroke-width="1.5"/>${implList.map(([ix]) => `<circle cx="${ix}" cy="${151 + 11 * (1 - Math.pow(ix / 150, 2))}" r="4" fill="#5e6a76"/>`).join('')}</g>
-      <g data-p="pros" opacity="0" filter="url(#sh§)">${o.segments ? '' : '<path d="M-178,124 Q0,150 178,124 L180,166 Q0,192 -180,166 Z" fill="#ef8fa3"/>'}${teeth}</g>
+      ${o.locators ? `<g data-p="loc" opacity="0">${implList.map(([ix]) => `<g transform="translate(${ix},0)"><rect x="-6" y="150" width="12" height="9" rx="2" fill="#c9a227" stroke="#8a6d12" stroke-width="1.2"/><rect x="-4" y="146" width="8" height="5" rx="2" fill="#e3c35a" stroke="#8a6d12"/></g>`).join('')}</g>` : ''}
+      ${o.partial ? `<g data-p="front" filter="url(#sh§)">${front}</g><g data-p="att" opacity="0"><rect x="-71" y="128" width="9" height="12" rx="2" fill="#c9a227" stroke="#8a6d12"/><rect x="62" y="128" width="9" height="12" rx="2" fill="#c9a227" stroke="#8a6d12"/></g>` : ''}
+      <g data-p="pros" opacity="0" filter="url(#sh§)">${o.segments ? '' : o.partial ? '<path d="M-180,128 Q-120,144 -64,148 L-64,170 Q-120,178 -182,168 Z M180,128 Q120,144 64,148 L64,170 Q120,178 182,168 Z" fill="#ef8fa3"/>' : '<path d="M-178,124 Q0,150 178,124 L180,166 Q0,192 -180,166 Z" fill="#ef8fa3"/>'}${teethHTML}</g>
       ${SCAN}`);
   }
   SCENES.allon4 = async c => {
@@ -681,6 +685,38 @@ const ANIM = (() => {
     c.step('Tam ark protez bara vidalanır — günlük kullanımda çıkarılmaz');
     await c.A('pros', [{ opacity: 0, transform: 'translateY(-130px)' }, { opacity: 1, transform: 'translateY(0px)' }], 1600, { easing: 'cubic-bezier(.2,.8,.2,1)' });
     c.step('Bakım için yalnızca hekim tarafından sökülebilir');
+    await c.sparkle([[-120, 100], [-30, 86], [60, 92], [140, 104]]);
+  };
+  SCENES.overdenture = async c => {
+    archScene(c, true, { imps: [[-112, 0], [-40, 0], [40, 0], [112, 0]], locators: true });
+    c.F('stubs', [{ opacity: 1 }, { opacity: 0 }], 10);
+    c.step('Dişsiz çeneye 2–4 implant yerleştirilir');
+    await placeImplants(c, 4);
+    c.step('İyileşme döneminde implantlar kemikle bütünleşir');
+    await c.A(['i0', 'i1', 'i2', 'i3'], [{ filter: 'brightness(1)' }, { filter: 'brightness(1.25)' }, { filter: 'brightness(1)' }], 800, { iterations: 2 });
+    c.step('İmplantların üzerine tutucu başlıklar (locator) takılır');
+    await c.show('loc', 800);
+    c.step('Protez başlıklara “klik” diye oturur ve yerinde sağlam durur');
+    await c.A('pros', [{ opacity: 0, transform: 'translateY(-130px)' }, { opacity: 1, transform: 'translateY(0px)' }], 1500, { easing: 'cubic-bezier(.2,.8,.2,1)' });
+    c.step('Temizlik için hasta tarafından kolayca çıkarılıp takılır');
+    await c.A('pros', [{ transform: 'translateY(0px)' }, { transform: 'translateY(-55px)', offset: .45 }, { transform: 'translateY(-55px)', offset: .6 }, { transform: 'translateY(0px)' }], 1800, { easing: 'ease-in-out' });
+    await c.sparkle([[-120, 100], [-30, 86], [60, 92], [140, 104]]);
+  };
+  SCENES.hassasTutucu = async c => {
+    archScene(c, false, { partial: true });
+    c.step('Ön dişler yerinde, arka bölgelerde dişler eksik');
+    await c.pulse('front', 1, 700);
+    c.step('Destek dişlere kron yapılır; kronların içine hassas tutucular (attachment) yerleştirilir');
+    await c.show('att', 900);
+    await c.pulse('att', 2, 500);
+    c.step('Ölçü alınır, eksik dişleri tamamlayan protez kişiye özel hazırlanır');
+    c.F('scan', [{ opacity: 0 }, { opacity: 1 }], 300);
+    await c.A('scan', [{ transform: 'translateY(60px)' }, { transform: 'translateY(130px)' }], 900, { iterations: 2, direction: 'alternate' });
+    await c.hide('scan', 300);
+    c.step('Protez tutuculara oturur — görünen kanca yoktur');
+    await c.A('pros', [{ opacity: 0, transform: 'translateY(-130px)' }, { opacity: 1, transform: 'translateY(0px)' }], 1500, { easing: 'cubic-bezier(.2,.8,.2,1)' });
+    c.step('Temizlik için hasta tarafından çıkarılıp takılır');
+    await c.A('pros', [{ transform: 'translateY(0px)' }, { transform: 'translateY(-55px)', offset: .45 }, { transform: 'translateY(-55px)', offset: .6 }, { transform: 'translateY(0px)' }], 1800, { easing: 'ease-in-out' });
     await c.sparkle([[-120, 100], [-30, 86], [60, 92], [140, 104]]);
   };
   SCENES.geciciSabit = async c => {
