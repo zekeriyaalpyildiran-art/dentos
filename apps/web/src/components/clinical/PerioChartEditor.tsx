@@ -244,8 +244,8 @@ export function PerioChartEditor({
               ? { ...tooth, mob: nv }
               : { ...tooth, [s as Surface]: { ...tooth[s as Surface], [k]: tooth[s as Surface][k].map((x, j) => (j === i ? nv : x)) } },
           );
-          const native = e.nativeEvent as InputEvent;
-          if (autoAdvance && /^-?\d$/.test(nv) && native.inputType?.startsWith("insert")) setTimeout(() => move(el, 1), 0);
+          // One digit typed (value grew): go to the next box at once, so fast typing lands in the right boxes.
+          if (autoAdvance && /^-?\d$/.test(nv) && nv.length > v.length) move(el, 1);
         }}
         className={`w-full h-[25px] border-0 bg-transparent text-center font-mono text-[13px] p-0 tabular-nums focus:outline focus:outline-2 focus:-outline-offset-2 focus:outline-blue-600 focus:bg-blue-50 ${cls}`}
       />
