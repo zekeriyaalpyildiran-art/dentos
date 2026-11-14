@@ -21,8 +21,8 @@ import {
   type Surface,
 } from "@/lib/clinical/perio";
 
-const CW = 22;
-const LABW = 112;
+const CW = 20;
+const LABW = 100;
 const MINMM = -4;
 const MAXMM = 12;
 const K = 6;
@@ -186,14 +186,15 @@ export function PerioChartEditor({
   autoAdvance,
 }: {
   data: PerioData;
-  onChange: (next: PerioData) => void;
+  /** Updater form, so two changes before a re-render never overwrite each other. */
+  onChange: (update: (prev: PerioData) => PerioData) => void;
   readOnly: boolean;
   autoAdvance: boolean;
 }) {
   const root = useRef<HTMLDivElement>(null);
 
   const setTooth = (t: number, fn: (tooth: PerioTooth) => PerioTooth) => {
-    onChange({ ...data, teeth: { ...data.teeth, [String(t)]: fn(data.teeth[String(t)]) } });
+    onChange((prev) => ({ ...prev, teeth: { ...prev.teeth, [String(t)]: fn(prev.teeth[String(t)]) } }));
   };
 
   const move = (el: HTMLInputElement, d: number) => {
@@ -295,7 +296,7 @@ export function PerioChartEditor({
     const sep = (idx: number) => (idx === 8 ? "shadow-[inset_2px_0_0_#97a9b1]" : "shadow-[inset_1px_0_0_#d6dfe3]");
     const gone = (t: number) => data.teeth[String(t)].missing;
     const hatch = "bg-[repeating-linear-gradient(135deg,#eef1f3_0_4px,transparent_4px_8px)]";
-    const th = "sticky left-0 z-[2] bg-white text-left pl-3 pr-2 font-medium text-[12.5px] text-gray-500 whitespace-nowrap border-r border-gray-200";
+    const th = "sticky left-0 z-[2] bg-white text-left pl-2.5 pr-1.5 font-medium text-[12px] text-gray-500 whitespace-nowrap border-r border-gray-200";
     const tdBase = "p-0 h-[26px] text-center align-middle border-b border-gray-100";
 
     const per = (key: string, label: string, fn: (t: number) => ReactNode, rowCls = "") => (

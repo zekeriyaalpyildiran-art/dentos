@@ -270,7 +270,7 @@ export function PatientPerioTab({ patientId, patientName }: { patientId: string;
           data={draft.data}
           readOnly={readOnly}
           autoAdvance={autoAdvance}
-          onChange={(data) => setDraft({ ...draft, data, dirty: true })}
+          onChange={(fn) => setDraft((d) => (d ? { ...d, data: fn(d.data), dirty: true } : d))}
         />
         {!readOnly && <p className="text-xs text-gray-500">10 mm ve üzeri değer girecekseniz otomatik geçişi kapatın.</p>}
         <Toast text={toast} onDone={() => setToast(null)} />
