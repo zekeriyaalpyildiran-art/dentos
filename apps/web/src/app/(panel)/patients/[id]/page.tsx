@@ -19,6 +19,7 @@ import { PatientArchiveDialog } from "../_components/PatientArchiveDialog";
 import { InlineMessage } from "@/components/staff/Modal";
 import { PatientImplantsTab } from "@/components/clinical/PatientImplantsTab";
 import { PatientMaterialsTab } from "@/components/clinical/PatientMaterialsTab";
+import { PatientPerioTab } from "@/components/clinical/PatientPerioTab";
 import { ReminderDialog } from "@/components/crm/ReminderDialog";
 import { WhatsAppReminderLink, useClinicContact } from "@/components/appointments/WhatsAppReminderLink";
 import { reminderDoctorName } from "@/lib/appointments/whatsapp";
@@ -85,6 +86,7 @@ const TABS = [
   { key: "appointments", label: "Randevular" },
   { key: "treatment-plan", label: "Tedavi Planları" },
   { key: "implants", label: "İmplantlar" },
+  { key: "perio", label: "Perio" },
   { key: "materials", label: "Sarf" },
   { key: "account", label: "Hesap" },
   { key: "messages", label: "Mesajlar" },
@@ -540,6 +542,12 @@ export default function Page() {
       {openedTabs.has("implants") && (
         <div hidden={activeTab !== "implants"}>
           <PatientImplantsTab patientId={patient.id} patientName={patient.full_name} />
+        </div>
+      )}
+
+      {openedTabs.has("perio") && (
+        <div hidden={activeTab !== "perio"}>
+          <PatientPerioTab patientId={patient.id} patientName={patient.full_name} />
         </div>
       )}
 
